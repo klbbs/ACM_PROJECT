@@ -203,6 +203,8 @@ def test_production_secure_cookie_and_security_headers(tmp_path):
     settings = Settings(data_dir=tmp_path,multi_user=True,production=True,
                         access_token='production-setup-secret-long-enough',allowed_hosts=('acm.example.test',))
     with TestClient(create_app(settings),base_url='https://acm.example.test') as client:
+        bad = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={'username':'owner','password':PASSWORD,'setup_token':'错误初始化令牌'})
+        assert bad.status_code == 403
         result = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={'username':'owner','password':PASSWORD,'setup_token':settings.access_token})
         assert result.status_code == 200
         assert 'Secure' in result.headers['set-cookie']

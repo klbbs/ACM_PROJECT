@@ -30,13 +30,20 @@ def instance_lock(path):
 
 
 def digest(value):
-    return hashlib.sha256(value.encode()).hexdigest()
+    try:
+        return hashlib.sha256(value.encode()).hexdigest()
+    except UnicodeEncodeError:
+        raise HTTPException(422,'输入包含无效字符') from None
 
 
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
+    try:
+        encoded = password.encode()
+    except UnicodeEncodeError:
+        raise HTTPException(422,'密码包含无效字符') from None
     with HASH_SLOTS:
-        key = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**17, r=8, p=1, maxmem=256*1024*1024)
+        key = hashlib.scrypt(encoded, salt=bytes.fromhex(salt), n=2**17, r=8, p=1, maxmem=256*1024*1024)
     return f'scrypt$131072$8$1${salt}${key.hex()}'
 
 

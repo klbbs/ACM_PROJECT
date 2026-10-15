@@ -161,7 +161,7 @@ def create_multi_app(settings, factory):
                         raise HTTPException(403,'拒绝跨站请求')
                     if request.headers.get('x-acm-request') != '1':
                         raise HTTPException(403,'缺少请求校验头')
-                    if not public and not hmac.compare_digest(request.headers.get('x-csrf-token',''),csrf_token(request.cookies.get(COOKIE,''))):
+                    if not public and not hmac.compare_digest(request.headers.get('x-csrf-token','').encode(),csrf_token(request.cookies.get(COOKIE,'')).encode()):
                         raise HTTPException(403,'会话校验已失效，请刷新页面')
                     if 'application/json' not in request.headers.get('content-type',''):
                         raise HTTPException(415,'仅接受 JSON 请求')
@@ -217,7 +217,7 @@ def create_multi_app(settings, factory):
     def setup(payload:Credentials,response:Response):
         if identities.count():
             raise HTTPException(409,'管理员已初始化')
-        if not settings.access_token or not hmac.compare_digest(payload.setup_token,settings.access_token):
+        if not settings.access_token or not hmac.compare_digest(digest(payload.setup_token),digest(settings.access_token)):
             raise HTTPException(403,'初始化令牌不正确')
         uid = identities.create(payload.username.lower(),payload.password,setup=True,max_users=settings.max_users)
         set_session(response,uid)
