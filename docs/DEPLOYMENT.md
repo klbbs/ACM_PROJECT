@@ -43,6 +43,19 @@ python3 scripts/bootstrap.py
 
 ## 迁移与备份
 
+从开发目录升级已有桌面采集项目时，先停止目标网页服务和采集任务，完成前端构建与打包，然后在开发目录执行：
+
+```bash
+.venv/bin/python scripts/upgrade_workspace.py /home/kendas/桌面/acm
+cd /home/kendas/桌面/acm
+.venv/bin/python -m pip install -c requirements.lock -e '.[dev]'
+.venv/bin/acm-web
+```
+
+脚本要求目标已有 `account.toml` 和 `data/account-history/accounts.sqlite3`，源目录有 `data/accounts.sqlite3`。它复制 Git 跟踪文件及构建产物，将目标数据库和配置备份至 `data/account-history/backups/`，只导入缺失的网页数据，不导入源提交历史，也不覆盖已有设置。账号配置仅修改数据库与导出目录，Cookie 保持原值；学习资料保持原位。重复运行安全，但仍须先停止任务。
+
+若本机安装 ROS，pytest 可能自动加载全局 ROS 插件导致缺少 yaml 等无关依赖，使用 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q` 可隔离这些插件。
+
 数据库与采集 CLI 兼容。本机发现旧数据库 `data/account-history/accounts.sqlite3` 时会自动沿用该目录，也可将 `ACM_DATA_DIR` 显式设为 `data/account-history`，不要混入 `data/smoke`。`ACM_ACCOUNTS_CONFIG` 可指向旧账号配置。
 
 运行中的 SQLite 应通过备份 API 备份，避免只复制主文件而漏掉 WAL：
