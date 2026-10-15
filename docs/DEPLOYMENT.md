@@ -44,7 +44,7 @@ python3 scripts/bootstrap.py
 | `ACM_DATA_SUBDIR` | Compose 挂载数据目录下的子目录，旧布局为 account-history |
 | `ACM_ACCOUNTS_CONFIG` | 默认 account.toml |
 | `ACM_STATIC_DIR` | 默认 frontend/dist |
-| `OPENAI_API_KEY` | 可选服务端 Key，设置页保存的 Key 优先 |
+| `OPENAI_API_KEY` | 仅个人模式使用；多人模式禁止继承服务端共用 Key |
 | `ACM_UID` / `ACM_GID` | Compose 的宿主机运行用户 |
 
 本机 CLI 不自动读取 `.env`；Compose/systemd 示例会加载它。
