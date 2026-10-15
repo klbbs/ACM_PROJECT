@@ -10,7 +10,7 @@ python3 -m venv .venv
 python3 scripts/bootstrap.py
 ```
 
-编辑 `account.toml`，运行 `.venv/bin/acm-web` 本机访问。发布包有 `frontend/dist`，无需 Node.js。
+运行后可在网页添加平台账号，也可手动编辑 `account.toml`。运行 `.venv/bin/acm-web` 本机访问。发布包有 `frontend/dist`，无需 Node.js。
 
 ## 原生服务器
 
@@ -22,7 +22,7 @@ python3 scripts/bootstrap.py
 
 当前使用单进程。多个 worker 会使内存任务队列、登录和调度器不一致，不适用于当前个人工作台。多租户/多实例需另行引入独立任务队列、共享会话和账号隔离。
 
-对外绑定时，CLI 启用生产校验，要求至少 24 字符访问令牌并关闭本机 Codex。公共域名使用 Secure、HttpOnly、SameSite=Strict 会话 Cookie；外部访问须配置 HTTPS。回环地址可使用本机 HTTP。
+对外绑定时，CLI 启用生产校验，要求至少 24 字符访问令牌；官方账号通道默认关闭，可显式启用服务器设备码模式。公共域名使用 Secure、HttpOnly、SameSite=Strict 会话 Cookie；外部访问须配置 HTTPS。回环地址可使用本机 HTTP。
 
 ## 环境变量
 
@@ -30,7 +30,9 @@ python3 scripts/bootstrap.py
 | --- | --- |
 | `ACM_ENV` | 默认 `local`，服务器设 `production` |
 | `ACM_ACCESS_TOKEN` | 工作台访问令牌，生产必填 |
-| `ACM_ENABLE_CODEX` | 本机默认 true，生产始终 false |
+| `ACM_ENABLE_CODEX` | 本机默认 true；生产使用下面的独立开关 |
+| `ACM_ENABLE_SERVER_CODEX` | 生产默认 false；true 启用独立设备码授权 |
+| `ACM_IMAGE_TARGET` | Compose 构建目标：runtime 或含官方 CLI 的 server-codex |
 | `ACM_CODEX_BINARY` | 默认 codex，官方客户端路径 |
 | `ACM_DATA_DIR` | 默认 data，使用其中的 accounts.sqlite3 |
 | `ACM_DATA_SUBDIR` | Compose 挂载数据目录下的子目录，旧布局为 account-history |
@@ -71,7 +73,7 @@ source.close()
 PY
 ```
 
-另行备份 `account.toml`、`.env`、`data/ai-secrets.json`，这些不属于公开部署包，也不要加入 Git。
+另行备份 `account.toml`、`.env`、`data/accounts.web.toml`、`data/ai-secrets.json` 和 `data/codex/`，这些不属于公开部署包，也不要加入 Git。
 
 升级前备份数据库与本机配置、记录 Git tag。升级后保留原数据挂载；当前采用兼容式建表，不删除已有采集表。回滚时使用对应版本和升级前备份。发布包的 `BUILD_INFO.json` 记录源码提交，`MANIFEST.sha256` 可校验文件。
 
@@ -84,3 +86,28 @@ PY
 ## 验证边界
 
 已在本机执行后端测试、前端构建和浏览器交互。开发机未安装 Docker，不能宣称本机镜像构建通过；仓库 CI 配置了 docker build。真实 API Key 提供方仍需用自己的 Key 确认模型和计费权限。
+
+## 无桌面服务器的账号配置
+
+首次启动只需运行 bootstrap 生成访问令牌；用令牌解锁网页后添加账号，支持 CF / AtCoder 用户名、洛谷 / 牛客数字 UID，以及四平台个人主页 URL。服务仅解析已知平台 URL，不会访问用户输入的任意地址。Cookie 是可选项，公开数据可先不填；需要登录时，从自己的浏览器对应平台请求中复制 Cookie 值到密码输入框。
+
+浏览器安全机制不允许本项目直接读取其他网站的 Cookie，平台也未统一提供第三方授权登录。无需在服务器安装 Firefox，也无需上传整个浏览器用户目录。Cookie 留空保留原会话，勾选清除可切回公开接口。移除账号配置不会删除历史；更换账号标识后，原标识的 Cookie 不会自动转移。
+
+配置按 `ACM_DATA_DIR/accounts.web.toml` → `ACM_ACCOUNTS_CONFIG` 的顺序加载，网页文件权限为 600，原始 TOML 可保持只读挂载。网页配置包含完整账号列表，删除最后一个账号后也不会恢复原配置。采集运行期间禁止修改配置。保存成功只表示格式校验通过，实际会话有效性以同步任务结果为准。
+
+## 官方 ChatGPT 设备码授权
+
+Docker 部署在 `.env` 添加：
+
+```dotenv
+ACM_ENABLE_SERVER_CODEX=true
+ACM_IMAGE_TARGET=server-codex
+```
+
+执行 `docker compose up -d --build`。基础 runtime 镜像保持 API Key 模式；server-codex 目标额外安装 Node.js 和官方 `@openai/codex`。可在构建时使用 `--build-arg CODEX_VERSION=<版本>` 固定经过验证的官方 CLI 版本，默认安装 npm 的 latest。
+
+原生部署在受控环境安装官方 Codex CLI，设置 `ACM_ENABLE_SERVER_CODEX=true`，并为 systemd 的 `ACM_CODEX_BINARY` 提供绝对路径。之后在网页申请设备码，在自己的浏览器完成授权即可，服务器不需要桌面、不需要暴露 localhost OAuth 回调端口。设备码登录若未开启，请先进入 ChatGPT 安全设置 / 工作区权限开启。
+
+授权存入 `ACM_DATA_DIR/codex/`，目录权限 700，不借用宿主机官方登录。模型由官方目录读取；官方账号登录失败、过期或额度不足时，任务会报告失败，可重新登录或改用 API Key。设备码与验证链接只通过已解锁工作台返回，不写入任务日志。启动多个实例或将一个工作台提供给不同所有者会共享凭据，当前版本不支持此用途。
+
+文档依据：[官方认证](https://learn.chatgpt.com/docs/auth)、[官方 App Server 协议](https://learn.chatgpt.com/docs/app-server)。本次回归验证模拟了登录协议与隔离目录，未替你在服务器完成真实官方授权；Docker 镜像需由安装 Docker 的环境或 CI 构建验证。

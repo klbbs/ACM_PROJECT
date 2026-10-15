@@ -1,4 +1,4 @@
-"""Official app-server JSON-RPC, for the local personal application only."""
+"""Official app-server JSON-RPC for a single-owner training workspace."""
 import asyncio
 import json
 import os
@@ -12,8 +12,9 @@ class AIError(Exception):
 
 
 class CodexBridge:
-    def __init__(self, binary="codex", enabled=True):
+    def __init__(self, binary="codex", enabled=True, home=None, device_only=False):
         self.binary, self.enabled = binary, enabled
+        self.home, self.device_only = home, device_only
         self.proc = None
         self.reader = None
         self.pending = {}
@@ -22,11 +23,14 @@ class CodexBridge:
         self.start_lock = asyncio.Lock()
         self.inference_lock = asyncio.Lock()
         self.login_result = None
+        self.login_id = None
+        self.login_events = {}
+        self.login_lock = asyncio.Lock()
         self.scratch = tempfile.TemporaryDirectory(prefix="acm-analysis-")
 
     async def start(self):
         if not self.enabled:
-            raise AIError("本机 ChatGPT 通道在服务器部署中禁用，请使用 API Key")
+            raise AIError("官方账号通道未启用；服务器可设置 ACM_ENABLE_SERVER_CODEX=true，或使用 API Key")
         if self.proc and self.proc.returncode is None:
             return
         async with self.start_lock:
@@ -34,17 +38,26 @@ class CodexBridge:
                 return
             binary = shutil.which(self.binary)
             if not binary:
-                raise AIError("未安装 Codex CLI，请按部署说明安装后使用本机官方登录")
+                raise AIError("未安装 Codex CLI，请安装官方客户端或使用 server-codex 容器镜像")
+            env = os.environ.copy()
+            if self.home is not None:
+                self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+                self.home.chmod(0o700)
+                env['CODEX_HOME'] = str(self.home.resolve())
+                # The dedicated server login must not inherit host API credentials.
+                for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL'):
+                    env.pop(key, None)
             self.proc = await asyncio.create_subprocess_exec(binary,
                 "-c", "features.shell_tool=false", "-c", "features.apps=false",
                 "-c", "features.plugins=false", "-c", "mcp_servers={}",
                 "-c", 'web_search="disabled"',
+                "-c", 'cli_auth_credentials_store="file"',
                 "app-server", "--stdio", stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                cwd=self.scratch.name, limit=4*1024*1024, start_new_session=True)
+                cwd=self.scratch.name, env=env, limit=4*1024*1024, start_new_session=True)
             self.reader = asyncio.create_task(self._read())
             try:
-                await self._rpc("initialize", {"clientInfo":{"name":"acm_lab","title":"ACM Lab","version":"0.2.1"}}, 20)
+                await self._rpc("initialize", {"clientInfo":{"name":"acm_lab","title":"ACM Lab","version":"0.3.0"}}, 20)
                 await self._send({"method":"initialized","params":{}})
             except Exception:
                 await self.close()
@@ -94,13 +107,22 @@ class CodexBridge:
                 else:
                     method, params = message.get("method"), message.get("params",{})
                     if method == "account/login/completed":
-                        self.login_result = {"success":bool(params.get("success")),"completed":True}
+                        completed = {"success":bool(params.get("success")),"completed":True}
+                        self.login_events[params.get('loginId')] = completed
+                        if len(self.login_events) > 10:
+                            self.login_events.pop(next(iter(self.login_events)))
+                        if params.get('loginId') == self.login_id:
+                            self.login_result = completed
+                            self.login_id = None
                     queue = self.streams.get(params.get("threadId"))
                     if queue:
                         await queue.put((method,params))
         except (OSError, asyncio.CancelledError):
             pass
         finally:
+            if self.login_result and not self.login_result.get('completed'):
+                self.login_result = {"completed":True,"success":False}
+                self.login_id = None
             for future in list(self.pending.values()):
                 if not future.done():
                     future.set_exception(AIError("Codex 连接中断"))
@@ -125,10 +147,38 @@ class CodexBridge:
         return result
 
     async def login(self, mode="device"):
-        self.login_result = {"completed":False}
-        params={"type":"chatgptDeviceCode"} if mode=="device" else {"type":"chatgpt"}
-        result=await self.call("account/login/start",params,60)
-        return {k:result[k] for k in ("type","loginId","verificationUrl","userCode","authUrl") if k in result}
+        if self.device_only and mode != 'device':
+            raise AIError('服务器请使用设备码登录，在自己的电脑或手机上打开官方验证页')
+        async with self.login_lock:
+            await self.cancel_login()
+            self.login_result = {"completed":False}
+            params={"type":"chatgptDeviceCode"} if mode=="device" else {"type":"chatgpt"}
+            try:
+                result=await self.call("account/login/start",params,60)
+                self.login_id=result.get('loginId')
+                completed = self.login_events.pop(self.login_id, None)
+                if completed:
+                    self.login_result = completed
+                    self.login_id = None
+            except AIError:
+                self.login_result={"completed":True,"success":False}
+                raise
+            return {k:result[k] for k in ("type","loginId","verificationUrl","userCode","authUrl") if k in result}
+
+    async def cancel_login(self):
+        if self.login_id:
+            await self.call('account/login/cancel', {'loginId': self.login_id})
+            self.login_id = None
+        self.login_result = {"completed":True,"success":False}
+        return {'ok': True}
+
+    async def logout(self):
+        async with self.inference_lock:
+            async with self.login_lock:
+                await self.cancel_login()
+                await self.call('account/logout')
+                self.login_result = None
+        return {'ok': True}
 
     async def generate(self, prompt, model, schema):
         async with self.inference_lock:

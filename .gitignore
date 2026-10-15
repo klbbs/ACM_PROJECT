@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 data/
 accounts.toml
+accounts.web.toml
 account.toml
 .env
 .env.*

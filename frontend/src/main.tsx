@@ -289,7 +289,7 @@ function App() {
         value={provider}
         onChange={(e) => chooseProvider(e.target.value)}
       >
-        <option value="codex">本机 ChatGPT / Codex</option>
+        <option value="codex">ChatGPT 官方账号</option>
         <option value="api">API Key 通道</option>
       </select>
       <select aria-label="选择模型" value={model} onChange={(e) => setModel(e.target.value)}>
@@ -691,7 +691,7 @@ function App() {
                 {!overview.platforms.length && (
                   <Empty
                     title="连接你的第一个账号"
-                    detail="配置 account.toml 后，点击同步账号开始建立训练档案。"
+                    detail="在连接与设置中添加平台账号，点击同步即可建立训练档案。"
                     action={<Button onClick={() => setPage('settings')}>查看配置方式</Button>}
                   />
                 )}
@@ -879,7 +879,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.2.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.3.0</span>
             </span>
           </footer>
         </div>
@@ -1559,6 +1559,47 @@ function SettingsPage({
       .then(setSchedule)
       .catch((e) => onError(e.message))
   }, [revision])
+  const [editingAccount, setEditingAccount] = useState<Row>({
+    platform: 'codeforces',
+    handle: '',
+    cookie: '',
+    enrich: false,
+  })
+  const [accountSaving, setAccountSaving] = useState(false)
+  const saveAccounts = async (items: Row[]) => {
+    setAccountSaving(true)
+    try {
+      const result = await api('/accounts', 'PUT', { items })
+      setAccounts(result.items)
+      setEditingAccount({ platform: 'codeforces', handle: '', cookie: '', enrich: false })
+      onNotice('平台账号已保存，可立即同步；Cookie 不会返回浏览器')
+    } catch (e: any) {
+      onError(e.message)
+    } finally {
+      setAccountSaving(false)
+    }
+  }
+  const accountPayload = (a: Row) => ({
+    platform: a.platform,
+    handle: a.handle,
+    enrich: !!a.enrich,
+  })
+  const saveAccount = () => {
+    const payload = accounts
+      .filter(
+        (a) =>
+          !(a.platform === editingAccount.platform && a.handle === editingAccount.originalHandle),
+      )
+      .map(accountPayload)
+    const item: Row = {
+      platform: editingAccount.platform,
+      handle: editingAccount.handle,
+      enrich: !!editingAccount.enrich,
+    }
+    if (editingAccount.clearCookie) item.cookie = ''
+    else if (editingAccount.cookie) item.cookie = editingAccount.cookie
+    saveAccounts([...payload, item])
+  }
   const readAccount = async () => {
     setConnecting(true)
     try {
@@ -1588,9 +1629,12 @@ function SettingsPage({
         api('/ai/account')
           .then((a) => {
             setAccount(a)
-            if (a.connected) {
+            if (a.connected && a.login?.success) {
               setLogin(null)
               onNotice('官方账号已连接，可以读取模型目录')
+            } else if (a.login?.completed && !a.login?.success) {
+              setLogin(null)
+              onError('登录未完成或设备码已过期，请重新申请')
             }
           })
           .catch(() => {}),
@@ -1688,12 +1732,12 @@ function SettingsPage({
               <h2>
                 <span className="inline">
                   <Bot size={20} />
-                  本机官方账号
+                  ChatGPT 官方账号
                 </span>
               </h2>
               <p>通过官方 Codex App Server 读取登录状态和模型目录。</p>
             </div>
-            <span className="mini-label">LOCAL ONLY</span>
+            <span className="mini-label">OFFICIAL LOGIN</span>
           </div>
           <div className="official-account">
             <span className="official-icon">
@@ -1702,7 +1746,7 @@ function SettingsPage({
             <h3>{account?.connected ? '官方账号已连接' : '连接你的 ChatGPT 账号'}</h3>
             <p>
               {account?.connected
-                ? `${account.email || '本机 Codex 会话'} · ${account.plan || account.type || ''}`
+                ? `${account.email || 'ChatGPT 官方账号 会话'} · ${account.plan || account.type || ''}`
                 : '已登录 Codex 时可以直接读取，无需复制 ChatGPT Cookie。'}
             </p>
           </div>
@@ -1716,31 +1760,64 @@ function SettingsPage({
               className="dark"
               loading={connecting}
               disabled={config.codex_enabled === false}
-              onClick={() => doLogin('browser')}
+              onClick={() => doLogin('device')}
             >
               <LogIn size={16} />
-              Continue with ChatGPT
+              申请官方登录设备码
             </Button>
           </div>
-          <button
-            className="text-button device-link"
-            disabled={config.codex_enabled === false}
-            onClick={() => doLogin('device')}
-          >
-            改用设备码登录 <ArrowRight size={13} />
-          </button>
+          {!config.codex_device_only && (
+            <button
+              className="text-button device-link"
+              disabled={config.codex_enabled === false}
+              onClick={() => doLogin('browser')}
+            >
+              本机浏览器回调登录 <ArrowRight size={13} />
+            </button>
+          )}
+          {account?.connected && (
+            <button
+              className="text-button"
+              onClick={async () => {
+                try {
+                  await api('/ai/logout', 'POST', {})
+                  setAccount(null)
+                  setLogin(null)
+                  onNotice('官方账号已退出')
+                } catch (e: any) {
+                  onError(e.message)
+                }
+              }}
+            >
+              退出官方账号
+            </button>
+          )}
           {login?.userCode && (
             <div className="device-code">
-              <p>前往官方登录页输入设备码</p>
+              <p>在你的电脑或手机浏览器打开官方页面，输入设备码</p>
               <strong>{login.userCode}</strong>
               <a href={login.verificationUrl} target="_blank" rel="noreferrer">
                 打开官方验证页 <ExternalLink size={13} />
               </a>
+              <button
+                className="text-button"
+                onClick={async () => {
+                  try {
+                    await api('/ai/login/cancel', 'POST', {})
+                    setLogin(null)
+                  } catch (e: any) {
+                    onError(e.message)
+                  }
+                }}
+              >
+                取消本次登录
+              </button>
+              <p>等待官方授权完成，页面自动刷新状态。过期或失败后可重新申请。</p>
             </div>
           )}
           <p className="help">
-            本机个人应用可用。服务器部署使用 API
-            Key；模型目录可能缓存，实际调用成功才代表有权限。网页登录不会自动授予公共 API 额度。
+            服务器无需桌面。请先在 ChatGPT 安全设置中启用设备码登录；管理员需启用服务器官方通道。
+            登录会绑定当前工作台的唯一所有者，授权保存在服务器。模型以实际调用权限为准。
           </p>
         </section>
       </div>
@@ -1753,7 +1830,7 @@ function SettingsPage({
                 算法平台连接
               </span>
             </h2>
-            <p>账号配置来自服务端 account.toml，浏览器只显示连接状态。</p>
+            <p>填写用户名、数字 UID 或个人主页链接即可；支持无桌面服务器，保存后立即生效。</p>
           </div>
           <Button
             className="secondary"
@@ -1775,15 +1852,128 @@ function SettingsPage({
                 <small>{a.handle}</small>
               </div>
               <span className="badge neutral">{a.has_cookie ? '会话已配置' : '公开接口'}</span>
+              <button
+                className="text-button"
+                disabled={accountSaving}
+                onClick={() =>
+                  setEditingAccount({
+                    ...a,
+                    originalHandle: a.handle,
+                    cookie: '',
+                    clearCookie: false,
+                  })
+                }
+              >
+                编辑
+              </button>
+              <button
+                className="text-button"
+                disabled={accountSaving}
+                onClick={() =>
+                  saveAccounts(accounts.filter((item) => item !== a).map(accountPayload))
+                }
+              >
+                移除配置
+              </button>
             </div>
           ))}
         </div>
         {!accounts.length && (
-          <p className="help">
-            尚未配置账号。复制 accounts.example.toml 为 account.toml，填写 handle 或数字 UID
-            后重启/同步。
-          </p>
+          <p className="help">尚未配置账号，请在下方添加。移除配置不会删除已采集的提交历史。</p>
         )}
+        <div className="account-editor">
+          <h3>{editingAccount.originalHandle ? '编辑平台账号' : '添加平台账号'}</h3>
+          <div className="practice-filters">
+            <label>
+              平台
+              <select
+                value={editingAccount.platform}
+                disabled={!!editingAccount.originalHandle}
+                onChange={(e) => setEditingAccount({ ...editingAccount, platform: e.target.value })}
+              >
+                {Object.entries(names).map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {String(name)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              用户名 / UID / 主页链接
+              <input
+                value={editingAccount.handle}
+                maxLength={500}
+                onChange={(e) => setEditingAccount({ ...editingAccount, handle: e.target.value })}
+                placeholder={
+                  ['luogu', 'nowcoder'].includes(editingAccount.platform)
+                    ? '数字 UID 或个人主页链接'
+                    : '用户名或个人主页链接'
+                }
+              />
+            </label>
+          </div>
+          <label>
+            Cookie（可选）
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={editingAccount.cookie}
+              maxLength={16384}
+              onChange={(e) => setEditingAccount({ ...editingAccount, cookie: e.target.value })}
+              placeholder="name=value; name2=value2；留空保留已保存的会话"
+            />
+          </label>
+          <p className="help">
+            公开数据可以先不填
+            Cookie。需要登录才能读取的数据，请在自己的浏览器登录对应平台，从开发者工具的网络请求中复制
+            Cookie 值。无需服务器安装浏览器。网页无法直接读取其他网站的登录状态。
+          </p>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={!!editingAccount.enrich}
+              onChange={(e) => setEditingAccount({ ...editingAccount, enrich: e.target.checked })}
+            />
+            补充题目信息（AtCoder，可能增加请求）
+          </label>
+          {editingAccount.originalHandle && (
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={!!editingAccount.clearCookie}
+                onChange={(e) =>
+                  setEditingAccount({ ...editingAccount, clearCookie: e.target.checked })
+                }
+              />
+              清除已保存 Cookie，使用公开接口
+            </label>
+          )}
+          <div className="settings-actions">
+            <Button
+              className="primary"
+              loading={accountSaving}
+              disabled={!editingAccount.handle.trim()}
+              onClick={saveAccount}
+            >
+              保存平台账号
+            </Button>
+            {editingAccount.originalHandle && (
+              <button
+                className="text-button"
+                onClick={() =>
+                  setEditingAccount({
+                    platform: 'codeforces',
+                    handle: '',
+                    cookie: '',
+                    enrich: false,
+                  })
+                }
+              >
+                取消编辑
+              </button>
+            )}
+          </div>
+        </div>
       </section>
       <section className="card settings-card">
         <div className="card-heading">
@@ -1956,7 +2146,7 @@ function SettingsPage({
             >
               <option value="api">API Key</option>
               <option value="codex" disabled={!config.codex_enabled}>
-                本机 Codex
+                ChatGPT 官方账号
               </option>
             </select>
           </label>

@@ -26,9 +26,10 @@ flowchart LR
 | analytics.py | 平台/时间统计，UTC 存储，北京时间展示 |
 | jobs.py | 异步任务与状态，阻塞采集放工作线程 |
 | ai.py | API、提示词数据白名单、schema 与题号校验 |
-| codex_bridge.py | 官方 RPC、本机登录、模型目录、临时分析线程 |
+| codex_bridge.py | 官方 RPC、设备码授权、模型目录、临时分析线程 |
 | catalog.py | CF 题库缓存、条件过滤与去重 |
 | database.py | 独立 SQLite 连接 |
+| accounts.py | 网页账号配置、主页解析、Cookie 更新及原子写入 |
 
 保留 submissions/accounts/snapshots/runs，新增 web_settings/web_jobs/ai_reports/problem_catalog/practice_feedback。Key 单独保存在权限 600 的 data/ai-secrets.json，不放入前端响应或统计表。
 
@@ -38,7 +39,7 @@ flowchart LR
 
 Responses 使用 JSON Schema，兼容 Chat Completions 使用 JSON 对象，再统一经过 Pydantic 校验。未完成、截断、非法题号不保存为成功报告。前端以 React 文本节点显示 AI 内容，不执行 HTML。
 
-本机 Codex 使用官方客户端会话，分析线程只接收摘要。该子进程关闭 shell、插件、应用、MCP 和网页搜索；轮次使用受限只读沙箱，拒绝工具请求。模型列表可能缓存，实际调用才验证权限。生产部署禁用此通道。
+本机 Codex 使用官方客户端会话，分析线程只接收摘要。该子进程关闭 shell、插件、应用、MCP 和网页搜索；轮次使用受限只读沙箱，拒绝工具请求。模型列表可能缓存，实际调用才验证权限。生产默认禁用；显式开启后使用独立 CODEX_HOME 和设备码流程，适用于单所有者私人服务器。
 
 ## API
 
@@ -46,12 +47,14 @@ Responses 使用 JSON Schema，兼容 Chat Completions 使用 JSON 对象，再�
 | --- | --- |
 | GET /api/overview | 统计 |
 | GET /api/submissions | 筛选分页 |
-| GET /api/accounts | 不含 Cookie 的配置摘要 |
+| GET/PUT /api/accounts | 配置摘要、保存完整平台账号列表；Cookie 不回传 |
 | POST /api/crawl | 后台采集 |
 | GET /api/jobs | 任务状态 |
 | GET/PUT /api/ai/settings | 接入配置，不回传 Key |
-| GET /api/ai/account | 本机官方登录状态 |
+| GET /api/ai/account | 官方登录状态 |
 | POST /api/ai/login | 浏览器/设备码登录 |
+| POST /api/ai/login/cancel | 取消设备码申请 |
+| POST /api/ai/logout | 退出官方账号 |
 | GET /api/ai/models | 模型列表 |
 | POST /api/analysis | 能力分析任务 |
 | POST /api/recommend | 选题任务 |

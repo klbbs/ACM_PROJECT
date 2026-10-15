@@ -26,13 +26,19 @@ jobs:
       - run: npm run build
         working-directory: frontend
       - run: python scripts/package.py --skip-build
-      - run: python scripts/verify_release.py releases/acm-lab-0.2.1.zip
+      - run: python scripts/verify_release.py releases/acm-lab-0.3.0.zip
       - uses: actions/upload-artifact@v4
         with:
           name: acm-lab-deployment
           path: releases/*
   container:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [runtime, server-codex]
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t acm-lab:ci .
+      - run: docker build --target ${{ matrix.target }} -t acm-lab:ci .
+      - run: docker run --rm --entrypoint acm-web acm-lab:ci --help
+      - if: matrix.target == 'server-codex'
+        run: docker run --rm --entrypoint codex acm-lab:ci --version

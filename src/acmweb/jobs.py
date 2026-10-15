@@ -15,9 +15,10 @@ log=logging.getLogger(__name__)
 
 
 class Jobs:
-    def __init__(self,database,settings,ai):
+    def __init__(self,database,settings,ai,accounts=None):
         self.db,self.settings,self.ai=database,settings,ai
         self.tasks={}
+        self.accounts=accounts
 
     def list(self):
         with self.db.connect() as db:
@@ -76,7 +77,7 @@ class Jobs:
             self.update(job_id,"failed",error=message)
 
     def crawl(self):
-        config=load(self.settings.config_path)
+        config=load(self.accounts.effective_path if self.accounts else self.settings.config_path)
         config.database=self.settings.database
         config.output_dir=self.settings.data_dir/"runs"
         code=crawl(config,Namespace(platform=None,since=None,full=False,max_pages=None))

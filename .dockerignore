@@ -10,6 +10,7 @@
 .ssh
 account.toml
 accounts.toml
+accounts.web.toml
 data
 daily
 records

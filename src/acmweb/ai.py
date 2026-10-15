@@ -64,7 +64,8 @@ class AIProvider:
         return self.db.get("ai",{"base_url":"https://api.openai.com/v1","protocol":"responses","model":""})
 
     def public_config(self):
-        return {**self.config(),"has_key":bool(self.key()),"codex_enabled":self.settings.enable_codex}
+        return {**self.config(),"has_key":bool(self.key()),"codex_enabled":self.settings.enable_codex,
+                "codex_device_only":self.settings.production}
 
     @staticmethod
     def validate_url(url):

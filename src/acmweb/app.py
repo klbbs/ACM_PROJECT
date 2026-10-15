@@ -26,7 +26,7 @@ from .codex_bridge import AIError, CodexBridge
 from .database import Database
 from .jobs import Jobs
 from .settings import Settings
-from ojcrawler.config import load
+from .accounts import Accounts, AccountList
 
 
 class Login(BaseModel):
@@ -77,9 +77,12 @@ def create_app(settings=None):
     settings=settings or Settings()
     settings.validate()
     database=Database(settings.database)
-    codex=CodexBridge(settings.codex_binary,settings.enable_codex)
+    codex=CodexBridge(settings.codex_binary,settings.enable_codex,
+                      home=settings.data_dir/'codex' if settings.production else None,
+                      device_only=settings.production)
+    account_config=Accounts(settings)
     ai=AIProvider(database,settings,codex)
-    jobs=Jobs(database,settings,ai)
+    jobs=Jobs(database,settings,ai,account_config)
     scheduler=AsyncIOScheduler(timezone="Asia/Shanghai")
 
     async def scheduled():
@@ -109,7 +112,7 @@ def create_app(settings=None):
         scheduler.shutdown(wait=False)
         await jobs.close();await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.2.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.3.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -147,7 +150,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.2.1"}
+    def health():return {"status":"ok","version":"0.3.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -177,19 +180,20 @@ def create_app(settings=None):
 
     @app.get("/api/accounts")
     def accounts():
-        if not settings.config_path.exists():return {"items":[],"configured":False}
-        try:
-            config=load(settings.config_path)
-        except (ValueError,OSError):
-            raise HTTPException(400,"账号配置无效，请检查 account.toml 和 Cookie 环境变量")
-        return {"configured":True,"items":[{"platform":a.platform,"handle":a.handle,"has_cookie":bool(a.cookie or a.cookie_env),"enrich":a.enrich} for a in config.accounts]}
+        return account_config.public()
+
+    @app.put("/api/accounts")
+    async def save_accounts(payload:AccountList):
+        if any(kind=='crawl' and not task.done() for kind,task in jobs.tasks.values()):
+            raise HTTPException(409,"正在采集，请完成后再修改账号")
+        return account_config.save(payload)
 
     @app.get("/api/jobs")
     def job_list():return {"items":jobs.list()}
 
     @app.post("/api/crawl")
     async def start_crawl():
-        if not settings.config_path.exists():raise HTTPException(400,"请先在服务端创建 account.toml")
+        if not account_config.public()['configured']:raise HTTPException(400,"请先在连接与设置中添加平台账号")
         return jobs.start("crawl")
 
     @app.get("/api/ai/settings")
@@ -208,6 +212,12 @@ def create_app(settings=None):
 
     @app.post("/api/ai/login")
     async def chatgpt_login(mode:Literal["device","browser"]="device"):return await codex.login(mode)
+
+    @app.post("/api/ai/login/cancel")
+    async def cancel_login():return await codex.cancel_login()
+
+    @app.post("/api/ai/logout")
+    async def official_logout():return await codex.logout()
 
     @app.post("/api/analysis")
     async def analyze(payload:Analyze):return jobs.start("analysis",payload.model_dump())
@@ -257,7 +267,7 @@ def create_app(settings=None):
     @app.put("/api/schedule")
     def set_schedule(payload:Schedule):
         if payload.analyze and not payload.model:raise HTTPException(400,"自动分析需要指定模型")
-        if payload.provider=="codex" and not settings.enable_codex:raise HTTPException(400,"服务器部署请使用 API Key")
+        if payload.provider=="codex" and not settings.enable_codex:raise HTTPException(400,"请先在服务器启用官方账号通道，或选择 API Key")
         database.set("schedule",payload.model_dump());configure_schedule();return get_schedule()
 
     if (settings.static_dir/"assets").exists():

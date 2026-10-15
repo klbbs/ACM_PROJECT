@@ -7,7 +7,7 @@ root=Path(__file__).resolve().parent.parent
 (root/'data').mkdir(exist_ok=True)
 legacy=(root/'data/account-history/accounts.sqlite3').is_file()
 for filename,content in [
-    ('account.toml',(root/'accounts.example.toml').read_text()),
+    ('account.toml', '# 可在网页连接与设置中添加平台账号；手动配置请参考 accounts.example.toml。\n[crawler]\ndatabase = "data/accounts.sqlite3"\noutput_dir = "data/runs"\n'),
     ('.env',f'ACM_ACCESS_TOKEN={secrets.token_urlsafe(36)}\nACM_ENV=production\nACM_ENABLE_CODEX=false\nACM_DATA_DIR={"data/account-history" if legacy else "data"}\nACM_DATA_SUBDIR={"account-history" if legacy else ""}\nACM_UID={os.getuid() if hasattr(os,"getuid") else 1000}\nACM_GID={os.getgid() if hasattr(os,"getgid") else 1000}\n')]:
     path=root/filename
     try:
@@ -17,4 +17,4 @@ for filename,content in [
         continue
     with os.fdopen(fd,'w',encoding='utf-8') as f:f.write(content)
     print(f'已创建 {filename}，权限 600。')
-print('请在本机编辑账号配置；访问令牌在 .env 中，不会输出到日志。')
+print('启动后在网页连接与设置中添加账号；访问令牌在 .env 中，不会输出到日志。')

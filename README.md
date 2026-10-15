@@ -8,7 +8,7 @@
 
 - 训练总览：7/30/90 天或全部历史，去重通过题数、提交通过率、活跃天数、训练趋势和知识点分布。
 - 提交记录：按平台、时间、结果和题目筛选，分页查看、跳转原提交、导出筛选结果前 100 条。
-- AI 教练：API Key 或本机 Codex 登录；动态模型目录；有依据的优势、薄弱点和 7 天训练计划；历史报告。
+- AI 教练：API Key 或官方 Codex 设备码登录；动态模型目录；有依据的优势、薄弱点和 7 天训练计划；历史报告。
 - 智能选题：缓存 CF 官方题库，按难度、标签、比赛 ID 筛选；排除历史提交和练习反馈；AI 只能从真实候选中选择。
 - 训练偏好：目标 Rating、训练区间、新题优先、强化与避开标签；记录完成/跳过状态。
 - 每日工作流：北京时间定时采集，成功后可自动生成 AI 报告；任务进度、错误和中断状态可查。
@@ -26,7 +26,7 @@ python3 -m venv .venv
 python3 scripts/bootstrap.py
 ```
 
-编辑 `account.toml` 为自己的账号。洛谷、牛客填写数字 UID。Cookie 可使用 `cookie_env` 指定环境变量名，或使用单行 `cookie` 字段，二选一；真实配置文件不提交到 Git。
+启动后进入「连接与设置 → 算法平台连接」，直接添加平台用户名、数字 UID 或个人主页链接，可选填 Cookie。保存后立即生效，无需编辑服务器文件。也支持参考 `accounts.example.toml` 手动编辑 `account.toml`，使用 `cookie_env` 或单行 `cookie`，二选一。网页配置优先于该文件，真实配置均不提交 Git。
 
 ```bash
 cd frontend
@@ -54,15 +54,24 @@ cd ..
 
 也可通过服务端 `OPENAI_API_KEY` 环境变量提供 Key。模型调用失败、额度不足、输出被截断或格式不符时，任务明确报错，不生成假报告。API Key 通道没有使用开发机上的真实收费 Key 测试；协议、异常和结果校验有模拟测试。
 
-### 本机 ChatGPT / Codex
+### 官方 ChatGPT 登录（支持无桌面服务器）
 
-安装官方 Codex CLI 后，设置页可以读取现有登录，也可使用 **Continue with ChatGPT** 或设备码登录。认证由官方客户端管理，本项目不抓取 ChatGPT Cookie、不读取或展示其 token。
+使用官方 Codex App Server 的设备码流程：在设置页点击「申请官方登录设备码」，在自己的电脑或手机打开官方验证链接并输入代码；网页自动检测授权完成，之后可读取模型目录、分析数据和选题。可以取消申请或退出官方账号。需先在 ChatGPT 安全设置 / 工作区权限中开启设备码登录；可用性取决于官方账号权限。
 
-分析页选择 **本机 ChatGPT / Codex**，刷新模型目录。目录可能来自客户端缓存，实际调用完成才代表当前账号可用。使用前需确认本机官方 CLI 的登录与模型调用可用。
+本机安装官方 Codex CLI 后可直接使用。无桌面服务器按下方配置启用：
 
-本机通道仅用于个人应用，生产部署强制禁用。ChatGPT 网页会员与 API Key 的计费/权限独立。托管服务的官方网页登录需要按 OpenAI 的 Sign in with ChatGPT 注册与接入条件单独实现；当前服务器部署使用 API Key。
+```dotenv
+ACM_ENABLE_SERVER_CODEX=true
+ACM_IMAGE_TARGET=server-codex
+```
 
-参考：[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server)、[网站登录接入条件](https://developers.openai.com/siwc/website)。
+将这两行加入服务器 `.env`，再执行 `docker compose up -d --build`。该目标镜像自带官方 CLI，无需服务器安装浏览器。未启用时仍可使用 API Key。原生 Python 部署需安装官方 CLI、将以上第一项交给服务进程，并配置 `ACM_CODEX_BINARY` 为实际路径。
+
+服务只用于**单所有者私人工作台**：持有访问令牌的用户共享该官方账号。服务器使用 `data/codex/`（或 `ACM_DATA_DIR/codex/`）保存独立登录，不继承宿主机 Codex 凭据；挂载数据目录后重建容器仍保留授权。不要开放为多用户公共登录服务。对外部署配置 HTTPS 与工作台访问令牌。
+
+模型列表可能包含缓存，实际调用成功才代表有权限。ChatGPT 登录与 API Key 的额度及计费独立；API Key 仍可用于每日自动分析。服务器首次授权必须由你在官方网页完成，本项目不代填密码或抓取 ChatGPT Cookie。
+
+参考：[官方无桌面登录](https://learn.chatgpt.com/docs/auth)、[官方 App Server 登录协议](https://learn.chatgpt.com/docs/app-server)。
 
 ## Docker 部署
 
@@ -70,7 +79,7 @@ cd ..
 git clone git@github.com:klbbs/ACM_PROJECT.git
 cd ACM_PROJECT
 python3 scripts/bootstrap.py
-# 编辑 account.toml；访问令牌在 .env 中，脚本不会打印令牌
+# 访问令牌在 .env 中；平台账号可在启动后的网页设置中添加
 docker compose up -d --build
 ```
 
@@ -89,6 +98,8 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 .venv/bin/ojcrawl export --database data/accounts.sqlite3 --output data/submissions.jsonl
 ```
 
+如果已在网页配置账号，CLI 使用 `--config data/accounts.web.toml`（旧布局为 `data/account-history/accounts.web.toml`）。
+
 默认重抓检查点之前 7 天以更新近期判题结果。达到分页上限或账号失败时，不推进其检查点，其他账号继续；更早的重新判题需要 `--full`。Web 采集统一写入 `ACM_DATA_DIR` 指向的数据库。
 
 每日工作流默认关闭，可在设置页启用。服务必须持续运行；关闭网页不影响后台任务。同一数据库只启动一个服务进程，避免与已有的外部 cron/聊天自动化重复执行。
@@ -97,7 +108,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.2.1.zip
+python3 scripts/verify_release.py releases/acm-lab-0.3.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
