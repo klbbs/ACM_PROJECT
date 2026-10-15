@@ -1,0 +1,22 @@
+services:
+  web:
+    build: .
+    image: acm-lab:0.2.0
+    restart: unless-stopped
+    init: true
+    user: "${ACM_UID:-1000}:${ACM_GID:-1000}"
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ACM_ENV: production
+      ACM_ENABLE_CODEX: "false"
+      ACM_ACCESS_TOKEN: "${ACM_ACCESS_TOKEN:?请先运行 python3 scripts/bootstrap.py}"
+      ACM_DATA_DIR: "/app/data/${ACM_DATA_SUBDIR:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    volumes:
+      - ./data:/app/data
+      - ./account.toml:/app/account.toml:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

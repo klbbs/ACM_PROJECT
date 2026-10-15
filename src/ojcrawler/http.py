@@ -1,5 +1,6 @@
 import logging
 import time
+import threading
 from collections import defaultdict
 from urllib.parse import urlsplit
 
@@ -9,6 +10,7 @@ from .models import CrawlError
 
 log = logging.getLogger(__name__)
 _LAST_REQUEST = defaultdict(float)
+_HOST_LOCKS = defaultdict(threading.Lock)
 
 
 class Client:
@@ -41,8 +43,9 @@ class Client:
         if self.cookie and host == self.cookie_host:
             request_headers["Cookie"] = self.cookie
         for attempt in range(self.retries + 1):
-            time.sleep(max(0, self.interval - (time.monotonic() - self.last[host])))
-            self.last[host] = time.monotonic()
+            with _HOST_LOCKS[host]:
+                time.sleep(max(0, self.interval - (time.monotonic() - self.last[host])))
+                self.last[host] = time.monotonic()
             try:
                 response = self.session.get(url, params=params, headers=request_headers,
                                             timeout=self.timeout)

@@ -6,6 +6,12 @@ data/
 accounts.toml
 account.toml
 .env
+.env.*
+!.env.example
+.aws/
+.codex/
+.agents/
+.ssh/
 node_modules/
 frontend/dist/
 dist/
@@ -21,3 +27,5 @@ for_code_skill/
 .DS_Store
 .coverage
 htmlcov/
+*.tsbuildinfo
+目录说明.md

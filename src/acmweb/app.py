@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -140,6 +141,11 @@ def create_app(settings=None):
     @app.exception_handler(AIError)
     async def ai_error(request,exc):return JSONResponse({"detail":str(exc)},status_code=400)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request,exc):
+        # Pydantic's default errors include the input, which could be an API Key.
+        return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
+
     @app.get("/api/health")
     def health():return {"status":"ok","version":"0.2.0"}
 
@@ -150,10 +156,11 @@ def create_app(settings=None):
         return {"required":bool(settings.access_token),"authenticated":not settings.access_token or hmac.compare_digest(cookie,session_value) or hmac.compare_digest(bearer,settings.access_token)}
 
     @app.post("/api/auth/login")
-    def login(payload:Login,response:Response):
+    def login(payload:Login,response:Response,request:Request):
         if not settings.access_token or not hmac.compare_digest(payload.token,settings.access_token):
             raise HTTPException(401,"访问令牌不正确")
-        response.set_cookie("acm_session",session_value,httponly=True,secure=settings.production,samesite="strict",max_age=86400)
+        loopback=request.url.hostname in {"localhost","127.0.0.1","::1"}
+        response.set_cookie("acm_session",session_value,httponly=True,secure=settings.production and not loopback,samesite="strict",max_age=86400)
         return {"ok":True}
 
     @app.post("/api/auth/logout")

@@ -1,0 +1,3 @@
+# 在 crontab -e 中按实际路径修改。每天当地时间 02:10 执行一次。
+# 使用绝对路径，Cookie 环境变量应由你自己的受限权限启动脚本加载。
+10 2 * * * /absolute/path/to/project/.venv/bin/ojcrawl crawl --config /absolute/path/to/project/accounts.toml >> /absolute/path/to/project/data/daily.log 2>&1

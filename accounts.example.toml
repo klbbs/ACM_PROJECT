@@ -1,0 +1,30 @@
+[crawler]
+database = "data/accounts.sqlite3"
+output_dir = "data/runs"
+interval = 2.1
+timeout = 30
+retries = 3
+max_pages = 1000
+page_size = 100
+overlap_seconds = 604800
+
+[[accounts]]
+platform = "codeforces"
+handle = "your_cf_handle"
+
+[[accounts]]
+platform = "atcoder"
+handle = "your_atcoder_handle"
+enrich = true
+
+# 洛谷和牛客使用数字 UID；删除不需要的平台即可。
+[[accounts]]
+platform = "luogu"
+handle = "123456"
+# cookie_env = "LUOGU_COOKIE"
+# cookie = "name=value; other=value"  # 与 cookie_env 二选一
+
+[[accounts]]
+platform = "nowcoder"
+handle = "123456789"
+# cookie_env = "NOWCODER_COOKIE"

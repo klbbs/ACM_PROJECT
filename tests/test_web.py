@@ -74,6 +74,9 @@ def test_settings_do_not_return_secrets_and_cookie_config(client):
     path=client.app.state.ai.secret_file
     assert path.stat().st_mode&0o777==0o600
     assert client.put('/api/ai/settings',json={'base_url':'http://127.0.0.1','protocol':'responses'}).status_code==400
+    oversized='SENSITIVE-'+('x'*2000)
+    invalid=client.put('/api/ai/settings',json={'api_key':oversized})
+    assert invalid.status_code==422 and 'SENSITIVE-' not in invalid.text
 
 
 def test_raw_credentials_are_never_in_ai_prompt(client,monkeypatch):
@@ -146,6 +149,15 @@ def test_schedule_persists_and_uses_shanghai(client):
     assert data['timezone']=='Asia/Shanghai' and data['next_run']
     assert client.get('/api/schedule').json()['enabled']
     assert client.put('/api/schedule',json={'enabled':True,'hour':25}).status_code==422
+
+
+def test_training_preferences_and_invalid_range(client):
+    current=client.get('/api/training').json()
+    current.update(minimum=1600,maximum=1800,min_contest=1879,preferred_tags=['dp'],avoid_tags=['implementation'])
+    assert client.put('/api/training',json=current).status_code==200
+    assert client.get('/api/training').json()['maximum']==1800
+    current['minimum']=2000
+    assert client.put('/api/training',json=current).status_code==400
 
 
 def test_chat_upstream_truncation_not_saved(client,monkeypatch):

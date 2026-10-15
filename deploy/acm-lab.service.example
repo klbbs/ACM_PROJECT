@@ -1,0 +1,21 @@
+[Unit]
+Description=ACM Lab personal algorithm workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/opt/acm-lab
+EnvironmentFile=/opt/acm-lab/.env
+Environment=ACM_ENV=production
+Environment=ACM_ENABLE_CODEX=false
+ExecStart=/opt/acm-lab/.venv/bin/acm-web --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

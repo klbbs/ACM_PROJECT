@@ -70,7 +70,7 @@ def overview(database, days=30, platform="", now=None):
         history=[r for r in full_history if r["platform"]==s["platform"] and r["account"]==s["account"]]
         platforms.append({"platform":s["platform"],"account":s["account"],"name":PLATFORMS.get(s["platform"],s["platform"]),
             "submissions":len(history),"solved":len({r["problem_id"] for r in history if r["verdict"]=="AC"}),
-            "rating":profile.get("rating") or ((profile.get("fields") or {}).get("Rating")),
+            "rating":profile.get("rating") or ((profile.get("fields") or {}).get("Rating")) or ((ratings[-1].get("new_rating",ratings[-1].get("NewRating"))) if ratings else None),
             "last_sync":s["collected_at"],"complete":bool(s["complete"]),"error":s["error"],"warnings":json.loads(s["warnings"]),"rating_history":ratings})
     return {"days":days,"timezone":"Asia/Shanghai","generated_at":now,
         "stats":{"submissions":len(rows),"solved":len(solved),"accepted":ac,"acceptance":round(ac/len(rows)*100,1) if rows else 0,"streak":streak,"active_days":len(active),"all_submissions":len(all_rows)},

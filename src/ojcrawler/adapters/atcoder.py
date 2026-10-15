@@ -22,11 +22,11 @@ class AtCoder(Adapter):
         out.rating_history = self.optional(out, "rating_history", ratings) or []
         def profile():
             soup = BeautifulSoup(self.client.get(f"https://atcoder.jp/users/{user}"), "html.parser")
-            table = soup.select_one("#main-container table.dl-table")
-            if table is None:
+            tables = soup.select("#main-container table.dl-table")
+            if not tables:
                 raise CrawlError("AtCoder 用户不存在或主页结构已变化")
             fields = {}
-            for row in table.select("tr"):
+            for row in [row for table in tables for row in table.select("tr")]:
                 th, td = row.find("th"), row.find("td")
                 if th and td:
                     fields[th.get_text(' ', strip=True)] = td.get_text(' ', strip=True)
