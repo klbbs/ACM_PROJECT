@@ -1,11 +1,19 @@
+let csrfToken = ''
 export async function api<T = any>(path: string, method = 'GET', data?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
     credentials: 'same-origin',
-    headers: data === undefined ? {} : { 'Content-Type': 'application/json' },
+    headers: {
+      'X-ACM-Request': '1',
+      ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+      ...(data === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
     body: data === undefined ? undefined : JSON.stringify(data),
   })
   const body = await res.json()
+  if (path === '/auth/status') csrfToken = body.csrf_token || ''
+  if (res.status === 401 && !path.startsWith('/auth/'))
+    window.dispatchEvent(new Event('acm:session-expired'))
   if (!res.ok)
     throw new Error(typeof body.detail === 'string' ? body.detail : '请求未完成，请检查输入或连接')
   return body

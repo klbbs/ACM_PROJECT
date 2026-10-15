@@ -76,10 +76,13 @@ class Training(BaseModel):
 def create_app(settings=None):
     settings=settings or Settings()
     settings.validate()
+    if settings.multi_user:
+        from .multiuser import create_multi_app
+        return create_multi_app(settings, create_app)
     database=Database(settings.database)
     codex=CodexBridge(settings.codex_binary,settings.enable_codex,
-                      home=settings.data_dir/'codex' if settings.production else None,
-                      device_only=settings.production)
+                      home=settings.data_dir/'codex' if settings.production or settings.isolated else None,
+                      device_only=settings.production or settings.isolated)
     account_config=Accounts(settings)
     ai=AIProvider(database,settings,codex)
     jobs=Jobs(database,settings,ai,account_config)
@@ -112,7 +115,7 @@ def create_app(settings=None):
         scheduler.shutdown(wait=False)
         await jobs.close();await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.3.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.4.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -150,7 +153,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.3.1"}
+    def health():return {"status":"ok","version":"0.4.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):

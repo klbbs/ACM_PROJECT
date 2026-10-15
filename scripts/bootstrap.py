@@ -8,7 +8,7 @@ root=Path(__file__).resolve().parent.parent
 legacy=(root/'data/account-history/accounts.sqlite3').is_file()
 for filename,content in [
     ('account.toml', '# 可在网页连接与设置中添加平台账号；手动配置请参考 accounts.example.toml。\n[crawler]\ndatabase = "data/accounts.sqlite3"\noutput_dir = "data/runs"\n'),
-    ('.env',f'ACM_ACCESS_TOKEN={secrets.token_urlsafe(36)}\nACM_ENV=production\nACM_ENABLE_CODEX=false\nACM_DATA_DIR={"data/account-history" if legacy else "data"}\nACM_DATA_SUBDIR={"account-history" if legacy else ""}\nACM_UID={os.getuid() if hasattr(os,"getuid") else 1000}\nACM_GID={os.getgid() if hasattr(os,"getgid") else 1000}\n')]:
+    ('.env',f'ACM_ACCESS_TOKEN={secrets.token_urlsafe(36)}\nACM_ENV=production\nACM_MULTI_USER=true\nACM_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]\nACM_AI_ALLOWED_HOSTS=api.openai.com\nACM_PUBLIC_ORIGIN=\nACM_ENABLE_CODEX=false\nACM_DATA_DIR={"data/account-history" if legacy else "data"}\nACM_DATA_SUBDIR={"account-history" if legacy else ""}\nACM_UID={os.getuid() if hasattr(os,"getuid") else 1000}\nACM_GID={os.getgid() if hasattr(os,"getgid") else 1000}\n')]:
     path=root/filename
     try:
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)

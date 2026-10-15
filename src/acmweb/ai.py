@@ -56,16 +56,20 @@ class AIProvider:
         self.secret_file=settings.data_dir/"ai-secrets.json"
 
     def key(self):
+        fallback = os.getenv("OPENAI_API_KEY","") if self.settings.allow_env_ai_key else ''
         if self.secret_file.exists():
-            return json.loads(self.secret_file.read_text()).get("api_key") or os.getenv("OPENAI_API_KEY","")
-        return os.getenv("OPENAI_API_KEY","")
+            return json.loads(self.secret_file.read_text()).get("api_key") or fallback
+        return fallback
 
     def config(self):
-        return self.db.get("ai",{"base_url":"https://api.openai.com/v1","protocol":"responses","model":""})
+        config = self.db.get("ai",{"base_url":"https://api.openai.com/v1","protocol":"responses","model":""})
+        if self.settings.isolated and urlsplit(config['base_url']).hostname not in self.settings.ai_allowed_hosts:
+            raise AIError('该 AI 提供方尚未由管理员加入 ACM_AI_ALLOWED_HOSTS 白名单')
+        return config
 
     def public_config(self):
         return {**self.config(),"has_key":bool(self.key()),"codex_enabled":self.settings.enable_codex,
-                "codex_device_only":self.settings.production}
+                "codex_device_only":self.settings.production or self.settings.isolated}
 
     @staticmethod
     def validate_url(url):
@@ -85,6 +89,8 @@ class AIProvider:
     def save(self, config):
         data=config.model_dump(exclude={"api_key"})
         data["base_url"]=self.validate_url(data["base_url"])
+        if self.settings.isolated and urlsplit(data['base_url']).hostname not in self.settings.ai_allowed_hosts:
+            raise AIError('该 AI 提供方尚未由管理员加入 ACM_AI_ALLOWED_HOSTS 白名单')
         if config.api_key is not None:
             fd,tmp=tempfile.mkstemp(dir=self.settings.data_dir,prefix=".ai-secret-")
             try:

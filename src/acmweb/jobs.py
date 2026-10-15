@@ -19,6 +19,7 @@ class Jobs:
         self.db,self.settings,self.ai=database,settings,ai
         self.tasks={}
         self.accounts=accounts
+        self.guard=None
 
     def list(self):
         with self.db.connect() as db:
@@ -26,6 +27,10 @@ class Jobs:
         return [{**dict(r),"result":json.loads(r["result"]) if r["result"] else None} for r in rows]
 
     def start(self,kind,payload=None):
+        if self.guard:
+            self.guard()
+        if sum(not task.done() for _,task in self.tasks.values()) >= 2:
+            raise AIError('当前用户任务已满，请等待完成')
         if any(k==kind and not task.done() for k,task in self.tasks.values()):
             raise AIError("同类任务正在执行，请等待完成")
         job_id=uuid.uuid4().hex

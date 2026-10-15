@@ -6,12 +6,13 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 ACM_ENV=production ACM_ENABLE_CODEX=false \
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 ACM_ENV=production ACM_MULTI_USER=true ACM_ENABLE_CODEX=false \
     ACM_DATA_DIR=/app/data ACM_ACCOUNTS_CONFIG=/app/account.toml ACM_STATIC_DIR=/app/frontend/dist
 WORKDIR /app
 COPY requirements.lock pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.lock
 COPY src/ ./src/
+COPY scripts/manage_users.py scripts/container_smoke.py ./scripts/
 RUN pip install --no-cache-dir --no-deps .
 COPY --from=frontend /build/dist ./frontend/dist
 RUN groupadd --gid 10001 acm && useradd --uid 10001 --gid acm --create-home acm && \

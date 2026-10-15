@@ -40,15 +40,17 @@ import {
 } from 'lucide-react'
 import { api, date, fmt, names, shortDate } from './api'
 import './style.css'
+import { UserLogin, MemberPage } from './members'
 
 type Row = Record<string, any>
-type Page = 'overview' | 'submissions' | 'analysis' | 'practice' | 'settings'
+type Page = 'overview' | 'submissions' | 'analysis' | 'practice' | 'settings' | 'community'
 const nav = [
   { id: 'overview', name: '训练总览', icon: BarChart3 },
   { id: 'submissions', name: '提交记录', icon: Layers3 },
   { id: 'analysis', name: 'AI 能力分析', icon: Sparkles },
   { id: 'practice', name: '今日练习', icon: Target },
   { id: 'settings', name: '连接与设置', icon: Settings2 },
+  { id: 'community', name: '共享资料与成员', icon: BookOpen },
 ] as const
 const statusNames: Record<string, string> = {
   queued: '等待中',
@@ -164,6 +166,14 @@ function App() {
   const [modelBusy, setModelBusy] = useState(false),
     [modelNote, setModelNote] = useState('')
   const unlocked = auth?.authenticated
+  useEffect(() => {
+    const expired = () => {
+      setAuth(null)
+      window.location.reload()
+    }
+    window.addEventListener('acm:session-expired', expired)
+    return () => window.removeEventListener('acm:session-expired', expired)
+  }, [])
   useEffect(() => {
     api('/auth/status')
       .then(setAuth)
@@ -318,6 +328,7 @@ function App() {
         <p>{error || '正在打开你的训练工作台…'}</p>
       </div>
     )
+  if (!unlocked && auth.multi_user) return <UserLogin status={auth} />
   if (!unlocked)
     return (
       <div className="login-page">
@@ -358,8 +369,10 @@ function App() {
     )
   const current = nav.find((n) => n.id === page)!
   const handle =
+    auth.user?.username ||
     (overview.platforms.find((p: Row) => p.platform === 'codeforces') || overview.platforms[0])
-      ?.account || '算法练习者'
+      ?.account ||
+    '算法练习者'
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
@@ -383,20 +396,22 @@ function App() {
           个人工作空间 <span>PERSONAL</span>
         </div>
         <nav>
-          {nav.map((n) => (
-            <button
-              key={n.id}
-              className={page === n.id ? 'active' : ''}
-              onClick={() => {
-                setPage(n.id)
-                setMobile(false)
-              }}
-            >
-              <n.icon size={19} />
-              {n.name}
-              {n.id === 'analysis' && <span className="nav-ai">AI</span>}
-            </button>
-          ))}
+          {nav
+            .filter((n) => n.id !== 'community' || auth.multi_user)
+            .map((n) => (
+              <button
+                key={n.id}
+                className={page === n.id ? 'active' : ''}
+                onClick={() => {
+                  setPage(n.id)
+                  setMobile(false)
+                }}
+              >
+                <n.icon size={19} />
+                {n.name}
+                {n.id === 'analysis' && <span className="nav-ai">AI</span>}
+              </button>
+            ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-note">
@@ -462,8 +477,23 @@ function App() {
               <kbd>↵</kbd>
             </form>
             <span className="local-label">
-              <span className="pulse-dot" /> 私人工作台
+              <span className="pulse-dot" /> {auth.multi_user ? '独立训练空间' : '私人工作台'}
             </span>
+            {auth.multi_user && (
+              <button
+                className="text-button"
+                onClick={async () => {
+                  try {
+                    await api('/auth/logout', 'POST', {})
+                    window.location.reload()
+                  } catch (e: any) {
+                    setError(e.message)
+                  }
+                }}
+              >
+                退出登录
+              </button>
+            )}
           </div>
         </header>
         <div className="content">
@@ -497,7 +527,9 @@ function App() {
                       ? '基于真实提交与题目标签，找到更值得投入的方向。'
                       : page === 'practice'
                         ? '从真实题库出发，为下一场比赛积累确定性。'
-                        : '连接你的平台账号与 AI，让训练工作台持续运转。'}
+                        : page === 'community'
+                          ? '按需共享训练资料，管理成员与账号安全。'
+                          : '连接你的平台账号与 AI，让训练工作台持续运转。'}
               </p>
             </div>
             <div className="heading-actions">
@@ -545,7 +577,7 @@ function App() {
               )}
             </div>
           </div>
-          {page !== 'settings' && (
+          {!['settings', 'community'].includes(page) && (
             <div className="filter-row">
               <div className="tabs">
                 {[7, 30, 90, 0].map((d) => (
@@ -808,7 +840,24 @@ function App() {
                 </select>
               </div>
               {report ? (
-                <Report data={report} />
+                <>
+                  {auth.multi_user && (
+                    <button
+                      className="secondary"
+                      onClick={async () => {
+                        try {
+                          await api(`/shared/report/${report.id}`, 'POST', {})
+                          setNotice('报告摘要已发布到共享资料库，本站成员可见')
+                        } catch (e: any) {
+                          setError(e.message)
+                        }
+                      }}
+                    >
+                      向所有成员发布这份报告的摘要
+                    </button>
+                  )}
+                  <Report data={report} />
+                </>
               ) : (
                 <section className="card">
                   <Empty
@@ -838,6 +887,9 @@ function App() {
               onError={setError}
               onNotice={setNotice}
             />
+          )}
+          {page === 'community' && auth.multi_user && (
+            <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}
           {page === 'settings' && (
             <SettingsPage
@@ -879,7 +931,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.3.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.4.0</span>
             </span>
           </footer>
         </div>
@@ -1817,7 +1869,7 @@ function SettingsPage({
           )}
           <p className="help">
             服务器无需桌面。请先在 ChatGPT 安全设置中启用设备码登录；管理员需启用服务器官方通道。
-            登录会绑定当前工作台的唯一所有者，授权保存在服务器。模型以实际调用权限为准。
+            登录绑定当前用户，授权保存在服务器的独立目录。模型以实际调用权限为准。
           </p>
         </section>
       </div>

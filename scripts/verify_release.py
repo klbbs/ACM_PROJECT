@@ -9,7 +9,7 @@ def verify(path):
     with zipfile.ZipFile(path) as archive:
         names=archive.namelist()
         root=names[0].split('/')[0]+'/'
-        forbidden={'account.toml','accounts.toml','accounts.web.toml','.env','ai-secrets.json','auth.json','cookies.sqlite'}
+        forbidden={'account.toml','accounts.toml','accounts.web.toml','.env','ai-secrets.json','auth.json','cookies.sqlite','users.sqlite3','.multiuser.lock'}
         for name in names:
             parts=PurePosixPath(name).parts[1:]
             if any(p in forbidden or p in {'data','.git','.venv','node_modules','daily','records','for_code_skill'} for p in parts):

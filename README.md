@@ -1,10 +1,13 @@
 # ACM Lab
 
-用于个人算法训练的完整工作台：连接 Codeforces、洛谷、牛客和 AtCoder，聚合提交记录，调用 AI 生成能力分析与训练计划，再从真实题库中选择合适的练习。
+支持个人训练与受邀成员协作的算法工作台：连接 Codeforces、洛谷、牛客和 AtCoder，聚合提交记录，调用 AI 生成能力分析与训练计划，再从真实题库中选择合适的练习。
 
 **React + TypeScript + FastAPI + SQLite**。采集 CLI 可独立使用；前端构建后由后端提供，无需部署第二个前端服务。
 
 ## 功能
+
+- 多人协作：邀请注册、管理员管理、独立训练空间、共享资料库、私人草稿及可恢复回收站。
+- 网站防护：密码哈希、可撤销会话、CSRF、限流、域名校验、请求与后台任务配额、安全审计。
 
 - 训练总览：7/30/90 天或全部历史，去重通过题数、提交通过率、活跃天数、训练趋势和知识点分布。
 - 提交记录：按平台、时间、结果和题目筛选，分页查看、跳转原提交、导出筛选结果前 100 条。
@@ -15,6 +18,14 @@
 - 部署：Docker Compose、原生 Python、systemd/Caddy 示例、依赖锁、ZIP/TAR 部署包和 GitHub Actions。
 
 当前推荐题库覆盖 **Codeforces**；其他三个平台的数据参与统计与 AI 分析。牛客提交仅覆盖公开练习页，AtCoder Problems 可能存在延迟。
+
+## 多人服务器部署
+
+Compose 默认启用多人模式。先运行 `python3 scripts/bootstrap.py`，在 `.env` 填写 `ACM_ALLOWED_HOSTS` 和 `ACM_PUBLIC_ORIGIN` 为你的 HTTPS 站点，然后 `docker compose up -d --build`。首次访问使用部署令牌创建管理员，之后通过用户名和密码登录；在「共享资料与成员」生成邀请码。
+
+每位用户的平台账号、Cookie、训练数据、API Key 与官方登录独立；仅主动发布的资料或报告摘要共享。旧数据保留，需显式导入管理员的空空间。
+
+完整部署、权限、旧数据迁移和密码恢复见 [多人版运维说明](docs/MULTIUSER.md)。
 
 ## 本机启动
 
@@ -67,7 +78,7 @@ ACM_IMAGE_TARGET=server-codex
 
 将这两行加入服务器 `.env`，再执行 `docker compose up -d --build`。该目标镜像自带官方 CLI，无需服务器安装浏览器。未启用时仍可使用 API Key。原生 Python 部署需安装官方 CLI、将以上第一项交给服务进程，并配置 `ACM_CODEX_BINARY` 为实际路径。
 
-服务只用于**单所有者私人工作台**：持有访问令牌的用户共享该官方账号。服务器使用 `data/codex/`（或 `ACM_DATA_DIR/codex/`）保存独立登录，不继承宿主机 Codex 凭据；挂载数据目录后重建容器仍保留授权。不要开放为多用户公共登录服务。对外部署配置 HTTPS 与工作台访问令牌。
+多人模式使用 `data/users/<用户ID>/codex/` 保存各自的官方授权，不继承其他成员或宿主机登录。旧版个人模式仍使用 `data/codex/`。挂载数据目录后重建容器保留授权，对外访问必须配置 HTTPS。
 
 模型列表可能包含缓存，实际调用成功才代表有权限。ChatGPT 登录与 API Key 的额度及计费独立；API Key 仍可用于每日自动分析。服务器首次授权必须由你在官方网页完成，本项目不代填密码或抓取 ChatGPT Cookie。
 
@@ -83,9 +94,9 @@ python3 scripts/bootstrap.py
 docker compose up -d --build
 ```
 
-默认绑定宿主机 `127.0.0.1:8000`。本机访问后输入 `.env` 中的 `ACM_ACCESS_TOKEN` 解锁。对外部署时配置 HTTPS 反向代理，可参考 [Caddy 示例](deploy/Caddyfile.example)。不要将账号数据目录作为静态目录发布。
+默认绑定宿主机 `127.0.0.1:8000`。多人模式首次访问使用 `.env` 中的 `ACM_ACCESS_TOKEN` 创建管理员，此后使用账号密码登录。对外部署时配置 HTTPS 反向代理，可参考 [Caddy 示例](deploy/Caddyfile.example)。不要将账号数据目录作为静态目录发布。
 
-Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除数据。进程使用非 root 用户；初始化脚本会按本机 UID/GID 写入配置。换服务器时确认目录权限与运行用户一致。
+Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除数据。容器根目录只读，使用非 root 用户并限制进程数与内存；初始化脚本会按本机 UID/GID 写入配置。换服务器时确认目录权限与运行用户一致。
 
 原生部署、环境变量和备份见 [部署说明](docs/DEPLOYMENT.md)。
 
@@ -108,7 +119,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.3.1.zip
+python3 scripts/verify_release.py releases/acm-lab-0.4.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: "${ACM_IMAGE_TARGET:-runtime}"
-    image: acm-lab:0.3.1
+    image: acm-lab:0.4.0
     restart: unless-stopped
     init: true
     user: "${ACM_UID:-1000}:${ACM_GID:-1000}"
@@ -11,6 +11,11 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       ACM_ENV: production
+      ACM_MULTI_USER: "${ACM_MULTI_USER:-true}"
+      ACM_ALLOWED_HOSTS: "${ACM_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
+      ACM_AI_ALLOWED_HOSTS: "${ACM_AI_ALLOWED_HOSTS:-api.openai.com}"
+      ACM_PUBLIC_ORIGIN: "${ACM_PUBLIC_ORIGIN:-}"
+      FORWARDED_ALLOW_IPS: "${ACM_TRUSTED_PROXIES:-127.0.0.1}"
       ACM_ENABLE_CODEX: "false"
       ACM_ENABLE_SERVER_CODEX: "${ACM_ENABLE_SERVER_CODEX:-false}"
       ACM_ACCESS_TOKEN: "${ACM_ACCESS_TOKEN:?请先运行 python3 scripts/bootstrap.py}"
@@ -23,3 +28,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=268435456,mode=1777
+    pids_limit: 256
+    mem_limit: 2g

@@ -1760,6 +1760,39 @@ td small {
   padding-top: 20px;
   border-top: 1px solid #eeeff4;
 }
+.shared-entry {
+  border-top: 1px solid #eeeff4;
+  padding: 20px 0;
+}
+.shared-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+  max-height: 440px;
+  overflow-y: auto;
+}
+.member-table {
+  overflow-x: auto;
+  margin: 24px 0;
+}
+.member-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.member-table th,
+.member-table td {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid #eeeff4;
+}
+.audit-list {
+  max-height: 260px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.settings-card form > label {
+  margin: 18px 0;
+}
 .account-editor > label {
   margin: 16px 0;
 }

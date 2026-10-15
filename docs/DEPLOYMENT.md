@@ -1,5 +1,7 @@
 # 部署与运维
 
+多人服务器的新部署、升级与密码恢复请优先阅读 [多人版说明](MULTIUSER.md)。下文同时包含保留的个人模式部署选项。
+
 ## 从发布包启动
 
 解压 ZIP/TAR.GZ，进入目录：
@@ -20,7 +22,7 @@ python3 scripts/bootstrap.py
 4. 修改 `deploy/acm-lab.service.example` 的用户和路径，再安装到 systemd。
 5. 使用 Caddy/Nginx 提供 HTTPS，保留 Host/协议头，代理到 `127.0.0.1:8000`。
 
-当前使用单进程。多个 worker 会使内存任务队列、登录和调度器不一致，不适用于当前个人工作台。多租户/多实例需另行引入独立任务队列、共享会话和账号隔离。
+当前使用单进程。多个 worker 会使内存任务队列和调度器不一致，服务进程锁会阻止重复实例；多实例扩容需另行引入共享任务队列。
 
 对外绑定时，CLI 启用生产校验，要求至少 24 字符访问令牌；官方账号通道默认关闭，可显式启用服务器设备码模式。公共域名使用 Secure、HttpOnly、SameSite=Strict 会话 Cookie；外部访问须配置 HTTPS。回环地址可使用本机 HTTP。
 
@@ -28,6 +30,10 @@ python3 scripts/bootstrap.py
 
 | 名称 | 含义 |
 | --- | --- |
+| `ACM_MULTI_USER` | Compose 默认 true，启用邀请注册与独立用户空间 |
+| `ACM_ALLOWED_HOSTS` | 允许的网站域名，逗号分隔 |
+| `ACM_PUBLIC_ORIGIN` | 浏览器访问的完整 HTTPS 站点来源，不含路径 |
+| `ACM_AI_ALLOWED_HOSTS` | 成员允许连接的 AI API 域名，默认 api.openai.com |
 | `ACM_ENV` | 默认 `local`，服务器设 `production` |
 | `ACM_ACCESS_TOKEN` | 工作台访问令牌，生产必填 |
 | `ACM_ENABLE_CODEX` | 本机默认 true；生产使用下面的独立开关 |
@@ -108,6 +114,6 @@ ACM_IMAGE_TARGET=server-codex
 
 原生部署在受控环境安装官方 Codex CLI，设置 `ACM_ENABLE_SERVER_CODEX=true`，并为 systemd 的 `ACM_CODEX_BINARY` 提供绝对路径。之后在网页申请设备码，在自己的浏览器完成授权即可，服务器不需要桌面、不需要暴露 localhost OAuth 回调端口。设备码登录若未开启，请先进入 ChatGPT 安全设置 / 工作区权限开启。
 
-授权存入 `ACM_DATA_DIR/codex/`，目录权限 700，不借用宿主机官方登录。模型由官方目录读取；官方账号登录失败、过期或额度不足时，任务会报告失败，可重新登录或改用 API Key。设备码与验证链接只通过已解锁工作台返回，不写入任务日志。启动多个实例或将一个工作台提供给不同所有者会共享凭据，当前版本不支持此用途。
+授权存入 `ACM_DATA_DIR/users/<用户ID>/codex/`（多人模式）或 `ACM_DATA_DIR/codex/`（个人模式），目录权限 700，不借用宿主机官方登录。模型由官方目录读取；官方账号登录失败、过期或额度不足时，任务会报告失败，可重新登录或改用 API Key。设备码与验证链接只通过已解锁工作台返回，不写入任务日志。多人模式为每位成员分别保存登录；个人模式仍共享一个本机身份，不应用于多人服务器。
 
-文档依据：[官方认证](https://learn.chatgpt.com/docs/auth)、[官方 App Server 协议](https://learn.chatgpt.com/docs/app-server)。本次回归验证模拟了登录协议与隔离目录，未替你在服务器完成真实官方授权；Docker 镜像需由安装 Docker 的环境或 CI 构建验证。
+文档依据：[官方认证](https://learn.chatgpt.com/docs/auth)、[官方 App Server 协议](https://learn.chatgpt.com/docs/app-server)。回归测试验证登录协议与隔离目录，真实官方授权需由各成员在官方页面完成。Docker 镜像在仓库 CI 构建验证。

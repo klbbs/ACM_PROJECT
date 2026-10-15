@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -27,6 +28,9 @@ class CodexBridge:
         self.login_events = {}
         self.login_lock = asyncio.Lock()
         self.scratch = tempfile.TemporaryDirectory(prefix="acm-analysis-")
+        self.process_slots = None
+        self.slot_held = False
+        self.last_used = time.monotonic()
 
     async def start(self):
         if not self.enabled:
@@ -36,6 +40,8 @@ class CodexBridge:
         async with self.start_lock:
             if self.proc and self.proc.returncode is None:
                 return
+            if self.proc:
+                await self.close()
             binary = shutil.which(self.binary)
             if not binary:
                 raise AIError("未安装 Codex CLI，请安装官方客户端或使用 server-codex 容器镜像")
@@ -47,17 +53,27 @@ class CodexBridge:
                 # The dedicated server login must not inherit host API credentials.
                 for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL'):
                     env.pop(key, None)
-            self.proc = await asyncio.create_subprocess_exec(binary,
+            if self.process_slots:
+                if self.process_slots.locked():
+                    raise AIError('官方账号连接已满，请稍后重试')
+                await self.process_slots.acquire()
+                self.slot_held = True
+            try:
+                self.proc = await asyncio.create_subprocess_exec(binary,
                 "-c", "features.shell_tool=false", "-c", "features.apps=false",
                 "-c", "features.plugins=false", "-c", "mcp_servers={}",
                 "-c", 'web_search="disabled"',
                 "-c", 'cli_auth_credentials_store="file"',
                 "app-server", "--stdio", stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                cwd=self.scratch.name, env=env, limit=4*1024*1024, start_new_session=True)
+                    cwd=self.scratch.name, env=env, limit=4*1024*1024, start_new_session=True)
+            except BaseException:
+                if self.slot_held:
+                    self.process_slots.release();self.slot_held=False
+                raise
             self.reader = asyncio.create_task(self._read())
             try:
-                await self._rpc("initialize", {"clientInfo":{"name":"acm_lab","title":"ACM Lab","version":"0.3.1"}}, 20)
+                await self._rpc("initialize", {"clientInfo":{"name":"acm_lab","title":"ACM Lab","version":"0.4.0"}}, 20)
                 await self._send({"method":"initialized","params":{}})
             except Exception:
                 await self.close()
@@ -83,6 +99,7 @@ class CodexBridge:
             self.pending.pop(request_id, None)
 
     async def call(self, method, params=None, timeout=30):
+        self.last_used = time.monotonic()
         await self.start()
         return await self._rpc(method, params or {}, timeout)
 
@@ -230,4 +247,6 @@ class CodexBridge:
             self.reader.cancel()
             await asyncio.gather(self.reader,return_exceptions=True)
         self.proc=None
+        if self.slot_held:
+            self.process_slots.release();self.slot_held=False
 
