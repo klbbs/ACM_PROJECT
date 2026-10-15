@@ -44,7 +44,7 @@ class CodexBridge:
                 cwd=self.scratch.name, limit=4*1024*1024, start_new_session=True)
             self.reader = asyncio.create_task(self._read())
             try:
-                await self._rpc("initialize", {"clientInfo":{"name":"acm_lab","title":"ACM Lab","version":"0.2.0"}}, 20)
+                await self._rpc("initialize", {"clientInfo":{"name":"acm_lab","title":"ACM Lab","version":"0.2.1"}}, 20)
                 await self._send({"method":"initialized","params":{}})
             except Exception:
                 await self.close()

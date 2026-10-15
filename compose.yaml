@@ -1,7 +1,7 @@
 services:
   web:
     build: .
-    image: acm-lab:0.2.0
+    image: acm-lab:0.2.1
     restart: unless-stopped
     init: true
     user: "${ACM_UID:-1000}:${ACM_GID:-1000}"
