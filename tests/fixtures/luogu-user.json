@@ -1,0 +1,73 @@
+{
+  "data": {
+    "prizes": [
+      {
+        "prize": {
+          "year": 2012,
+          "contest": "NOIP 提高组",
+          "event": null,
+          "prize": "一等奖",
+          "score": 320,
+          "rank": 838
+        }
+      },
+      {
+        "prize": {
+          "year": 2019,
+          "contest": "CSP-J",
+          "event": null,
+          "prize": "一等奖",
+          "score": 395,
+          "rank": 128
+        }
+      },
+      {
+        "prize": {
+          "year": 2019,
+          "contest": "CSP-S",
+          "event": null,
+          "prize": "一等奖",
+          "score": 277,
+          "rank": 1761
+        }
+      }
+    ],
+    "gu": {
+      "rating": 227,
+      "time": 1791709207,
+      "scores": {
+        "rating": 227,
+        "social": 30,
+        "basic": 100,
+        "contest": 0,
+        "practice": 47,
+        "prize": 50
+      }
+    },
+    "elo": [
+      {
+        "rating": 0,
+        "time": 1682157600,
+        "latest": true,
+        "contest": {
+          "id": 107343,
+          "startTime": 1682145000,
+          "endTime": 1682157600,
+          "name": "【LGR-137-Div.3】洛谷网校 4 月普及组月赛"
+        },
+        "userCount": 1,
+        "prevDiff": null,
+        "previous": null
+      }
+    ],
+    "dailyCounts": [],
+    "user": {
+      "uid": 1,
+      "name": "kkksc03",
+      "ranking": 4170,
+      "eloValue": null,
+      "passedProblemCount": null,
+      "submittedProblemCount": null
+    }
+  }
+}
