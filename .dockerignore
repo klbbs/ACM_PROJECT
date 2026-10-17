@@ -25,3 +25,5 @@ releases
 **/*.egg-info
 .pytest_cache
 *.log
+frontend/test-results
+frontend/playwright-report

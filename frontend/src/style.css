@@ -2775,3 +2775,122 @@ td small {
     grid-template-columns: 1fr;
   }
 }
+
+.wb-editor-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.wb-editor-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wb-editor-controls select {
+  width: auto;
+}
+.wb-editor-controls .wb-wrap input {
+  width: auto;
+}
+.wb-editor-kind {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.cm-workspace {
+  border: 1px solid #334553;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.cm-host .cm-editor {
+  min-height: 420px;
+  background: #14212b;
+}
+.cm-host .cm-scroller {
+  overflow: auto;
+  max-height: 650px;
+}
+.cm-host .cm-content {
+  min-height: 420px;
+  padding: 14px 0;
+}
+.cm-host .cm-gutters {
+  background: #14212b;
+  color: #8297aa;
+  border-right: 1px solid #334553;
+}
+.cm-position {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 12px;
+  background: #1b2b38;
+  color: #c0d3de;
+  font-size: 12px;
+}
+.cm-position span:first-child {
+  font-weight: 700;
+  color: #85ddbb;
+}
+.cm-host .cm-vim-panel {
+  padding: 7px 12px;
+  background: #1b2b38;
+  color: #e2edf3;
+}
+.cm-host .cm-vim-panel input {
+  background: transparent;
+  color: inherit;
+  padding: 2px;
+  border: 0;
+}
+.wb-shortcuts {
+  margin: 12px 0 18px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.wb-editor-fullscreen {
+  position: fixed;
+  inset: 12px;
+  z-index: 100;
+  overflow: auto;
+  margin: 0;
+  background: #fff;
+  box-shadow: 0 0 0 100vmax #101b2be6;
+}
+.wb-editor-fullscreen .cm-host .cm-scroller {
+  max-height: calc(100dvh - 320px);
+  min-height: 45vh;
+}
+.wb-editor-fullscreen .cm-host .cm-content {
+  min-height: 45vh;
+}
+@media (min-width: 1400px) {
+  .wb-content {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .wb-content > .card {
+    min-width: 0;
+  }
+}
+@media (max-width: 600px) {
+  .wb-editor-fullscreen {
+    inset: 0;
+    border-radius: 0;
+  }
+}
+.wb-editor-controls .wb-wrap,
+.wb-consent {
+  flex-direction: row;
+}
+.wb-editor-controls .wb-wrap input,
+.wb-consent input {
+  flex-shrink: 0;
+}
+.wb-choice strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

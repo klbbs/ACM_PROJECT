@@ -94,6 +94,12 @@ class Draft(Strict):
     revision: int = Field(ge=0)
 
 
+class EditorSettings(Strict):
+    keymap: Literal['standard', 'vim'] = 'standard'
+    font_size: int = Field(default=14, ge=12, le=24, strict=True)
+    line_wrapping: bool = Field(default=False, strict=True)
+
+
 class Open(Strict):
     problem: str = Field(max_length=300)
 
@@ -359,6 +365,15 @@ class Workbench:
 
 
 def register(app, service, jobs):
+    @app.get('/api/workbench/editor-settings')
+    def editor_settings():
+        return EditorSettings.model_validate(service.db.get('editor_settings', {})).model_dump()
+
+    @app.put('/api/workbench/editor-settings')
+    def save_editor_settings(data: EditorSettings):
+        service.db.set('editor_settings', data.model_dump())
+        return data.model_dump()
+
     @app.get('/api/workbench')
     def choices(): return service.choices()
 

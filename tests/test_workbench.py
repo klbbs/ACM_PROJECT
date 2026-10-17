@@ -156,3 +156,14 @@ def test_background_job_safe_result_and_optional_auto_review(workspace, monkeypa
         time.sleep(.01)
     assert job['status'] == 'completed' and 'review_error' in job['result']
     assert 'int main' not in json.dumps(job) and service.attempt(aid)['verdict'] == 'WA'
+
+
+def test_editor_preferences_defaults_validation_and_persistence(workspace):
+    client, service, _ = workspace
+    assert client.get('/api/workbench/editor-settings').json() == {'keymap':'standard','font_size':14,'line_wrapping':False}
+    settings = {'keymap':'vim','font_size':18,'line_wrapping':True}
+    assert client.put('/api/workbench/editor-settings',json=settings).json() == settings
+    assert service.db.get('editor_settings') == settings
+    for bad in ({**settings,'keymap':'emacs'}, {**settings,'font_size':25}, {**settings,'font_size':True}, {**settings,'line_wrapping':'false'}, {**settings,'source_code':'private'}):
+        assert client.put('/api/workbench/editor-settings',json=bad).status_code == 422
+    assert client.get('/api/workbench/editor-settings').json() == settings

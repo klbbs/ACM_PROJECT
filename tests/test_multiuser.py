@@ -243,3 +243,15 @@ def test_workbench_user_isolation_and_csrf(site):
     assert request(member,'POST',f'/api/workbench/attempt/{aid}/review',{'provider':'api','model':'mock'}).status_code == 404
     assert request(member,'GET','/api/workbench').json()['profile']['local_snapshots'] == 0
     assert request(admin,'GET','/api/workbench').json()['profile']['local_snapshots'] == 1
+
+
+def test_editor_preferences_isolated_csrf_and_not_charged_as_ai(site):
+    request, admin, member, *_ = site
+    path = '/api/workbench/editor-settings'
+    settings = {'keymap':'vim','font_size':20,'line_wrapping':True}
+    for _ in range(8):
+        assert request(admin,'PUT',path,settings).status_code == 200
+    assert request(admin,'GET',path).json() == settings
+    assert request(member,'GET',path).json()['keymap'] == 'standard'
+    assert request(member,'PUT',path,settings,{'X-CSRF-Token':'wrong'}).status_code == 403
+    assert request(None,'GET',path).status_code == 401

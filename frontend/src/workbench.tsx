@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, date } from './api'
+import { EditorShell } from './editor-shell'
+import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { Code2, Lightbulb, RefreshCw, Save, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
@@ -32,6 +34,48 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
     [busy, setBusy] = useState(false)
   const [consent, setConsent] = useState(false),
     [saveTick, setSaveTick] = useState(0)
+  const [editorSettings, setEditorSettings] = useState<EditorSettings>(defaultEditorSettings)
+  const [settingsReady, setSettingsReady] = useState(false),
+    [settingsBusy, setSettingsBusy] = useState(false)
+  const [editorFullscreen, setEditorFullscreen] = useState(false)
+  useEffect(() => {
+    let alive = true
+    api<EditorSettings>('/workbench/editor-settings')
+      .then((value) => {
+        if (alive) {
+          setEditorSettings(value)
+          setSettingsReady(true)
+        }
+      })
+      .catch((e) => {
+        if (alive) onError(e.message)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+  useEffect(() => {
+    if (!editorFullscreen) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
+  }, [editorFullscreen])
+  const updateSettings = async (patch: Partial<EditorSettings>) => {
+    setSettingsBusy(true)
+    try {
+      const saved = await api<EditorSettings>('/workbench/editor-settings', 'PUT', {
+        ...editorSettings,
+        ...patch,
+      })
+      setEditorSettings(saved)
+    } catch (e) {
+      onError(e instanceof Error ? e.message : '编辑器设置保存失败')
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
   const draftRevision = useRef(0),
     dirty = useRef(false),
     saving = useRef(false),
@@ -313,7 +357,9 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                   </>
                 )}
               </section>
-              <section className="card wb-editor">
+              <section
+                className={`card wb-editor ${editorFullscreen ? 'wb-editor-fullscreen' : ''}`}
+              >
                 <div className="wb-heading">
                   <h3>代码编辑器</h3>
                   <select
@@ -335,38 +381,91 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                     {saved}
                   </span>
                 </div>
-                <textarea
-                  aria-label="源代码"
-                  disabled={busy}
-                  className="wb-code"
+                <div className="wb-editor-controls">
+                  <label>
+                    键位
+                    <select
+                      aria-label="编辑器键位"
+                      value={editorSettings.keymap}
+                      disabled={!settingsReady || settingsBusy}
+                      onChange={(e) =>
+                        updateSettings({ keymap: e.target.value as 'standard' | 'vim' })
+                      }
+                    >
+                      <option value="standard">普通</option>
+                      <option value="vim">Vim</option>
+                    </select>
+                  </label>
+                  <label>
+                    字号
+                    <select
+                      aria-label="编辑器字号"
+                      value={editorSettings.font_size}
+                      disabled={!settingsReady || settingsBusy}
+                      onChange={(e) => updateSettings({ font_size: Number(e.target.value) })}
+                    >
+                      {Array.from({ length: 13 }, (_, i) => i + 12).map((size) => (
+                        <option key={size} value={size}>
+                          {size}px
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="wb-wrap">
+                    <input
+                      type="checkbox"
+                      checked={editorSettings.line_wrapping}
+                      disabled={!settingsReady || settingsBusy}
+                      onChange={(e) => updateSettings({ line_wrapping: e.target.checked })}
+                    />
+                    自动换行
+                  </label>
+                  <button
+                    className="secondary"
+                    aria-pressed={editorFullscreen}
+                    onClick={() => setEditorFullscreen((v) => !v)}
+                  >
+                    {editorFullscreen ? '退出全屏' : '编辑器全屏'}
+                  </button>
+                  <span className="muted">
+                    {settingsBusy
+                      ? '保存偏好…'
+                      : settingsReady
+                        ? '偏好已按用户保存'
+                        : '正在读取偏好'}
+                  </span>
+                </div>
+                <EditorShell
+                  key={pid}
+                  documentId={pid}
                   value={code}
-                  spellCheck={false}
-                  maxLength={65536}
-                  onChange={(e) => {
-                    setCode(e.target.value)
+                  language={language}
+                  settings={editorSettings}
+                  readOnly={busy}
+                  onChange={(value) => {
+                    setCode(value)
                     dirty.current = true
                     setSaved('尚未保存')
                   }}
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-                      e.preventDefault()
-                      save()
-                    }
-                    if (e.key === 'Tab') {
-                      e.preventDefault()
-                      const start = e.currentTarget.selectionStart,
-                        end = e.currentTarget.selectionEnd
-                      setCode(code.slice(0, start) + '    ' + code.slice(end))
-                      dirty.current = true
-                      setSaved('尚未保存')
-                      const el = e.currentTarget
-                      requestAnimationFrame(() => {
-                        el.selectionStart = el.selectionEnd = start + 4
-                      })
-                    }
-                  }}
-                  placeholder="在这里编写你的解法。Tab 缩进，Ctrl/Cmd + S 保存。"
+                  onSave={save}
+                  onError={onError}
                 />
+                <details className="wb-shortcuts">
+                  <summary>编辑器快捷键与补全说明</summary>
+                  <p>
+                    Ctrl/Cmd+S 保存；Ctrl+Space 补全；方向键选择、Enter 接受、Esc 关闭；Tab
+                    缩进或跳转片段占位符；Ctrl/Cmd+F 搜索、Ctrl+H 替换。Vim 模式使用 :w
+                    保存，:q、:wq、:x 不退出网站。全屏请使用「退出全屏」按钮，Esc 保留给 Vim
+                    和补全。
+                  </p>
+                  <p>
+                    候选来自关键字、常用名称、基础语法片段和当前文件单词，不是类型推断或编译诊断；补全不调用
+                    AI，也不发送源码。
+                    <a href="/third-party-notices.txt" target="_blank" rel="noreferrer">
+                      开源许可
+                    </a>
+                  </p>
+                </details>
                 <div className="wb-heading">
                   <button className="secondary" onClick={save}>
                     <Save size={15} /> 保存草稿

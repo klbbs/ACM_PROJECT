@@ -30,3 +30,5 @@ for_code_skill/
 htmlcov/
 *.tsbuildinfo
 目录说明.md
+frontend/test-results/
+frontend/playwright-report/

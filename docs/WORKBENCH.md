@@ -30,3 +30,5 @@
 - 编辑器增强、判题自动轮询、长期训练轨迹与提示依赖趋势。
 
 部署方式沿用 [DEPLOYMENT.md](DEPLOYMENT.md) 和 [MULTIUSER.md](MULTIUSER.md)。首次启动自动创建 `wb_*` 表，不重写历史提交或采集检查点。官方结果接口说明：[Codeforces API methods](https://codeforces.com/apiHelp/methods)。
+
+0.6.0 起编辑器升级为 CodeMirror 6，支持本地补全与可选 Vim，详情见 [编辑器说明](EDITOR.md)。

@@ -10,8 +10,8 @@ from datetime import datetime,timezone
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent.parent
-DIRECTORIES=('src/acmweb','src/ojcrawler','tests','docs','examples','scripts','deploy','frontend/src','frontend/public','frontend/dist','.github')
-FILES=('README.md','CHANGELOG.md','pyproject.toml','requirements.lock','accounts.example.toml','.env.example','.gitignore','.dockerignore','Dockerfile','compose.yaml','frontend/package.json','frontend/package-lock.json','frontend/index.html','frontend/tsconfig.json','frontend/vite.config.ts','.prettierrc.json')
+DIRECTORIES=('src/acmweb','src/ojcrawler','tests','docs','examples','scripts','deploy','frontend/src','frontend/e2e','frontend/public','frontend/dist','.github')
+FILES=('README.md','CHANGELOG.md','pyproject.toml','requirements.lock','accounts.example.toml','.env.example','.gitignore','.dockerignore','Dockerfile','compose.yaml','frontend/package.json','frontend/package-lock.json','frontend/index.html','frontend/tsconfig.json','frontend/vite.config.ts','frontend/vitest.config.ts','frontend/playwright.config.ts','.prettierrc.json')
 
 
 def package(output,skip_build=False):
@@ -38,8 +38,8 @@ def package(output,skip_build=False):
             target=base/relative;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
             manifest.append(hashlib.sha256(data).hexdigest()+'  '+relative.as_posix())
         (base/'MANIFEST.sha256').write_text('\n'.join(manifest)+'\n')
-        (base/'BUILD_INFO.json').write_text(json.dumps({'version':'0.5.0','commit':commit,'built_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
-        prefix='acm-lab-0.5.0'
+        (base/'BUILD_INFO.json').write_text(json.dumps({'version':'0.6.0','commit':commit,'built_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
+        prefix='acm-lab-0.6.0'
         with tarfile.open(output/(prefix+'.tar.gz'),'w:gz') as archive:
             for path in sorted(base.rglob('*')):
                 if path.is_file():archive.add(path,arcname=prefix+'/'+path.relative_to(base).as_posix())

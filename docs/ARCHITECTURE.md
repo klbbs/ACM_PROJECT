@@ -46,6 +46,7 @@ Responses 使用 JSON Schema，兼容 Chat Completions 使用 JSON 对象，再�
 
 | 路径 | 用途 |
 | --- | --- |
+| GET/PUT /api/workbench/editor-settings | 当前用户的普通/Vim、字号、换行偏好 |
 | GET /api/workbench | 推荐列表、近期草稿与聚合练习证据 |
 | GET /api/workbench/resolve | 规范化 CF 题号或官方链接，读取本题私有状态 |
 | POST /api/workbench/open | 抓取公开 CF 题面与样例 |
@@ -83,3 +84,5 @@ Responses 使用 JSON Schema，兼容 Chat Completions 使用 JSON 对象，再�
 服务器默认多人、单后端进程。用户数据库保存身份和共享资料；各用户拥有独立训练数据库、配置、任务、调度器和官方客户端。旧单用户模式仍保留本机兼容性。当前选题源为 CF，可新增题库适配器扩展。所有统计基于本地可见数据，不保证未公开或第三方尚未同步的记录。
 
 多人授权边界、数据目录、权限矩阵和运维步骤见 [多人版说明](MULTIUSER.md)。
+
+编辑器组件、补全范围、Vim 和资源加载说明见 [编辑器说明](EDITOR.md)。
