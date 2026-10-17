@@ -41,13 +41,16 @@ import {
 import { api, date, fmt, names, shortDate } from './api'
 import './style.css'
 import { UserLogin, MemberPage } from './members'
+import { WorkbenchPage } from './workbench'
 
 type Row = Record<string, any>
-type Page = 'overview' | 'submissions' | 'analysis' | 'practice' | 'settings' | 'community'
+type Page =
+  'workbench' | 'overview' | 'submissions' | 'analysis' | 'practice' | 'settings' | 'community'
 const nav = [
   { id: 'overview', name: '训练总览', icon: BarChart3 },
   { id: 'submissions', name: '提交记录', icon: Layers3 },
   { id: 'analysis', name: 'AI 能力分析', icon: Sparkles },
+  { id: 'workbench', name: '刷题工作台', icon: Code2 },
   { id: 'practice', name: '今日练习', icon: Target },
   { id: 'settings', name: '连接与设置', icon: Settings2 },
   { id: 'community', name: '共享资料与成员', icon: BookOpen },
@@ -65,6 +68,10 @@ const jobNames: Record<string, string> = {
   analysis: '能力分析',
   recommend: '智能选题',
   catalog: '同步题库',
+  wb_statement: '获取题面',
+  wb_hint: '生成小提示',
+  wb_sync: '核验判题',
+  wb_review: '分析错因',
 }
 const emptyOverview: Row = {
   stats: {},
@@ -144,10 +151,14 @@ function Button({
 function App() {
   const [auth, setAuth] = useState<Row | null>(null),
     [token, setToken] = useState('')
-  const [page, setPage] = useState<Page>('overview'),
+  const [page, setPageRaw] = useState<Page>('overview'),
     [mobile, setMobile] = useState(false),
     [days, setDays] = useState(30),
     [platform, setPlatform] = useState('')
+  const setPage = (next: Page) => {
+    if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true })))
+      setPageRaw(next)
+  }
   const [overview, setOverview] = useState<Row>(emptyOverview),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(''),
@@ -223,7 +234,8 @@ function App() {
               !['running', 'queued'].includes(job.status)
             ) {
               changed = true
-              if (job.error) setError(job.error)
+              if (job.error || job.result?.review_error)
+                setError(job.error || job.result.review_error)
               else setNotice(`${jobNames[job.kind]}${statusNames[job.status]}`)
             }
             seenJobs.current[job.id] = job.status
@@ -257,13 +269,12 @@ function App() {
   const run = async (path: string, payload?: Row) => {
     try {
       setError('')
-      await api(path, 'POST', payload ?? {})
+      const created = await api(path, 'POST', payload ?? {})
+      if (created.id) seenJobs.current[created.id] = 'queued'
       setNotice('任务已加入队列，可在页面底部查看进度')
       const data = await api('/jobs')
       setJobs(data.items)
-      data.items.forEach((j: Row) => {
-        seenJobs.current[j.id] = j.status
-      })
+      // Keep newly queued status until the poll observes completion, including fast jobs.
     } catch (e: any) {
       setError(e.message)
     }
@@ -527,9 +538,11 @@ function App() {
                       ? '基于真实提交与题目标签，找到更值得投入的方向。'
                       : page === 'practice'
                         ? '从真实题库出发，为下一场比赛积累确定性。'
-                        : page === 'community'
-                          ? '按需共享训练资料，管理成员与账号安全。'
-                          : '连接你的平台账号与 AI，让训练工作台持续运转。'}
+                        : page === 'workbench'
+                          ? '在题目、代码与提示之间，把每次尝试变成下一次进步。'
+                          : page === 'community'
+                            ? '按需共享训练资料，管理成员与账号安全。'
+                            : '连接你的平台账号与 AI，让训练工作台持续运转。'}
               </p>
             </div>
             <div className="heading-actions">
@@ -577,7 +590,7 @@ function App() {
               )}
             </div>
           </div>
-          {!['settings', 'community'].includes(page) && (
+          {!['settings', 'community', 'workbench'].includes(page) && (
             <div className="filter-row">
               <div className="tabs">
                 {[7, 30, 90, 0].map((d) => (
@@ -888,6 +901,17 @@ function App() {
               onNotice={setNotice}
             />
           )}
+          {page === 'workbench' && (
+            <WorkbenchPage
+              revision={revision}
+              provider={provider}
+              model={model}
+              aiPicker={aiPicker}
+              jobs={jobs}
+              run={run}
+              onError={setError}
+            />
+          )}
           {page === 'community' && auth.multi_user && (
             <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}
@@ -931,7 +955,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.4.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.5.0</span>
             </span>
           </footer>
         </div>

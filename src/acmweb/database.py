@@ -23,6 +23,8 @@ class Database:
                 status TEXT NOT NULL, note TEXT NOT NULL, updated_at INTEGER NOT NULL,
                 PRIMARY KEY(platform,problem_id));
             ''')
+            from .workbench import DDL
+            db.executescript(DDL)
             # A restart must not leave interrupted jobs forever "running".
             db.execute("UPDATE web_jobs SET status='interrupted',error='服务重启，任务未完成',updated_at=? WHERE status IN ('queued','running')", (int(time.time()),))
 

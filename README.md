@@ -119,7 +119,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.4.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.5.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
@@ -147,3 +147,9 @@ cd frontend && npm run build
 ```
 
 数据发送范围和接口见 [架构说明](docs/ARCHITECTURE.md)。
+
+### 刷题工作台（第一阶段）
+
+侧栏新增「刷题工作台」：CF 推荐题、题面和样例、自动保存代码、提交快照、判题核验与 AI 分步提示/错因复盘。
+当前使用官方页面手动提交后关联提交号，自动代提交将在后续接入；服务器不会执行用户代码。
+完整流程、隐私边界和后续计划见 [工作台说明](docs/WORKBENCH.md)。

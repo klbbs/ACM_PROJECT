@@ -228,3 +228,18 @@ def test_canonical_origin_behind_https_proxy(tmp_path):
         assert client.post('/api/shared',headers=headers,json={'title':'Proxy works','body':'HTTPS terminates at proxy'}).status_code == 200
         headers['Origin']='https://other.example.test'
         assert client.post('/api/shared',headers=headers,json={'title':'x','body':'x'}).status_code == 403
+
+
+def test_workbench_user_isolation_and_csrf(site):
+    request,admin,member,app,*_ = site
+    path = '/api/workbench/problem/4-A/draft'
+    draft = {'code':'OWNER-PRIVATE-CODE','language':'cpp17','revision':0}
+    assert request(admin,'PUT',path,draft).status_code == 200
+    assert request(member,'GET','/api/workbench/problem/4-A').json()['draft']['code'] == ''
+    assert request(member,'PUT',path,draft,{'X-CSRF-Token':'wrong'}).status_code == 403
+    saved = {**draft,'revision':1}
+    aid = request(admin,'POST','/api/workbench/problem/4-A/snapshot',saved).json()['id']
+    assert request(member,'POST',f'/api/workbench/attempt/{aid}/sync',{'handle':'demo','submission_id':1}).status_code == 404
+    assert request(member,'POST',f'/api/workbench/attempt/{aid}/review',{'provider':'api','model':'mock'}).status_code == 404
+    assert request(member,'GET','/api/workbench').json()['profile']['local_snapshots'] == 0
+    assert request(admin,'GET','/api/workbench').json()['profile']['local_snapshots'] == 1

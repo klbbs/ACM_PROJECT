@@ -56,10 +56,15 @@ class Jobs:
             elif kind=="catalog":
                 result=await asyncio.to_thread(refresh_catalog,self.db)
                 self.update(job_id,"completed",result)
+            elif kind.startswith("wb_"):
+                result=await self.run_workbench(kind,payload)
+                self.update(job_id,"completed",result)
             elif kind in {"analysis","recommend"}:
                 context=await asyncio.to_thread(analytics.overview,self.db,payload.get("days",30),payload.get("platform",""))
                 if not context["stats"]["submissions"]:
                     raise AIError("所选时间窗口没有提交数据，请先采集或扩大时间范围")
+                from .workbench import training_evidence
+                context["workbench_evidence"]=training_evidence(self.db)
                 selected=[]
                 if kind=="recommend":
                     selected=candidates(self.db,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,payload.get("min_contest",0))

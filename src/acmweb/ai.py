@@ -126,6 +126,7 @@ class AIProvider:
         safe_context={k:context[k] for k in ("stats","topics","verdicts","coverage","days","suggested_cf_difficulty")}
         safe_context["recent"]=[{**{k:r[k] for k in ("platform","problem_id","submitted_at","verdict")},
             "problem":{k:(r.get("problem") or {}).get(k) for k in ("title","tags","difficulty")}} for r in context["recent"]]
+        safe_context["workbench_evidence"]=context.get("workbench_evidence",{})
         safe_context["training_preferences"]=self.db.get("training",{})
         prompt=("请用中文生成有证据的算法训练报告。把提交通过率与真实能力区分，样本少时说明不确定性。"
                 "strengths 写已有优势；weaknesses 引用具体统计并给出改进动作；plan 给出接下来7天训练。"
