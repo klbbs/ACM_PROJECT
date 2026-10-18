@@ -174,6 +174,7 @@ def test_statement_fallback_agent_and_failure_state(workspace, monkeypatch):
     calls=[]
     def fetch(self,url,**kwargs):
         calls.append((url,kwargs))
+        assert self.cookie is None  # stale credentials must not poison public access
         assert 'OJAccountCrawler' not in kwargs['headers']['User-Agent']
         if '/problemset/' in url: raise AIError('verification')
         return HTML

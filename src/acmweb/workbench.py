@@ -256,19 +256,22 @@ class Workbench:
     def statement(self, pid):
         pid = normalize(pid)
         account = next((a for a in self.accounts.document().get('accounts', []) if a.get('platform') == 'codeforces' and a.get('cookie')), {})
-        client = Client(timeout=12, retries=0, cookie=account.get('cookie'), cookie_host='codeforces.com' if account.get('cookie') else None)
         contest, index = pid.split(':')[1].split('-')
         failures = []
-        try:
-            for url in (source_url(pid), f'https://codeforces.com/contest/{contest}/problem/{index}'):
-                try:
-                    result = parse_statement(client.get(url, params={'locale': 'en'}, headers={'User-Agent': default_user_agent()}), pid)
-                    result['source'] = 'official'
-                    return self.store_statement(pid, result)
-                except (CrawlError, AIError) as exc:
-                    failures.append(str(exc))
-        finally:
-            client.close()
+        # Public statements should not be broken by a stale saved login cookie.
+        cookies = [None] + ([account['cookie']] if account.get('cookie') else [])
+        for cookie in cookies:
+            client = Client(timeout=12, retries=0, cookie=cookie, cookie_host='codeforces.com' if cookie else None)
+            try:
+                for url in (source_url(pid), f'https://codeforces.com/contest/{contest}/problem/{index}'):
+                    try:
+                        result = parse_statement(client.get(url, params={'locale': 'en'}, headers={'User-Agent': default_user_agent()}), pid)
+                        result['source'] = 'official'
+                        return self.store_statement(pid, result)
+                    except (CrawlError, AIError) as exc:
+                        failures.append(str(exc))
+            finally:
+                client.close()
         error = '官方两种题面地址均未获取成功：' + '；'.join(failures) + '。可在浏览器完成平台验证后重试，或导入原题的 problem-statement HTML。服务器 IP 被限制时 Cookie 不一定有效。'
         self.db.set('statement_status:'+pid, {'status': 'failed', 'error': error, 'at': int(time.time())})
         raise AIError(error)
