@@ -43,7 +43,7 @@ def mock_judge(monkeypatch, aid=None, status='WRONG_ANSWER', **changes):
 def test_statement_plaintext_samples_and_url_validation():
     parsed = parse_statement(HTML, 'codeforces:4-A')
     assert parsed['samples'] == [{'input': '2\n3', 'output': '5\n6'}]
-    assert 'evil()' not in json.dumps(parsed) and '<img' not in json.dumps(parsed)
+    assert 'evil()' not in json.dumps(parsed) and '<script' not in json.dumps(parsed)
     assert parsed['has_images']
     assert normalize('https://codeforces.com/contest/4/problem/a') == 'codeforces:4-A'
     for value in ('https://evil.invalid/4/A', 'https://codeforces.com:443/problemset/problem/4/A', 'https://codeforces.com@127.0.0.1/problemset/problem/4/A', 'https://codeforces.com/problemset/problem/4/A?x=1', '../../account.toml', '100000-A'):
@@ -198,3 +198,12 @@ def test_statement_import_is_plaintext_and_labeled(workspace):
     assert 'evil()' not in json.dumps(statement)
     assert client.post('/api/workbench/problem/4-A/import',json={'html':'<script>evil()</script>'}).status_code==400
     assert service.state('4-A')['statement']==statement
+
+
+def test_rich_statement_preserves_images_structure_and_math_safely():
+    html='''<div class="problem-statement"><div class="header"><div class="title">Diagram</div></div><div><p>Let <span>$$$x^2$$$</span> grow.</p><img src="/predownloaded/a.png" onerror="evil()"/><img src="javascript:evil()"/><ul><li>one</li></ul></div></div>'''
+    data=parse_statement(html,'codeforces:4-A')
+    assert data['images']==[{'url':'https://codeforces.com/predownloaded/a.png','alt':''}]
+    assert '<ul>' in data['body_html'] and '$$$x^2$$$' in data['body_html']
+    assert 'onerror' not in data['body_html'] and 'javascript:' not in data['body_html']
+    assert data['diagnostics']['warnings'] and data['render_version']==2

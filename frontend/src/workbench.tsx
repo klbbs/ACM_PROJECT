@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, date } from './api'
+const StatementView = React.lazy(() =>
+  import('./statement-view').then((m) => ({ default: m.StatementView })),
+)
 import { EditorShell } from './editor-shell'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { Code2, Lightbulb, RefreshCw, Save, ExternalLink } from 'lucide-react'
@@ -181,7 +184,8 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
       draftRevision.current = state.draft.revision
       dirty.current = false
       setSaved(state.draft.revision ? '已从服务器恢复' : '尚无草稿')
-      if (!state.statement) await run('/workbench/open', { problem: state.id })
+      if (!state.statement || !state.statement.render_version)
+        await run('/workbench/open', { problem: state.id })
     } catch (e) {
       fail(e)
     } finally {
@@ -383,16 +387,9 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                       {statement.time_limit} · {statement.memory_limit} · 抓取于{' '}
                       {date(data?.fetched_at)}
                     </p>
-                    {statement.has_images && (
-                      <p className="wb-warning">
-                        题面包含图片，请同时查看原题。此版本以纯文本显示数学公式和题面。
-                      </p>
-                    )}
-                    {statement.sections.map((s: string, i: number) => (
-                      <p className="wb-text" key={i}>
-                        {s}
-                      </p>
-                    ))}
+                    <React.Suspense fallback={<p>正在排版题面…</p>}>
+                      <StatementView statement={statement} />
+                    </React.Suspense>
                     {statement.samples.map((s: Row, i: number) => (
                       <div key={i} className="wb-samples">
                         <div>

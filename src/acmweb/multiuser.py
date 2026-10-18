@@ -123,7 +123,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.6.1',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.6.2',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -190,7 +190,7 @@ def create_multi_app(settings, factory):
         response.headers.update({
             'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'same-origin',
             'Permissions-Policy':'camera=(), microphone=(), geolocation=()',
-            'Content-Security-Policy':"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            'Content-Security-Policy':"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         })
         if path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
@@ -200,7 +200,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.6.1','mode':'multi-user'}
+        return {'status':'ok','version':'0.6.2','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):

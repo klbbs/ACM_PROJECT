@@ -201,9 +201,16 @@ test('collapsible sidebars, platform tutorial and imported statement are usable'
   page,
 }) => {
   await open(page)
-  await expect(page.locator('.sidebar-collapsed')).toBeVisible()
-  await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
   await expect(page.locator('.sidebar-collapsed')).toHaveCount(0)
+  await page.getByRole('button', { name: '收起侧栏', exact: true }).click()
+  await expect(page.locator('.sidebar-collapsed')).toBeVisible()
+  await page.getByRole('button', { name: '训练总览', exact: true }).click()
+  await expect(page.locator('.sidebar-collapsed')).toBeVisible()
+  await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
+  await expect(page.locator('.sidebar-collapsed')).toBeVisible()
+  await page.getByRole('textbox', { name: 'Codeforces 题号或链接' }).fill('4-A')
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
   await page.getByRole('button', { name: '收起选题栏', exact: true }).click()
   await expect(page.locator('.wb-list')).toBeHidden()
   await page.getByRole('button', { name: '展开选题栏', exact: true }).click()
@@ -219,4 +226,27 @@ test('collapsible sidebars, platform tutorial and imported statement are usable'
   await page.getByRole('button', { name: '平台绑定教程', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'F12 到底复制哪一部分？' })).toBeVisible()
   await expect(page.locator('.platform-guide')).toContainText('尚未实现自动代提交')
+})
+
+test('statement renders readable math and images with usable links on failure', async ({
+  page,
+}) => {
+  await open(page)
+  await page.route('https://codeforces.com/test-diagram.png', (route) => route.abort())
+  await page.getByText('获取失败？导入浏览器题面 / 查看教程').click()
+  await page
+    .getByLabel('题面 HTML')
+    .fill(
+      '<div class="problem-statement"><div class="header"><div class="title">Rendering check</div></div><p>Let $$$x_i^2$$$ be positive.</p><ul><li>Readable list</li></ul><img src="https://codeforces.com/test-diagram.png"></div>',
+    )
+  await page.getByRole('button', { name: '导入本题文本与样例' }).click()
+  await expect(page.locator('.statement-body .katex')).toBeVisible()
+  await expect(page.locator('.statement-body li')).toHaveText('Readable list')
+  await expect(page.getByRole('link', { name: '打开图片原链接 ↗' })).toHaveAttribute(
+    'href',
+    'https://codeforces.com/test-diagram.png',
+  )
+  await page.getByRole('link', { name: '打开图片原链接 ↗' }).scrollIntoViewIfNeeded()
+  await expect(page.getByText('图片加载失败，可能被平台限制。')).toBeVisible()
+  await expect(page.locator('.statement-check summary')).toContainText('1 张图片')
 })

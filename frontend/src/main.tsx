@@ -169,9 +169,6 @@ function App() {
       setPageRaw(next)
   }
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  useEffect(() => {
-    if (page === 'workbench') setSidebarCollapsed(true)
-  }, [page])
   const [overview, setOverview] = useState<Row>(emptyOverview),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(''),
@@ -486,11 +483,11 @@ function App() {
               <Menu size={20} />
             </button>
             <button
-              className="icon-btn sidebar-toggle"
+              className="secondary sidebar-toggle"
               aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
               onClick={() => setSidebarCollapsed((v) => !v)}
             >
-              <Menu size={18} />
+              <Menu size={18} /> {sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
             </button>
             工作空间 <ChevronRight size={13} />
             <strong>{current.name}</strong>
@@ -982,7 +979,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.6.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.6.2</span>
             </span>
           </footer>
         </div>

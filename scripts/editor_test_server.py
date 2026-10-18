@@ -30,7 +30,7 @@ def main():
                            'url': f'https://codeforces.com/problemset/problem/{contest}/A'}
                 statement = {**problem, 'samples': [{'input': '1\n2', 'output': '3'}],
                              'time_limit': '1 second', 'memory_limit': '256 MB',
-                             'sections': ['此题仅用于编辑器自动化测试，不是真实题面。'], 'has_images': False}
+                             'render_version': 2, 'sections': ['此题仅用于编辑器自动化测试，不是真实题面。'], 'has_images': False}
                 db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', pid, json.dumps(problem)))
                 db.execute('INSERT INTO wb_problems VALUES(?,?,?)', (pid, json.dumps(statement), 1))
         uvicorn.run(app, host='127.0.0.1', port=18766, access_log=False)

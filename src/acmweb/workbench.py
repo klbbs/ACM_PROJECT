@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 
 from bs4 import BeautifulSoup
 from requests.utils import default_user_agent
@@ -55,6 +55,25 @@ def parse_statement(html, pid):
         raise AIError('未获取到题面，平台可能要求浏览器验证；请打开原题查看后重试')
     for node in root.select('script,style,iframe,form,button,object,svg'):
         node.decompose()
+    body = BeautifulSoup(''.join(str(c) for c in root.find_all(recursive=False) if not set(c.get('class', [])) & {'header', 'sample-tests'}), 'html.parser')
+    images = []
+    allowed = {'div','p','span','strong','b','em','i','u','ol','ul','li','table','thead','tbody','tr','td','th','img','br','sup','sub','pre','code','h1','h2','h3','h4','blockquote','hr','a'}
+    for tag in list(body.find_all(True)):
+        if tag.name not in allowed:
+            tag.unwrap()
+            continue
+        attributes = {}
+        if tag.name in {'img','a'}:
+            key = 'src' if tag.name == 'img' else 'href'
+            url = urljoin(source_url(pid), tag.get(key) or tag.get('data-src') or '')
+            parsed = urlsplit(url)
+            if (tag.get(key) or tag.get('data-src')) and parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password:
+                attributes[key] = url
+                if tag.name == 'img':
+                    attributes['alt'] = tag.get('alt', '')
+                    images.append({'url': url, 'alt': attributes['alt']})
+        tag.attrs = attributes
+    body_html = str(body)
     for br in root.select('br'):
         br.replace_with('\n')
     for line in root.select('.test-example-line'):
@@ -82,6 +101,10 @@ def parse_statement(html, pid):
     if sum(map(len, result['sections'])) > 70000 or len(json.dumps(result)) > 150000:
         raise AIError('题面过大，请使用原题页面')
     result['has_images'] = bool(root.select('img'))
+    result['body_html'] = body_html
+    result['images'] = images
+    result['render_version'] = 2
+    result['diagnostics'] = {'sections': len(result['sections']), 'samples': len(samples), 'images': len(images), 'math': bool(re.search(r'\$|\\\(|\\\[', body_html)), 'warnings': (['部分图片未提供可用 HTTPS 地址，请查看原题'] if len(images) < len(root.select('img')) else [])}
     return result
 
 
