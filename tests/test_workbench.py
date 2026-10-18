@@ -167,3 +167,33 @@ def test_editor_preferences_defaults_validation_and_persistence(workspace):
     for bad in ({**settings,'keymap':'emacs'}, {**settings,'font_size':25}, {**settings,'font_size':True}, {**settings,'line_wrapping':'false'}, {**settings,'source_code':'private'}):
         assert client.put('/api/workbench/editor-settings',json=bad).status_code == 422
     assert client.get('/api/workbench/editor-settings').json() == settings
+
+
+def test_statement_fallback_agent_and_failure_state(workspace, monkeypatch):
+    _, service, _ = workspace
+    calls=[]
+    def fetch(self,url,**kwargs):
+        calls.append((url,kwargs))
+        assert 'OJAccountCrawler' not in kwargs['headers']['User-Agent']
+        if '/problemset/' in url: raise AIError('verification')
+        return HTML
+    monkeypatch.setattr('acmweb.workbench.Client.get',fetch)
+    service.statement('4-A')
+    assert len(calls)==2 and '/contest/4/problem/A' in calls[1][0]
+    assert service.state('4-A')['fetch_status']['status']=='completed'
+    monkeypatch.setattr('acmweb.workbench.Client.get',lambda *a,**k: '<html>verification</html>')
+    with pytest.raises(AIError): service.statement('4-A')
+    state=service.state('4-A')
+    assert state['fetch_status']['status']=='failed' and state['statement']['title']=='A. Test'
+    assert 'TOP-SECRET' not in json.dumps(state['fetch_status'])
+
+
+def test_statement_import_is_plaintext_and_labeled(workspace):
+    client,service,_=workspace
+    response=client.post('/api/workbench/problem/4-A/import',json={'html':HTML})
+    assert response.status_code==200
+    statement=service.state('4-A')['statement']
+    assert statement['source']=='user_import' and statement['samples'][0]['input']=='2\n3'
+    assert 'evil()' not in json.dumps(statement)
+    assert client.post('/api/workbench/problem/4-A/import',json={'html':'<script>evil()</script>'}).status_code==400
+    assert service.state('4-A')['statement']==statement

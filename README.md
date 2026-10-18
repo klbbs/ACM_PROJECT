@@ -119,7 +119,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.6.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.6.1.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
@@ -154,6 +154,6 @@ cd frontend && npm run build
 当前使用官方页面手动提交后关联提交号，自动代提交将在后续接入；服务器不会执行用户代码。
 完整流程、隐私边界和后续计划见 [工作台说明](docs/WORKBENCH.md)。
 
-### 增强代码编辑器（0.6.0）
+### 增强代码编辑器（0.6.1）
 
 CodeMirror 6 提供四种语言标签的高亮与本地补全、普通/Vim 切换、字号与换行偏好、全屏、搜索替换及安全降级。补全不调用 AI，不发送源码；Vim `:w` 沿用现有草稿保存流程。见 [编辑器说明](docs/EDITOR.md)。

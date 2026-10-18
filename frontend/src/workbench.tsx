@@ -24,6 +24,8 @@ function download(code: string, name: string) {
 }
 
 export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, onError }: Props) {
+  const [listCollapsed, setListCollapsed] = useState(false),
+    [importHtml, setImportHtml] = useState('')
   const [choices, setChoices] = useState<Row>({ items: [], recent: [], handles: [], profile: {} })
   const [pid, setPid] = useState(''),
     [manual, setManual] = useState('')
@@ -241,7 +243,10 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
           </span>
         </div>
       </section>
-      <div className="wb-layout">
+      <div className={`wb-layout ${listCollapsed ? 'wb-list-collapsed' : ''}`}>
+        <button className="secondary wb-list-toggle" onClick={() => setListCollapsed((v) => !v)}>
+          {listCollapsed ? '展开选题栏' : '收起选题栏'}
+        </button>
         <aside className="card wb-list">
           <h3>为你挑选</h3>
           <p className="muted">{choices.score_note}</p>
@@ -309,6 +314,52 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
           ) : (
             <>
               <section className="card wb-statement">
+                {data?.fetch_status?.status === 'failed' && (
+                  <div className="wb-warning" role="alert">
+                    {data.fetch_status.error}
+                  </div>
+                )}
+                <details className="wb-import">
+                  <summary>获取失败？导入浏览器题面 / 查看教程</summary>
+                  <p>
+                    打开原题，在 F12 元素面板复制 .problem-statement 节点的 Outer
+                    HTML，粘贴下方。只提取文本和样例；手动导入无法核验题号。
+                  </p>
+                  <button
+                    className="text-button"
+                    onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
+                  >
+                    查看详细教程
+                  </button>
+                  <textarea
+                    aria-label="题面 HTML"
+                    value={importHtml}
+                    maxLength={200000}
+                    onChange={(e) => setImportHtml(e.target.value)}
+                  />
+                  <button
+                    disabled={!importHtml || busy}
+                    onClick={async () => {
+                      setBusy(true)
+                      try {
+                        await api(`/workbench/problem/${encodeURIComponent(pid)}/import`, 'POST', {
+                          html: importHtml,
+                        })
+                        setImportHtml('')
+                        await refresh()
+                      } catch (e) {
+                        fail(e)
+                      } finally {
+                        setBusy(false)
+                      }
+                    }}
+                  >
+                    导入本题文本与样例
+                  </button>
+                </details>
+                {statement?.source === 'user_import' && (
+                  <p className="wb-warning">手动导入题面：请自行确认与当前题号一致。</p>
+                )}
                 <div className="wb-heading">
                   <h2>{statement?.title || pid}</h2>
                   <a href={data?.url} target="_blank" rel="noreferrer">
@@ -584,6 +635,24 @@ function Attempt({
   const [contest, index] = a.problem_id.split(':')[1].split('-')
   return (
     <article className="wb-attempt">
+      <div className="wb-warning">
+        <strong>当前为官方页面手动提交</strong>
+        <p>
+          请先登录 Codeforces，确认账号与下方 handle
+          一致，再提交本次快照。保存快照不会远程提交代码。
+        </p>
+        <a href="https://codeforces.com/enter" target="_blank" rel="noreferrer">
+          先登录 Codeforces ↗
+        </a>{' '}
+        ·{' '}
+        <button
+          className="text-button"
+          onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
+        >
+          绑定与提交教程
+        </button>
+        {!handles.length && <p>尚未配置 CF 账号，请在「连接与设置」添加 handle 后再关联判题。</p>}
+      </div>
       <div className="wb-heading">
         <strong>{a.verdict}</strong>
         <span>

@@ -196,3 +196,27 @@ test('conflicting autosave keeps local edits until explicit backup and server re
   await expect(editor).toHaveText('other tab draft')
   await expect(page.getByRole('status').filter({ hasText: '已从服务器恢复' })).toBeVisible()
 })
+
+test('collapsible sidebars, platform tutorial and imported statement are usable', async ({
+  page,
+}) => {
+  await open(page)
+  await expect(page.locator('.sidebar-collapsed')).toBeVisible()
+  await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
+  await expect(page.locator('.sidebar-collapsed')).toHaveCount(0)
+  await page.getByRole('button', { name: '收起选题栏', exact: true }).click()
+  await expect(page.locator('.wb-list')).toBeHidden()
+  await page.getByRole('button', { name: '展开选题栏', exact: true }).click()
+  await expect(page.locator('.wb-list')).toBeVisible()
+  await page.getByText('获取失败？导入浏览器题面 / 查看教程').click()
+  await page
+    .getByLabel('题面 HTML')
+    .fill(
+      '<div class="problem-statement"><div class="header"><div class="title">Imported demo</div></div><p>Manual statement.</p></div>',
+    )
+  await page.getByRole('button', { name: '导入本题文本与样例' }).click()
+  await expect(page.locator('.wb-statement')).toContainText('手动导入题面')
+  await page.getByRole('button', { name: '平台绑定教程', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'F12 到底复制哪一部分？' })).toBeVisible()
+  await expect(page.locator('.platform-guide')).toContainText('尚未实现自动代提交')
+})

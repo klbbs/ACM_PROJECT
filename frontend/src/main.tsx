@@ -40,18 +40,27 @@ import {
 } from 'lucide-react'
 import { api, date, fmt, names, shortDate } from './api'
 import './style.css'
+import { PlatformGuide } from './platform-guide'
 import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
 
 type Row = Record<string, any>
 type Page =
-  'workbench' | 'overview' | 'submissions' | 'analysis' | 'practice' | 'settings' | 'community'
+  | 'guide'
+  | 'workbench'
+  | 'overview'
+  | 'submissions'
+  | 'analysis'
+  | 'practice'
+  | 'settings'
+  | 'community'
 const nav = [
   { id: 'overview', name: '训练总览', icon: BarChart3 },
   { id: 'submissions', name: '提交记录', icon: Layers3 },
   { id: 'analysis', name: 'AI 能力分析', icon: Sparkles },
   { id: 'workbench', name: '刷题工作台', icon: Code2 },
   { id: 'practice', name: '今日练习', icon: Target },
+  { id: 'guide', name: '平台绑定教程', icon: BookOpen },
   { id: 'settings', name: '连接与设置', icon: Settings2 },
   { id: 'community', name: '共享资料与成员', icon: BookOpen },
 ] as const
@@ -159,6 +168,10 @@ function App() {
     if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true })))
       setPageRaw(next)
   }
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  useEffect(() => {
+    if (page === 'workbench') setSidebarCollapsed(true)
+  }, [page])
   const [overview, setOverview] = useState<Row>(emptyOverview),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(''),
@@ -186,9 +199,13 @@ function App() {
     return () => window.removeEventListener('acm:session-expired', expired)
   }, [])
   useEffect(() => {
+    if (window.location.hash === '#platform-guide') setPageRaw('guide')
+    const guide = () => setPage('guide')
+    window.addEventListener('acm:open-guide', guide)
     api('/auth/status')
       .then(setAuth)
       .catch((e) => setError(e.message))
+    return () => window.removeEventListener('acm:open-guide', guide)
   }, [])
   useEffect(() => {
     if (auth?.authenticated)
@@ -385,7 +402,7 @@ function App() {
       ?.account ||
     '算法练习者'
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
         <a
           className="brand"
@@ -412,6 +429,8 @@ function App() {
             .map((n) => (
               <button
                 key={n.id}
+                title={n.name}
+                aria-label={n.name}
                 className={page === n.id ? 'active' : ''}
                 onClick={() => {
                   setPage(n.id)
@@ -419,7 +438,7 @@ function App() {
                 }}
               >
                 <n.icon size={19} />
-                {n.name}
+                <span className="nav-label">{n.name}</span>
                 {n.id === 'analysis' && <span className="nav-ai">AI</span>}
               </button>
             ))}
@@ -465,6 +484,13 @@ function App() {
               aria-label="打开菜单"
             >
               <Menu size={20} />
+            </button>
+            <button
+              className="icon-btn sidebar-toggle"
+              aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+              onClick={() => setSidebarCollapsed((v) => !v)}
+            >
+              <Menu size={18} />
             </button>
             工作空间 <ChevronRight size={13} />
             <strong>{current.name}</strong>
@@ -590,7 +616,7 @@ function App() {
               )}
             </div>
           </div>
-          {!['settings', 'community', 'workbench'].includes(page) && (
+          {!['settings', 'community', 'workbench', 'guide'].includes(page) && (
             <div className="filter-row">
               <div className="tabs">
                 {[7, 30, 90, 0].map((d) => (
@@ -901,6 +927,7 @@ function App() {
               onNotice={setNotice}
             />
           )}
+          {page === 'guide' && <PlatformGuide />}
           {page === 'workbench' && (
             <WorkbenchPage
               revision={revision}
@@ -955,7 +982,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.6.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.6.1</span>
             </span>
           </footer>
         </div>
@@ -1954,6 +1981,12 @@ function SettingsPage({
             </div>
           ))}
         </div>
+        <button
+          className="text-button"
+          onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
+        >
+          查看平台绑定与 Cookie 获取教程
+        </button>
         {!accounts.length && (
           <p className="help">尚未配置账号，请在下方添加。移除配置不会删除已采集的提交历史。</p>
         )}

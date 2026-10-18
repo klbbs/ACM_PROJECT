@@ -2894,3 +2894,107 @@ td small {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Spacious practice workspace with independently collapsible navigation. */
+@media (min-width: 761px) {
+  .sidebar-collapsed .sidebar {
+    width: 70px;
+    padding: 25px 10px;
+  }
+  .sidebar-collapsed > main {
+    margin-left: 70px;
+    width: calc(100% - 70px);
+  }
+  .sidebar-collapsed .brand > span:last-child,
+  .sidebar-collapsed .workspace-label,
+  .sidebar-collapsed .nav-label,
+  .sidebar-collapsed .nav-ai,
+  .sidebar-collapsed .sidebar-bottom {
+    display: none;
+  }
+  .sidebar-collapsed .brand {
+    padding: 0;
+    justify-content: center;
+    margin-bottom: 30px;
+  }
+  .sidebar-collapsed .sidebar nav button {
+    justify-content: center;
+    padding: 14px;
+  }
+}
+.wb-list-toggle {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.wb-layout {
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 16px;
+}
+.wb-list-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+.wb-list-collapsed .wb-list {
+  display: none;
+}
+.wb-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.wb-choice strong {
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+.wb-choice small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.wb-import {
+  margin: 12px 0;
+  line-height: 1.8;
+}
+.wb-import textarea {
+  width: 100%;
+  min-height: 100px;
+  display: block;
+  margin: 12px 0;
+}
+.platform-guide {
+  display: grid;
+  gap: 20px;
+  line-height: 1.9;
+}
+.platform-guide p {
+  margin: 12px 0;
+}
+.platform-guide code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.guide-platforms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 16px;
+}
+.guide-example {
+  white-space: pre-wrap;
+  padding: 16px;
+  background: #f4f6fa;
+}
+@media (min-width: 1200px) {
+  .wb-content {
+    grid-template-columns: minmax(300px, 0.9fr) minmax(380px, 1.1fr);
+  }
+}
+@media (max-width: 1199px) {
+  .wb-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wb-list {
+    position: static;
+    max-height: 300px;
+  }
+}
+@media (max-width: 760px) {
+  .sidebar-toggle {
+    display: none;
+  }
+}

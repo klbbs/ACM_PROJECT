@@ -32,3 +32,9 @@
 部署方式沿用 [DEPLOYMENT.md](DEPLOYMENT.md) 和 [MULTIUSER.md](MULTIUSER.md)。首次启动自动创建 `wb_*` 表，不重写历史提交或采集检查点。官方结果接口说明：[Codeforces API methods](https://codeforces.com/apiHelp/methods)。
 
 0.6.0 起编辑器升级为 CodeMirror 6，支持本地补全与可选 Vim，详情见 [编辑器说明](EDITOR.md)。
+
+## 0.6.1 题面与登录更新
+
+题面使用 requests 默认 User-Agent，以修复本地复现的旧标识 HTTP 500；题库地址失败后尝试同站 contest 地址，可使用当前用户保存的 CF Cookie。失败状态就地显示且保留旧缓存。无可用服务器链路时可导入浏览器复制的 `.problem-statement` Outer HTML，标注为用户导入，不能核验题号对应关系，不执行脚本。站点侧栏与题目列表可分别收起。
+
+侧栏新增「平台绑定教程」，包括四平台标识、F12 请求 Cookie 复制范围、隐私说明、失效与反爬处理。当前仍为官方页面手动提交，未实现自动代提交；提交快照旁有登录链接与流程提示，不声称已验证平台登录。
