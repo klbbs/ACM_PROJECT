@@ -23,4 +23,19 @@ Key 仅以 `X-Auth-Token` 发给固定服务，不返回浏览器。服务须由
 
 网站不持久化自测结果；Judge0 自身可能保存代码、输入和运行结果，运维需设置访问权限及保留策略。更改代码、语言或输入后，页面清除旧结果以防误读。自测只检查给定输入，不能证明平台 AC，不会生成提交记录或签到。
 
-协议参考：[Judge0 CE 官方 API 文档](https://ce.judge0.com/)。本版本后端使用模拟 HTTP 验证协议/资源限制，浏览器使用合成运行结果检查交互；实际执行需在配置好的 Judge0 服务单独验收。
+协议参考：[Judge0 CE 官方 API 文档](https://ce.judge0.com/)。后端测试使用模拟 HTTP 验证协议/资源限制；专用服务器的真实隔离执行验收另有记录。
+
+### 编译报错 `File size limit exceeded` 与 C++20
+
+Judge0 CE 编译阶段使用全局 `MAX_MAX_FILE_SIZE`（KiB），运行阶段才使用请求的 `max_file_size`。不要把两个全局限额都设为 64：C++ 头文件预编译、中间汇编和可执行文件会超过 64 KiB，导致 cc1plus 被系统终止。专用 Judge0 服务配置应为：
+
+```dotenv
+MAX_FILE_SIZE=64
+MAX_MAX_FILE_SIZE=20480
+```
+
+网站仍请求 64 KiB 运行文件限额，并另外限制 HTTP 响应大小和每项输出显示到 64 KiB；20 MiB 仅为编译阶段文件上限。更改配置后需重建 Judge0 server 和 workers，不能只重启网站。
+
+C++20 需要真实现代工具链（本项目验收 GCC 12.2），不能把 GCC 9 的显示名称改成 C++20。为 Judge0 新增独立语言记录：`name=C++20 (GCC 12.2.0)`、`source_file=main.cpp`、`compile_cmd=/usr/bin/g++-12 -std=c++20 -O2 %s main.cpp`、`run_cmd=./a.out`。`/languages` 会返回该记录，网站自动提供对应版本。保留原语言和原镜像供回滚；禁止清空语言表重新 seed，否则会破坏已有提交关联。Judge0 原启动脚本会每次执行 seed；自定义镜像必须同时将种子脚本改为按 ID 更新/插入并保留既有行，且把新增语言定义保存在镜像中，否则重启会丢失语言。
+
+升级 runner 镜像后须在真正沙箱内运行包含 `<concepts>`、`<ranges>`、`std::views::filter` 和 `std::ranges::sort` 的程序，并检查无限循环、输出超限和禁网；只在宿主执行 `g++ --version` 不能证明隔离执行可用。升级 OS/编译器时应保留 Judge0 原有运行时依赖，并检查 server/workers 均正常。

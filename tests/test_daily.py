@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from acmweb.daily import Complete, Daily, Roll, Settings, TZ
+from acmweb.daily import Complete, Daily, Roll, Settings, TaskTime, TZ
 from acmweb.ai import AIResult
 from acmweb.database import Database
 from acmweb.codex_bridge import AIError
@@ -173,7 +173,7 @@ def test_cycle_duration_locked_and_validation_strict(daily):
     before = daily.state()
     after = daily.configure(Settings(daily_goal=3, duration_days=365, minutes_per_day=90))
     assert before['ends_at'] == after['ends_at']
-    for bad in ({'daily_goal': 0}, {'daily_goal': True}, {'minutes_per_day': 0}, {'duration_days': 366}):
+    for bad in ({'daily_goal': 0}, {'daily_goal': True}, {'duration_days': 366}):
         with pytest.raises(Exception):
             Settings(**bad)
 
@@ -210,3 +210,78 @@ def test_workbench_official_judge_ac_excluded_from_candidates(daily):
             (now, json.dumps({'verdict': 'OK', 'creationTimeSeconds': now}), now))
     assert 'codeforces:4-A' not in {row['id'] for row in daily._candidate_pool(2, [])}
     assert daily.complete(Complete(problem_id='codeforces:4-A'))['checkin']['kind'] == 'normal'
+
+
+def test_actual_time_requires_verified_task_and_is_correctable(daily):
+    task = generate(daily)['plan']['tasks'][0]
+    payload = TaskTime(task_id=task['task_id'], duration_minutes=45)
+    with pytest.raises(HTTPException, match='官方 AC'):
+        daily.save_time(payload)
+    assert daily.evidence() == []
+    assert daily.state()['checkin']['kind'] is None
+    ac(daily, task['problem_id'])
+    daily.save_time(payload)
+    row = daily.evidence()[0]
+    assert row['duration_minutes'] == 45 and row['source'] == 'self_reported' and row['verified_ac']
+    result = daily.save_time(TaskTime(task_id=task['task_id'], duration_minutes=30))
+    assert result['plan']['tasks'][0]['duration_minutes'] == 30
+    assert result['checkin']['kind'] == 'normal'
+    with daily.db.connect() as conn:
+        conn.execute("UPDATE submissions SET verdict='WA'")
+    assert daily.evidence() == []
+    with pytest.raises(HTTPException):
+        daily.save_time(payload)
+
+
+def test_time_validation_isolated_and_legacy_budget_ignored(daily, tmp_path):
+    task = generate(daily)['plan']['tasks'][0]
+    ac(daily, task['problem_id'])
+    other = Daily(Database(tmp_path / 'other.sqlite3'), daily.ai)
+    with pytest.raises(HTTPException, match='找不到'):
+        other.save_time(TaskTime(task_id=task['task_id'], duration_minutes=20))
+    for bad in (0, 1441, -1, True, '30', 2.5):
+        with pytest.raises(Exception):
+            TaskTime(task_id=task['task_id'], duration_minutes=bad)
+    daily.db.set('daily_settings', {'daily_goal': 3, 'duration_days': 9, 'minutes_per_day': 60})
+    assert daily.settings() == {'daily_goal': 3, 'duration_days': 9}
+    assert Settings(minutes_per_day=0).model_dump() == {'daily_goal': 1, 'duration_days': 30}
+
+
+def test_prior_or_future_ac_cannot_support_task_time(daily):
+    task = generate(daily)['plan']['tasks'][0]
+    ac(daily, task['problem_id'], ts=int(time.time())-86400)
+    ac(daily, task['problem_id'], ts=int(time.time())+86400, sid='future')
+    with pytest.raises(HTTPException, match='官方 AC'):
+        daily.save_time(TaskTime(task_id=task['task_id'], duration_minutes=20))
+
+
+def test_other_platform_task_completion_and_duration(daily):
+    generate(daily)
+    day = daily.today().isoformat()
+    with daily.db.connect() as conn:
+        tasks = conn.execute('SELECT id FROM daily_plan_tasks WHERE day=? ORDER BY ordinal', (day,)).fetchall()
+        for row, platform, pid in zip(tasks, ('atcoder', 'luogu'), ('abc300_a', 'P1000')):
+            data = {'id': f'{platform}:{pid}', 'problem_id': pid, 'platform': platform, 'title': pid}
+            conn.execute('UPDATE daily_plan_tasks SET problem_id=?,data=? WHERE id=?',
+                         (data['id'], json.dumps(data), row['id']))
+    ac(daily, 'abc300_a', platform='atcoder')
+    ac(daily, 'P1000', platform='luogu')
+    state = daily.state()
+    assert state['checkin']['kind'] == 'k'
+    assert all(row['completed'] for row in state['plan']['tasks'])
+    with pytest.raises(HTTPException, match='已完成'):
+        daily.request_roll(tasks[0]['id'], 'api', 'mock')
+    state = daily.save_time(TaskTime(task_id=tasks[0]['id'], duration_minutes=15))
+    assert state['time_evidence'][0]['problem_id'] == 'atcoder:abc300_a'
+
+
+def test_daily_ai_receives_actual_time_not_retired_budget(daily):
+    state = generate(daily)
+    task = state['plan']['tasks'][0]
+    ac(daily, task['problem_id'])
+    daily.save_time(TaskTime(task_id=task['task_id'], duration_minutes=35))
+    asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=state['plan']['tasks'][1]['task_id'])))
+    payload = daily.ai.complete.call_args.args[3]
+    assert 'minutes_per_day' not in payload['daily_budget']
+    assert payload['actual_time_evidence'][0]['duration_minutes'] == 35
+    assert payload['actual_time_evidence'][0]['source'] == 'self_reported'

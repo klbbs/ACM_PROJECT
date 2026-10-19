@@ -19,8 +19,8 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
   const mutationVersion = useRef(0)
   const writing = useRef(false)
   const [goal, setGoal] = useState(1),
-    [days, setDays] = useState(30),
-    [minutes, setMinutes] = useState(60)
+    [days, setDays] = useState(30)
+  const [durations, setDurations] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState(false),
     [consent, setConsent] = useState(false)
   const fail = (error: unknown) =>
@@ -32,7 +32,6 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
     if (!dirty.current) {
       setGoal(value.settings.daily_goal)
       setDays(value.settings.duration_days)
-      setMinutes(value.settings.minutes_per_day)
     }
   }
   const load = async () => {
@@ -65,7 +64,6 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
       const value = await api('/daily/settings', 'PUT', {
         daily_goal: goal,
         duration_days: days,
-        minutes_per_day: minutes,
       })
       dirty.current = false
       applyRead(value)
@@ -95,6 +93,23 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
       writing.current = false
       setBusy(false)
       await load().catch(() => {})
+    }
+  }
+  const saveTime = async (task: Row) => {
+    if (writing.current) return
+    writing.current = true
+    mutationVersion.current += 1
+    setBusy(true)
+    try {
+      const value = Number(durations[task.task_id] ?? task.duration_minutes ?? '')
+      setData(await api('/daily/time', 'POST', { task_id: task.task_id, duration_minutes: value }))
+      onNotice('实际用时已保存，可修改；自行填写的用时不会改变签到状态。')
+    } catch (error) {
+      fail(error)
+    } finally {
+      mutationVersion.current += 1
+      writing.current = false
+      setBusy(false)
     }
   }
   const ready = data?.plan?.status === 'ready'
@@ -134,20 +149,6 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
           </select>
         </label>
         <label>
-          每天训练时间（分钟）
-          <input
-            type="number"
-            min={5}
-            max={600}
-            value={minutes}
-            disabled={busy || !formReady}
-            onChange={(e) => {
-              dirty.current = true
-              setMinutes(Number(e.target.value))
-            }}
-          />
-        </label>
-        <label>
           持续天数
           <input
             type="number"
@@ -163,16 +164,7 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
         </label>
         <button
           className="button secondary"
-          disabled={
-            busy ||
-            !formReady ||
-            !Number.isInteger(days) ||
-            days < 1 ||
-            days > 365 ||
-            !Number.isInteger(minutes) ||
-            minutes < 5 ||
-            minutes > 600
-          }
+          disabled={busy || !formReady || !Number.isInteger(days) || days < 1 || days > 365}
           onClick={save}
         >
           保存每日任务
@@ -183,8 +175,7 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
           ? `当前周期 ${data.started_at} 至 ${data.ends_at}（北京时间）。`
           : '保存设置开始新的训练周期。'}{' '}
         今日目标 {data?.locked_goal || goal}{' '}
-        题；当日题单生成后，修改偏好从下次生成起生效。训练分钟数用于 AI
-        选题安排，不是运行倒计时；修改持续天数会在下个训练周期生效。
+        题；当日题单生成后，修改偏好从下次生成起生效。完成后可记录实际用时；修改持续天数会在下个训练周期生效。
       </p>
       <div className="checkin-month">
         <span>
@@ -260,6 +251,39 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
                   {task.difficulty} 分 · {task.completed ? '平台已通过' : '待完成'}
                 </small>
               </div>
+              {task.completed && (
+                <div>
+                  <label>
+                    实际用时（分钟）
+                    <input
+                      type="number"
+                      min={1}
+                      max={1440}
+                      step={1}
+                      value={durations[task.task_id] ?? task.duration_minutes ?? ''}
+                      disabled={busy}
+                      onChange={(e) =>
+                        setDurations((old) => ({ ...old, [task.task_id]: e.target.value }))
+                      }
+                    />
+                  </label>
+                  <button
+                    className="button secondary"
+                    disabled={
+                      busy ||
+                      !Number.isInteger(Number(durations[task.task_id] ?? task.duration_minutes)) ||
+                      Number(durations[task.task_id] ?? task.duration_minutes) < 1 ||
+                      Number(durations[task.task_id] ?? task.duration_minutes) > 1440
+                    }
+                    onClick={() => saveTime(task)}
+                  >
+                    {task.duration_minutes ? '修改实际用时' : '保存实际用时'}
+                  </button>
+                  <p className="help">
+                    填写做题实际花费的分钟数，可修改；仅用于训练分析，不作为通过证明。
+                  </p>
+                </div>
+              )}
               <div className="daily-task-actions">
                 <a className="button secondary" href={task.url} target="_blank" rel="noreferrer">
                   打开原题

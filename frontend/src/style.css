@@ -3391,3 +3391,7 @@ td small {
 .daily-mission .consent { display: flex; gap: 9px; align-items: flex-start; margin: 15px 0; }
 .daily-mission .consent input { width: auto; flex-shrink: 0; margin-top: 4px; }
 @media (max-width: 700px) { .daily-problem { flex-wrap: wrap; } .daily-task-actions { width: 100%; } }
+
+.online-users{position:relative}.online-users summary{display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px;border:1px solid #e4e6ee;border-radius:10px}.online-users-menu{position:absolute;right:0;top:100%;z-index:30;min-width:240px;max-width:90vw;padding:16px;background:white;border:1px solid #e4e6ee;border-radius:12px;box-shadow:0 12px 30px #19234422}.online-users-menu p{display:flex;align-items:center;gap:8px}.online-users-menu small{color:#69758a}.online-dot{width:8px;height:8px;border-radius:50%;background:#139a72}
+
+.platform-action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px}.platform-action-grid article{border:1px solid #e4e6ee;padding:16px;border-radius:12px}

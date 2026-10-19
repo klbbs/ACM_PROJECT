@@ -143,7 +143,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.10.1',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.11.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -200,7 +200,7 @@ def create_multi_app(settings, factory):
                     if path in {'/api/auth/setup','/api/auth/login','/api/auth/register'}:
                         identities.limit('auth-ip:'+digest(peer),30,900)
                         identities.limit('auth-global',60,60)
-                    elif user and (path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings')) or path in {'/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
+                    elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings')) or path in {'/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
             else:
@@ -220,7 +220,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.10.1','mode':'multi-user'}
+        return {'status':'ok','version':'0.11.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -299,6 +299,25 @@ def create_multi_app(settings, factory):
         with identities.connect() as db:
             rows = db.execute('SELECT id,username,role,active,created_at FROM users ORDER BY created_at,id').fetchall()
         return {'items':[dict(r) for r in rows]}
+
+    @app.post('/api/presence')
+    def heartbeat(request:Request):
+        user = require(request)
+        now = int(time.time())
+        with identities.connect() as db:
+            db.execute('DELETE FROM online_presence WHERE seen_at<?', (now-90,))
+            db.execute('INSERT INTO online_presence VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET seen_at=excluded.seen_at', (user['id'], now))
+        return {'ok': True}
+
+    @app.get('/api/presence')
+    def online_users(request:Request):
+        user = require(request)
+        now = int(time.time())
+        with identities.connect() as db:
+            rows = db.execute('''SELECT u.id,u.username FROM online_presence p JOIN users u ON u.id=p.user_id
+                WHERE u.active=1 AND p.seen_at>=? AND EXISTS (SELECT 1 FROM sessions s WHERE s.user_id=u.id
+                AND s.expires_at>? AND s.seen_at>?) ORDER BY u.username''', (now-90,now,now-7200)).fetchall()
+        return {'items': [{'id': r['id'], 'username': r['username'], 'self': r['id']==user['id']} for r in rows], 'expires_after': 90}
 
     @app.put('/api/admin/users/{uid}')
     async def update_user(uid:str,payload:UserUpdate,request:Request):

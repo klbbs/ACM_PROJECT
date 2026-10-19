@@ -175,3 +175,12 @@ it('preserves an accessible fallback when the enhanced editor fails to render', 
   expect(host.querySelector('textarea')?.value).toBe('preserved')
   silent.mockRestore()
 })
+
+it('C++20 completion includes signatures, headers and constrained function snippets', async () => {
+  const { languageCompletions } = await import('./editor-completions')
+  const options = languageCompletions('cpp20')
+  expect(options.find(c => c.label === 'std::ranges::sort')?.detail).toContain('C++20')
+  expect(options.some(c => c.label === 'include-concepts')).toBe(true)
+  expect(options.some(c => c.label === 'concept-function')).toBe(true)
+  expect(options.find(c => c.label === 'contains')?.detail).toContain('非类型推断')
+})

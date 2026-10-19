@@ -51,7 +51,7 @@ class Jobs:
         self.update(job_id,"running")
         try:
             if kind=="crawl":
-                result=await asyncio.to_thread(self.crawl)
+                result=await asyncio.to_thread(self.crawl, payload['platform']) if payload.get('platform') else await asyncio.to_thread(self.crawl)
                 self.update(job_id,"completed" if result["complete"] else "partial",result)
             elif kind=="catalog":
                 result=await asyncio.to_thread(refresh_catalog,self.db)
@@ -75,13 +75,15 @@ class Jobs:
                 self.update(job_id,"completed",result)
             elif kind in {"analysis","recommend"}:
                 context=await asyncio.to_thread(analytics.overview,self.db,payload.get("days",30),payload.get("platform",""))
-                if not context["stats"]["submissions"]:
+                if kind=="analysis" and not context["stats"]["submissions"]:
                     raise AIError("所选时间窗口没有提交数据，请先采集或扩大时间范围")
                 from .workbench import training_evidence
                 context["workbench_evidence"]=training_evidence(self.db)
+                evidence = getattr(self, 'daily_evidence', None)
+                context['actual_time_evidence'] = evidence() if evidence else []
                 selected=[]
                 if kind=="recommend":
-                    selected=candidates(self.db,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,payload.get("min_contest",0))
+                    selected=candidates(self.db,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,payload.get("min_contest",0),platform=payload.get("platform") or "codeforces")
                     if not selected:
                         raise AIError("没有满足条件的未做题，请先同步题库或调整筛选条件")
                 report=await self.ai.generate(payload["provider"],payload["model"],context,selected,payload.get("goal",""),task=kind)
@@ -100,11 +102,11 @@ class Jobs:
             message=str(exc) if isinstance(exc,AIError) else f"任务失败 ({type(exc).__name__})，请检查服务端环境与网络"
             self.update(job_id,"failed",error=message)
 
-    def crawl(self):
+    def crawl(self, platform=None):
         config=load(self.accounts.effective_path if self.accounts else self.settings.config_path)
         config.database=self.settings.database
         config.output_dir=self.settings.data_dir/"runs"
-        code=crawl(config,Namespace(platform=None,since=None,full=False,max_pages=None))
+        code=crawl(config,Namespace(platform=[platform] if platform else None,since=None,full=False,max_pages=None))
         with self.db.connect() as db:
             row=db.execute("SELECT data FROM runs ORDER BY collected_at DESC,id DESC LIMIT 1").fetchone()
         if not row:

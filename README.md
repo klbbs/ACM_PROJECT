@@ -120,7 +120,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.10.1.zip
+python3 scripts/verify_release.py releases/acm-lab-0.11.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

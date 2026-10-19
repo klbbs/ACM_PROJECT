@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .catalog import candidates
 from .codex_bridge import AIError
@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS daily_roll_reservations (
   status TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS daily_roll_day ON daily_roll_reservations(day,status);
+CREATE TABLE IF NOT EXISTS daily_task_times (
+  task_id INTEGER PRIMARY KEY REFERENCES daily_plan_tasks(id),
+  duration_minutes INTEGER NOT NULL CHECK(duration_minutes BETWEEN 1 AND 1440),
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS daily_roll_history (
   day TEXT NOT NULL, problem_id TEXT NOT NULL, PRIMARY KEY(day,problem_id)
 );
@@ -41,8 +46,20 @@ class Strict(BaseModel):
 
 class Settings(Strict):
     daily_goal: int = Field(default=1, ge=1, le=10, strict=True)
-    minutes_per_day: int = Field(default=60, ge=5, le=600, strict=True)
     duration_days: int = Field(default=30, ge=1, le=365, strict=True)
+
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_minutes(cls, value):
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if k != "minutes_per_day"}
+        return value
+
+
+class TaskTime(Strict):
+    task_id: int = Field(gt=0, strict=True)
+    duration_minutes: int = Field(ge=1, le=1440, strict=True)
 
 
 class SelectedProblem(Strict):
@@ -155,8 +172,7 @@ class Daily:
                 raise HTTPException(409, "今天没有可换的每日题目")
             if db.execute("SELECT 1 FROM daily_roll_reservations WHERE day=? AND status='reserved'", (day,)).fetchone():
                 raise HTTPException(409, "换题正在进行，请等待结果后再换题")
-            raw_pid = task[0].removeprefix("codeforces:")
-            if any(platform == 'codeforces' and pid == raw_pid and datetime.fromtimestamp(ts, TZ).date().isoformat() == day
+            if any(self._canonical(platform, pid) == task[0] and datetime.fromtimestamp(ts, TZ).date().isoformat() == day
                    for platform, pid, ts in self._trusted_ac(db, time.time())):
                 raise HTTPException(409, "已完成的每日题目不能换题")
             if used >= 2:
@@ -174,7 +190,7 @@ class Daily:
                           limit=1000000, min_contest=prefs.get("min_contest", 0))
         excluded = set(excluded)
         with self.db.connect() as db:
-            excluded.update(f"{platform}:{pid}" for platform, pid, ts in self._trusted_ac(db, time.time()))
+            excluded.update(self._canonical(platform, pid) for platform, pid, ts in self._trusted_ac(db, time.time()))
         return [row for row in pool if row["id"] not in excluded][:60]
 
     async def generate(self, payload):
@@ -222,7 +238,7 @@ class Daily:
                 if not reservation or reservation[0] != "reserved" or not active:
                     raise AIError("换题请求已失效，请刷新每日任务")
                 prior = db.execute("SELECT problem_id FROM daily_plan_tasks WHERE id=?", (task_id,)).fetchone()[0]
-                if any(platform == 'codeforces' and pid == prior.removeprefix('codeforces:')
+                if any(self._canonical(platform, pid) == prior
                        and datetime.fromtimestamp(ts, TZ).date().isoformat() == day
                        for platform, pid, ts in self._trusted_ac(db, time.time())):
                     raise AIError("原题已在换题期间通过，本次换题取消并退还机会")
@@ -248,6 +264,7 @@ class Daily:
             {"requested_count": count, "excluded_ids": excluded, "target_id": target_id,
              "difficulty_range": [prefs.get("minimum", 1000), prefs.get("maximum", 1600)],
              "training_preferences": prefs, "daily_budget": self.settings(),
+             "actual_time_evidence": self.evidence(),
              "candidates": [{k: p.get(k) for k in ("id", "title", "difficulty", "tags", "url")} for p in pool]}, DailySelection)
         finally:
             self.active_ai = False
@@ -299,11 +316,42 @@ class Daily:
         pid = payload.problem_id
         canonical = pid if ':' in pid else 'codeforces:' + pid
         with self.db.connect() as db:
-            verified = {f"{platform}:{problem}" for platform, problem, ts in self._trusted_ac(db, time.time())
+            verified = {self._canonical(platform, problem) for platform, problem, ts in self._trusted_ac(db, time.time())
                         if datetime.fromtimestamp(ts, TZ).date().isoformat() == state['day']}
         if canonical not in verified:
             raise HTTPException(409, '尚未找到这道题今日的官方通过记录，请先提交并同步平台判题结果')
         return state
+
+    @staticmethod
+    def _canonical(platform, pid):
+        return pid if pid.startswith(platform + ':') else platform + ':' + pid
+
+    def save_time(self, payload):
+        with self.db.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            task = db.execute("SELECT day,problem_id FROM daily_plan_tasks WHERE id=? AND active=1",
+                              (payload.task_id,)).fetchone()
+            if not task:
+                raise HTTPException(404, '找不到本人的每日任务')
+            verified = {(self._canonical(platform, pid), datetime.fromtimestamp(ts, TZ).date().isoformat())
+                        for platform, pid, ts in self._trusted_ac(db, time.time())}
+            if (task['problem_id'], task['day']) not in verified:
+                raise HTTPException(409, '请先同步这道题任务当日的官方 AC，再记录实际用时')
+            db.execute("""INSERT INTO daily_task_times VALUES(?,?,?) ON CONFLICT(task_id)
+                DO UPDATE SET duration_minutes=excluded.duration_minutes,updated_at=excluded.updated_at""",
+                (payload.task_id, payload.duration_minutes, int(time.time())))
+        return self.state()
+
+    def evidence(self):
+        # User estimates inform training; they never prove an AC or a check-in.
+        with self.db.connect() as db:
+            verified = {(self._canonical(platform, pid), datetime.fromtimestamp(ts, TZ).date().isoformat())
+                        for platform, pid, ts in self._trusted_ac(db, time.time())}
+            rows = db.execute("""SELECT t.problem_id,t.day,m.duration_minutes,m.updated_at
+                FROM daily_task_times m JOIN daily_plan_tasks t ON t.id=m.task_id
+                WHERE t.active=1 ORDER BY t.day DESC,m.updated_at DESC LIMIT 60""").fetchall()
+        return [{**dict(row), 'source': 'self_reported', 'verified_ac': True}
+                for row in rows if (row['problem_id'], row['day']) in verified]
 
     def snapshot(self, now=None):
         current_time = time.time() if now is None else now
@@ -314,6 +362,7 @@ class Daily:
             db.execute("DELETE FROM daily_roll_reservations WHERE status='reserved' AND created_at<?", (int(time.time())-600,))
             db.execute("UPDATE daily_plans SET status='failed' WHERE status='generating' AND created_at<?", (int(time.time())-600,))
             plan = db.execute("SELECT * FROM daily_plans WHERE day=?", (today,)).fetchone()
+            times = {row["task_id"]: row["duration_minutes"] for row in db.execute("SELECT * FROM daily_task_times")}
             all_tasks = db.execute("SELECT id,day,data,problem_id FROM daily_plan_tasks WHERE active=1 ORDER BY ordinal").fetchall()
             rolls_used = db.execute("SELECT COUNT(*) FROM daily_roll_reservations WHERE day=? AND status IN ('reserved','used')", (today,)).fetchone()[0]
             # Only crawler/judge records count. Manual feedback, editor self-tests and AI claims never do.
@@ -337,24 +386,25 @@ class Daily:
         k_days = set()
         for historical_plan in plans:
             day = historical_plan['day']
-            required = [row['problem_id'].removeprefix('codeforces:') for row in tasks_by_day.get(day, [])]
+            required = [row['problem_id'] for row in tasks_by_day.get(day, [])]
             if len(required) == historical_plan['goal_count'] and required and all(
-                    ('codeforces', pid) in by_day.get(day, set()) for pid in required):
+                    pid in {self._canonical(platform, item) for platform, item in by_day.get(day, set())} for pid in required):
                 k_days.add(day)
         for day, goal, recorded, recommended in legacy_k:
-            trusted = {f"{platform}:{pid}" for platform, pid in by_day.get(day, set())}
+            trusted = {self._canonical(platform, pid) for platform, pid in by_day.get(day, set())}
             if goal >= 1 and len(recorded & trusted) >= goal and recorded <= trusted and recommended & trusted:
                 k_days.add(day)
         ordinary_days = {day for day, rows in by_day.items() if rows}
         month_start = date.fromisoformat(today).replace(day=1).isoformat()
         monthly_days = {day for day in ordinary_days if month_start <= day <= today}
-        solved = {pid for platform, pid in by_day.get(today, set()) if platform == 'codeforces'}
+        solved = {self._canonical(platform, pid) for platform, pid in by_day.get(today, set())}
         active_tasks = tasks_by_day.get(today, [])
-        completed = [row['problem_id'] for row in active_tasks if row['problem_id'].removeprefix('codeforces:') in solved]
+        completed = [row['problem_id'] for row in active_tasks if row['problem_id'] in solved]
         snapshot = {"today": today, "timezone": "Asia/Shanghai", "settings": settings,
+            "time_evidence": self.evidence(),
             "active": bool(cycle and cycle["starts_on"] <= today <= cycle["ends_on"]),
             "cycle": cycle, "plan": ({"status": plan['status'], "goal_count": plan["goal_count"], "tasks": [
-                {**json.loads(row["data"]), "task_id": row["id"], "completed": row["problem_id"].removeprefix("codeforces:") in solved}
+                {**json.loads(row["data"]), "task_id": row["id"], "duration_minutes": times.get(row["id"]), "completed": row["problem_id"] in solved}
                 for row in active_tasks], "rolls_remaining": max(0, 2-rolls_used), "completed_ids": completed} if plan else None),
             "sign_in": {"kind": "k" if today in k_days else ("ordinary" if today in ordinary_days else "none"),
                 "monthly": {"ordinary": len(monthly_days-k_days), "k": len(monthly_days & k_days)},
@@ -392,6 +442,10 @@ def register(app, daily):
     @app.post('/api/daily/roll')
     async def daily_roll(payload: Roll):
         return await daily.roll(payload)
+
+    @app.post('/api/daily/time')
+    def daily_time(payload: TaskTime):
+        return daily.save_time(payload)
 
     @app.post('/api/daily/complete')
     def daily_complete(payload: Complete):

@@ -80,6 +80,7 @@ export function SelfTestPanel({
     }
   }
   const supported = !!capabilities?.languages[language]
+  const passed = result?.status_id === 3 && result.matched !== false
   return (
     <details className="wb-selftest">
       <summary>代码自测 · 自定义输入</summary>
@@ -175,9 +176,17 @@ export function SelfTestPanel({
       )}
       {error && <p role="alert">{error}</p>}
       {result && (
-        <div className="wb-selftest-result" aria-live="polite">
+        <div className={`wb-selftest-result ${passed ? 'selftest-pass' : 'selftest-fail'}`} aria-live="polite">
+          <style>{`
+            .wb-selftest-result { border-left: 4px solid; padding: 12px; animation: selftest-appear .25s ease-out; }
+            .selftest-pass { border-color: #16834b; background: #edf9f1; color: #175337; }
+            .selftest-fail { border-color: #c73636; background: #fff1f1; color: #842323; }
+            .wb-selftest-result pre { color: #182332; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; }
+            @keyframes selftest-appear { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+            @media (prefers-reduced-motion: reduce) { .wb-selftest-result { animation: none; } }
+          `}</style>
           <p>
-            <strong>{result.status_id === 3 ? '运行完成' : result.status}</strong>
+            <strong>{passed ? (result.matched === true ? 'PASS · 与预期输出一致' : '运行成功 · 尚未对照预期输出') : result.status_id === 3 ? 'FAIL · 与预期输出不一致' : `FAIL · ${result.status}`}</strong>
             {result.matched !== null && (
               <span> · {result.matched ? '与预期输出一致' : '与预期输出不一致'}</span>
             )}

@@ -35,7 +35,21 @@ def refresh_catalog(database):
     return {"count":len(rows),"platform":"codeforces"}
 
 
-def candidates(database, minimum=800, maximum=1600, tags=None, limit=60, min_contest=0):
+def candidates(database, minimum=800, maximum=1600, tags=None, limit=60, min_contest=0, platform="codeforces"):
+    if platform not in {'codeforces','atcoder','luogu','nowcoder'}:
+        raise AIError('请选择有效的推荐平台')
+    if platform != 'codeforces':
+        with database.connect() as db:
+            rows=db.execute('SELECT data FROM wb_problems WHERE id LIKE ?', (platform+':%',)).fetchall()
+            excluded={platform+':'+r[0] for r in db.execute('SELECT DISTINCT problem_id FROM submissions WHERE platform=?',(platform,))}
+            excluded.update(platform+':'+r[0] for r in db.execute("SELECT problem_id FROM practice_feedback WHERE platform=? AND status IN ('done','skip')",(platform,)))
+        result=[]
+        for row in rows:
+            statement=json.loads(row[0]); pid=statement['id']
+            if pid in excluded or statement.get('source')!='official': continue
+            result.append({'id':pid,'platform':platform,'problem_id':pid.split(':',1)[1], 'title':statement['title'],'url':statement['url'],'difficulty':None,'difficulty_source':'未标定；不使用 CF 难度比较','tags':[], 'candidate_source':'用户已获取的官方题面缓存'})
+        result.sort(key=lambda p:p['id'])
+        return result[:limit]
     with database.connect() as db:
         rows=db.execute("SELECT data FROM problem_catalog WHERE platform='codeforces'").fetchall()
         attempted={"codeforces:"+r[0] for r in db.execute("SELECT DISTINCT problem_id FROM submissions WHERE platform='codeforces'")}

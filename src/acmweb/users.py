@@ -87,6 +87,9 @@ class Users:
               key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL,
               expires_at INTEGER NOT NULL DEFAULT 0);
             PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS online_presence (
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              seen_at INTEGER NOT NULL);
             ''')
         path.chmod(0o600)
         # Unknown users still perform the same expensive password verification.

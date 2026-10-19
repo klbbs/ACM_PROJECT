@@ -48,7 +48,8 @@ def _decode(value):
     if not isinstance(value, str) or len(value) > 4 * MAX_BYTES:
         raise ValueError('runner output too large')
     try:
-        raw = base64.b64decode(value, validate=True)
+        # Ruby/Judge0 wraps Base64 with whitespace. Reject all other invalid bytes.
+        raw = base64.b64decode(re.sub(r'[ \t\r\n]', '', value), validate=True)
     except (ValueError, binascii.Error) as exc:
         raise ValueError('invalid runner output') from exc
     # Judge0 applies max_file_size; keep an additional transport/display ceiling.
@@ -159,6 +160,8 @@ class SelfTester:
         payload = {'source_code': _encode(body.code), 'language_id': language['id'],
                    'stdin': _encode(body.stdin), 'cpu_time_limit': 2, 'cpu_extra_time': 0.5,
                    'wall_time_limit': 5, 'memory_limit': 131072,
+                   # Runtime output stays 64 KiB; compilation uses the runner's
+                   # independent global MAX_MAX_FILE_SIZE (>= 20480 KiB).
                    'max_processes_and_or_threads': 32, 'max_file_size': 64,
                    'stack_limit': 65536, 'number_of_runs': 1,
                    'enable_per_process_and_thread_time_limit': False,

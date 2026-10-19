@@ -5,7 +5,7 @@ async function open(page: Page, problem = '4-A') {
   if ((page.viewportSize()?.width || 1600) < 1000)
     await page.getByRole('button', { name: '打开菜单', exact: true }).click()
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
-  await page.getByRole('textbox', { name: 'Codeforces 题号或链接' }).fill(problem)
+  await page.getByRole('textbox', { name: '平台题号或官方题目链接' }).fill(problem)
   await page.getByRole('button', { name: '打开', exact: true }).click()
   await expect(page.locator('.cm-content')).toBeVisible()
   await expect(page.getByLabel('编辑器键位')).toBeEnabled()
@@ -91,7 +91,7 @@ test('Vim insert/normal, visual delete, undo, macro, search and :w work without 
   await page.reload()
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await expect(page.getByLabel('编辑器键位')).toHaveCount(0) // no problem selected after reload
-  await page.getByRole('textbox', { name: 'Codeforces 题号或链接' }).fill('4-A')
+  await page.getByRole('textbox', { name: '平台题号或官方题目链接' }).fill('4-A')
   await page.getByRole('button', { name: '打开', exact: true }).click()
   await expect(page.getByLabel('编辑器键位')).toHaveValue('vim')
   await expect(page.locator('.cm-position')).toContainText('NORMAL')
@@ -130,7 +130,7 @@ test('chunk load failure exposes a fallback with the existing code', async ({ pa
   await page.route('**/assets/code-editor-*.js', (route) => route.abort())
   await page.goto('/')
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
-  await page.getByRole('textbox', { name: 'Codeforces 题号或链接' }).fill('4-A')
+  await page.getByRole('textbox', { name: '平台题号或官方题目链接' }).fill('4-A')
   await page.getByRole('button', { name: '打开', exact: true }).click()
   await page.getByRole('button', { name: '启用基础文本框' }).click()
   await expect(page.getByRole('textbox', { name: '源代码', exact: true })).toHaveValue(
@@ -179,7 +179,7 @@ test('Tab accepts a keyword or jumps snippet fields, and replacement is local', 
   await expect(editor).toContainText('i < limit')
 })
 
-test('conflicting autosave keeps local edits until explicit backup and server restore', async ({
+test('conflicting autosave warns and preserves local code without removed restore controls', async ({
   page,
 }) => {
   await open(page)
@@ -192,11 +192,12 @@ test('conflicting autosave keeps local edits until explicit backup and server re
   await editor.press('Control+s')
   await expect(page.getByRole('status').filter({ hasText: '保存失败' })).toBeVisible()
   await expect(editor).toHaveText('my unsaved code')
-  const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: '下载备份并恢复服务器草稿' }).click()
-  await download
-  await expect(editor).toHaveText('other tab draft')
-  await expect(page.getByRole('status').filter({ hasText: '已从服务器恢复' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '下载备份并恢复服务器草稿' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '保存草稿', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '下载代码', exact: true })).toHaveCount(0)
+  await expect(editor).toHaveText('my unsaved code')
+  const server = await (await page.request.get('/api/workbench/problem/4-A')).json()
+  expect(server.draft.code).toBe('other tab draft')
 })
 
 test('collapsible sidebars, platform tutorial and imported statement are usable', async ({
@@ -210,7 +211,7 @@ test('collapsible sidebars, platform tutorial and imported statement are usable'
   await expect(page.locator('.sidebar-collapsed')).toBeVisible()
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await expect(page.locator('.sidebar-collapsed')).toBeVisible()
-  await page.getByRole('textbox', { name: 'Codeforces 题号或链接' }).fill('4-A')
+  await page.getByRole('textbox', { name: '平台题号或官方题目链接' }).fill('4-A')
   await page.getByRole('button', { name: '打开', exact: true }).click()
   await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
   await page.getByRole('button', { name: '收起选题栏', exact: true }).click()
@@ -319,7 +320,7 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await page.getByLabel('代码语言').selectOption('python3')
   const editor = page.getByLabel('源代码', { exact: true })
   await editor.fill('print("deliberately wrong")')
-  await page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  await editor.press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /给我一个小提示/ })).toBeDisabled()
   await page.getByLabel('AI 通道').selectOption('api')
@@ -340,7 +341,7 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await expect(wa.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
   await expect(wa.getByText(/仅针对本地快照检查边界/)).toBeVisible()
   await editor.fill('print("corrected practice version")')
-  await page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  await editor.press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
   await wa.getByText('查看不可变代码快照', { exact: true }).click()
   await expect(wa.locator('.wb-snapshot')).toHaveText('print("deliberately wrong")')
@@ -438,7 +439,7 @@ test('self-test uses custom input, compares output and keeps results out of subm
   await expect(run).toBeDisabled()
   await page.getByLabel('我同意将本次代码和输入发送到管理员配置的隔离自测服务').check()
   await run.click()
-  await expect(page.getByText('与预期输出不一致', { exact: false })).toBeVisible()
+  await expect(page.getByText('FAIL · 与预期输出不一致', { exact: true })).toBeVisible()
   expect(sent).toEqual([
     {
       code: 'int main() { return 0; }',

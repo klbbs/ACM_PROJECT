@@ -1,3 +1,5 @@
+> 0.11.0：编辑器下方手动保存、下载和备份恢复按钮已删除；代码自动保存，Ctrl/Cmd+S 可主动触发。提交快照仍用于判题关联。另有“复制待交代码”便利官方站点提交；复制被浏览器拒绝时显示手工复制步骤。补全扩展 C++20/容器成员/算法签名/头文件，仍为本地静态补全，不是语言服务器类型推断。
+
 # 工作台编辑器
 
 使用 CodeMirror 6、官方 C++ / Python / Java 语言扩展、One Dark 主题以及 Replit Vim 扩展。运行时依赖的完整许可和版本保存在 `frontend/public/third-party-notices.txt`，发布后可通过 `/third-party-notices.txt` 查看。

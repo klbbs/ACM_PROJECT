@@ -1,0 +1,1 @@
+{"status_id": 11, "status": "Runtime Error (NZEC)", "stdout": "", "stderr": "run: line 1:     3 Killed                  ./a.out\n", "compile_output": "", "time": "0.136", "memory": 131072, "matched": null, "truncated": false}

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { api, date } from './api'
+import { api, date, names } from './api'
 const StatementView = React.lazy(() =>
   import('./statement-view').then((m) => ({ default: m.StatementView })),
 )
@@ -7,7 +7,7 @@ import { EditorShell } from './editor-shell'
 import { SelfTestPanel } from './self-test-panel'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
-import { Code2, Lightbulb, RefreshCw, Save, ExternalLink } from 'lucide-react'
+import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
   revision: number
@@ -138,7 +138,7 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
       }
       return !dirty.current
     } catch (e) {
-      setSaved('保存失败 · 请下载代码备份后重试')
+      setSaved('自动保存失败 · 请保留当前页面并使用 Ctrl/Cmd+S 重试')
       fail(e)
       return false
     } finally {
@@ -158,7 +158,7 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
     const leave = (e: Event) => {
       if (dirty.current) {
         e.preventDefault()
-        onError('草稿尚未保存，请先保存或下载代码后再离开工作台')
+        onError('草稿尚未自动保存，请使用 Ctrl/Cmd+S 保存后再离开工作台')
       }
     }
     window.addEventListener('acm:before-navigate', leave)
@@ -225,14 +225,13 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
       <section className="card wb-intro">
         <div>
           <h2>
-            <Code2 size={20} /> 刷题工作台{' '}
-            <span className="badge neutral">Codeforces · 第一阶段</span>
+            <Code2 size={20} /> 刷题工作台 <span className="badge neutral">多平台训练</span>
           </h2>
           <p>读题、独立思考、逐步提示、记录每次尝试。代码保存在你的个人空间。</p>
         </div>
         <p className="muted">
-          当前流程：保存代码快照 → 前往 Codeforces 提交 →
-          关联提交号核验判题。自动代提交与其他平台将在后续接入。
+          当前流程：自动保存代码 → 前往题目所属平台提交 → CF
+          可即时核验，其他平台先同步账号信息，再用已采集的提交号关联判题。
         </p>
         <div className="wb-metrics">
           <span>
@@ -264,8 +263,8 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
             className="wb-open"
           >
             <input
-              aria-label="Codeforces 题号或链接"
-              placeholder="4-A 或官方题目链接"
+              aria-label="平台题号或官方题目链接"
+              placeholder="4-A / atcoder:abc001_1 / luogu:P1001 / 牛客官方链接"
               value={manual}
               onChange={(e) => setManual(e.target.value)}
               maxLength={300}
@@ -328,7 +327,7 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                 <details className="wb-import">
                   <summary>获取失败？导入浏览器题面 / 查看教程</summary>
                   <p>
-                    打开原题，在 F12 元素面板复制 .problem-statement 节点的 Outer
+                    打开原题，在 F12 元素面板复制包含完整正文和样例的节点 Outer
                     HTML，粘贴下方。只提取文本和样例；手动导入无法核验题号。
                   </p>
                   <button
@@ -528,38 +527,26 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                   </p>
                 </details>
                 <div className="wb-heading">
-                  <button className="secondary" onClick={save}>
-                    <Save size={15} /> 保存草稿
-                  </button>
                   <button
                     className="secondary"
-                    onClick={() => download(code, pid.replace(':', '-') + '.txt')}
-                  >
-                    下载代码
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={busy || saving.current}
+                    disabled={!code.trim()}
                     onClick={async () => {
-                      download(code, pid.replace(':', '-') + '-backup.txt')
-                      setBusy(true)
                       try {
-                        await refresh(pid, true)
-                      } catch (e) {
-                        fail(e)
-                      } finally {
-                        setBusy(false)
+                        await navigator.clipboard.writeText(code)
+                        setSaved('代码已复制，请前往官方提交页粘贴')
+                      } catch {
+                        onError('浏览器未允许复制，请在编辑器中 Ctrl/Cmd+A、Ctrl/Cmd+C 复制代码')
                       }
                     }}
                   >
-                    下载备份并恢复服务器草稿
+                    复制待交代码
                   </button>
                   <button disabled={busy || !code.trim()} onClick={snapshot}>
                     保存提交快照
                   </button>
                 </div>
                 <p className="muted">
-                  最多 64 KiB；自测由管理员配置的专用隔离服务执行。保存快照后，请在 Codeforces
+                  最多 64 KiB；代码自动保存，自测由专用隔离服务执行。保存快照后，请在题目所属平台
                   选择相应语言提交同一份代码。
                 </p>
               </section>
@@ -617,7 +604,11 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                   <Attempt
                     key={attempt.id}
                     attempt={attempt}
-                    handles={choices.handles}
+                    handles={
+                      choices.handles_by_platform?.[pid.split(':')[0]] ||
+                      (pid.startsWith('codeforces:') ? choices.handles : [])
+                    }
+                    capabilities={data?.capabilities}
                     provider={provider}
                     model={model}
                     active={active}
@@ -639,6 +630,7 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
 function Attempt({
   attempt: a,
   handles,
+  capabilities,
   provider,
   model,
   active,
@@ -658,16 +650,31 @@ function Attempt({
     })
   }, [a.handle, handles])
   const [contest, index] = a.problem_id.split(':')[1].split('-')
+  const platform = a.problem_id.split(':')[0]
+  const platformName = names[platform] || platform
+  const canSync = capabilities?.judge_sync ?? platform === 'codeforces'
   return (
     <article className="wb-attempt">
       <div className="wb-warning">
         <strong>当前为官方页面手动提交</strong>
         <p>
-          请先登录 Codeforces，确认账号与下方 handle
-          一致，再提交本次快照。保存快照不会远程提交代码。
+          请先登录 {platformName}，确认使用正确的账号，再提交本次快照。保存快照不会远程提交代码。
         </p>
-        <a href="https://codeforces.com/enter" target="_blank" rel="noreferrer">
-          先登录 Codeforces ↗
+        <a
+          href={
+            (
+              {
+                codeforces: 'https://codeforces.com/enter',
+                atcoder: 'https://atcoder.jp/login',
+                luogu: 'https://www.luogu.com.cn/',
+                nowcoder: 'https://ac.nowcoder.com/',
+              } as Record<string, string>
+            )[platform]
+          }
+          target="_blank"
+          rel="noreferrer"
+        >
+          先登录 {platformName} ↗
         </a>{' '}
         ·{' '}
         <button
@@ -676,7 +683,9 @@ function Attempt({
         >
           绑定与提交教程
         </button>
-        {!handles.length && <p>尚未配置 CF 账号，请在「连接与设置」添加 handle 后再关联判题。</p>}
+        {canSync && !handles.length && (
+          <p>尚未配置此平台账号，请在「连接与设置」添加 handle 后再关联判题。</p>
+        )}
       </div>
       <div className="wb-heading">
         <strong>{a.verdict}</strong>
@@ -691,7 +700,10 @@ function Attempt({
         </button>
         <a
           className="button"
-          href={`https://codeforces.com/problemset/submit?contestId=${contest}&submittedProblemIndex=${index}`}
+          href={
+            capabilities?.official_submit_url ||
+            `https://codeforces.com/problemset/submit?contestId=${contest}&submittedProblemIndex=${index}`
+          }
           target="_blank"
           rel="noreferrer"
         >
@@ -702,53 +714,61 @@ function Attempt({
         <summary>查看不可变代码快照</summary>
         <pre className="wb-snapshot">{a.code}</pre>
       </details>
-      <form
-        className="wb-heading"
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (!/^\d+$/.test(sid)) {
-            onError('请输入有效提交号')
-            return
-          }
-          run(`/workbench/attempt/${a.id}/sync`, {
-            handle,
-            submission_id: Number(sid),
-            review: autoReview && consent ? { provider, model } : null,
-          })
-        }}
-      >
-        <select
-          aria-label="提交账号"
-          value={handle}
-          onChange={(e) => setHandle(e.target.value)}
-          disabled={!!a.handle}
+      {canSync && (
+        <form
+          className="wb-heading"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!/^\d+$/.test(sid)) {
+              onError('请输入有效提交号')
+              return
+            }
+            run(`/workbench/attempt/${a.id}/sync`, {
+              handle,
+              submission_id: Number(sid),
+              review: autoReview && consent ? { provider, model } : null,
+            })
+          }}
         >
-          <option value="">选择已配置账号</option>
-          {a.handle && !handles.some((h: string) => h.toLowerCase() === a.handle.toLowerCase()) && (
-            <option value={a.handle}>{a.handle}（已关联；需重新配置账号后同步）</option>
-          )}
-          {handles.map((h: string) => (
-            <option key={h} value={h}>
-              {h}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label="平台提交号"
-          inputMode="numeric"
-          placeholder="Codeforces 提交号"
-          value={sid}
-          onChange={(e) => setSid(e.target.value)}
-          disabled={!!a.submission_id}
-        />
-        <button className="secondary" disabled={active || !handle || !sid}>
-          {a.submission_id ? '刷新判题（间隔 20 秒）' : '关联并核验判题'}
-        </button>
-      </form>
+          <select
+            aria-label="提交账号"
+            value={handle}
+            onChange={(e) => setHandle(e.target.value)}
+            disabled={!!a.handle}
+          >
+            <option value="">选择已配置账号</option>
+            {a.handle &&
+              !handles.some((h: string) => h.toLowerCase() === a.handle.toLowerCase()) && (
+                <option value={a.handle}>{a.handle}（已关联；需重新配置账号后同步）</option>
+              )}
+            {handles.map((h: string) => (
+              <option key={h} value={h}>
+                {h}
+              </option>
+            ))}
+          </select>
+          <input
+            aria-label="平台提交号"
+            inputMode="numeric"
+            placeholder={`${platformName} 提交号`}
+            value={sid}
+            onChange={(e) => setSid(e.target.value)}
+            disabled={!!a.submission_id}
+          />
+          <button className="secondary" disabled={active || !handle || !sid}>
+            {a.submission_id ? '刷新判题（间隔 20 秒）' : '关联并核验判题'}
+          </button>
+        </form>
+      )}
+      {!canSync && (
+        <p className="muted">
+          {capabilities?.notice || '请在官方平台查看判题记录；同步账号信息后可更新训练统计。'}
+        </p>
+      )}
       <label className="wb-consent">
         <input
           type="checkbox"
-          disabled={!consent}
+          disabled={!consent || !canSync}
           checked={autoReview}
           onChange={(e) => setAutoReview(e.target.checked)}
         />{' '}
@@ -759,13 +779,15 @@ function Attempt({
           官方结果：{a.judge_data.verdict || '判题中'} · 已过测试{' '}
           {a.judge_data.passedTestCount ?? '未知'} · {a.judge_data.timeConsumedMillis ?? '?'} ms ·{' '}
           {Math.round((a.judge_data.memoryConsumedBytes || 0) / 1024)} KiB{' '}
-          <a
-            href={`https://codeforces.com/contest/${contest}/submission/${a.submission_id}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            查看记录 ↗
-          </a>
+          {platform === 'codeforces' && (
+            <a
+              href={`https://codeforces.com/contest/${contest}/submission/${a.submission_id}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              查看记录 ↗
+            </a>
+          )}
         </p>
       )}
       {!['UNLINKED', 'PENDING', 'AC'].includes(a.verdict) && (

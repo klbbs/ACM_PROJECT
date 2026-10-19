@@ -192,3 +192,33 @@ def test_runner_transport_and_decoded_output_have_independent_caps(monkeypatch):
     with pytest.raises(Exception) as error:
         asyncio.run(go())
     assert error.value.status_code == 502
+
+
+def test_judge0_ruby_wrapped_base64_is_accepted_without_allowing_other_bytes():
+    from acmweb.selftest import _decode
+    value = 'judge0 result\n' * 20
+    wrapped = base64.encodebytes(value.encode()).decode()
+    assert _decode(wrapped) == value
+    with pytest.raises(ValueError):
+        _decode(wrapped + '!')
+
+
+def test_cpp20_requires_explicit_modern_runner_language_and_fixed_runtime_limit(monkeypatch):
+    import httpx
+    import json
+    seen = []
+    def handle(request):
+        if request.url.path.endswith('/languages'):
+            return httpx.Response(200, json=[{'id':54,'name':'C++ (GCC 9.2.0)'},
+                                            {'id':100,'name':'C++20 (GCC 12.2.0)'}])
+        if request.method == 'POST':
+            seen.append(json.loads(request.content))
+            return httpx.Response(201, json={'token':'cpp20-check'})
+        return httpx.Response(200, json={'status':{'id':3},'stdout':base64.b64encode(b'42').decode()})
+    runner = SelfTester(endpoint='https://judge.example')
+    monkeypatch.setattr(runner, 'client', lambda: httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+    result = asyncio.run(runner.run(SelfTestInput(code='// C++20 probe',language='cpp20',expected='42',consent=True)))
+    assert result['matched']
+    assert seen[0]['language_id'] == 100
+    assert seen[0]['max_file_size'] == 64  # Compile ceiling belongs to Judge0 global configuration.
+    assert 'compiler_options' not in seen[0]

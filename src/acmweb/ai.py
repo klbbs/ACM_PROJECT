@@ -284,6 +284,7 @@ class AIProvider:
         safe_context["recent"]=[{**{k:r[k] for k in ("platform","problem_id","submitted_at","verdict")},
             "problem":{k:(r.get("problem") or {}).get(k) for k in ("title","tags","difficulty")}} for r in context["recent"]]
         safe_context["workbench_evidence"]=context.get("workbench_evidence",{})
+        safe_context['actual_time_evidence'] = context.get('actual_time_evidence', [])[:100]
         safe_context["training_preferences"]=self.db.get("training",{})
         if task not in {'analysis', 'recommend'}:
             raise AIError('训练报告仅支持分析或推荐任务')

@@ -2,7 +2,7 @@ import { CompletionContext, snippetCompletion, type Completion } from '@codemirr
 import { syntaxTree } from '@codemirror/language'
 
 const keywords: Record<string, string> = {
-  cpp: 'auto bool break case catch char class const constexpr continue default delete double else enum explicit false float for if inline int long namespace new nullptr private protected public return short signed sizeof static struct switch template this throw true try typedef typename union unsigned using virtual void volatile while',
+  cpp: 'auto bool break case catch char class const constexpr consteval constinit concept requires co_await co_return co_yield continue default delete double else enum explicit false float for if inline int long namespace new nullptr private protected public return short signed sizeof static struct switch template this throw true try typedef typename union unsigned using virtual void volatile while',
   python3:
     'and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield',
   java17:
@@ -46,8 +46,31 @@ export function languageCompletions(language: string): Completion[] {
             ['if-block', 'if (${condition}) {\n    ${}\n}'],
             ['main', 'public static void main(String[] args) {\n    ${}\n}'],
           ]
+  const cpp = key === 'cpp' ? [
+    ...[
+      ['push_back', 'void push_back(const T& value) · vector/string'],
+      ['emplace_back', 'reference emplace_back(Args&&...) · vector'],
+      ['size', 'size_type size() const'], ['empty', 'bool empty() const'],
+      ['reserve', 'void reserve(size_type n) · vector/string'],
+      ['contains', 'bool contains(const Key&) const · C++20 set/map'],
+      ['erase', 'iterator erase(iterator pos)'], ['find', 'iterator find(const Key&)'],
+      ['std::sort', 'sort(first, last, comparator = {}) · <algorithm>'],
+      ['std::lower_bound', 'lower_bound(first, last, value) · <algorithm>'],
+      ['std::ranges::sort', 'ranges::sort(range, comparator = {}) · C++20 <algorithm>'],
+      ['std::accumulate', 'accumulate(first, last, initial) · <numeric>'],
+      ['std::gcd', 'gcd(a, b) · <numeric>'],
+      ['std::popcount', 'popcount(unsigned_integer) · C++20 <bit>'],
+    ].map(([label, detail]) => ({ label, detail: `${detail} · 名称提示，非类型推断`, type: 'function' })),
+    ...['algorithm', 'vector', 'string', 'map', 'set', 'queue', 'stack', 'numeric', 'ranges', 'span', 'bit', 'concepts', 'iostream', 'unordered_map'].map(h =>
+      snippetCompletion(`#include <${h}>`, { label: `include-${h}`, type: 'snippet', detail: '标准头文件' })),
+    snippetCompletion('for (auto& [${key}, ${value}] : ${container}) {\n    ${}\n}', { label: 'for-binding', type: 'snippet', detail: '结构化绑定遍历' }),
+    snippetCompletion('std::ios::sync_with_stdio(false);\nstd::cin.tie(nullptr);', { label: 'fast-io', type: 'snippet', detail: '快速输入输出' }),
+    snippetCompletion('auto ${name} = [&](${args}) {\n    ${}\n};', { label: 'lambda', type: 'snippet', detail: 'Lambda 表达式' }),
+    snippetCompletion('template <typename T>\nrequires std::integral<T>\nT ${name}(T ${value}) {\n    ${}\n}', { label: 'concept-function', type: 'snippet', detail: 'C++20 约束函数 · <concepts>' }),
+  ] : []
+  const richer = new Set(cpp.map(c => c.label))
   return [
-    ...result,
+    ...result.filter(c => !richer.has(c.label)), ...cpp,
     ...snippets.map(([label, template]) =>
       snippetCompletion(template, { label, detail: '基础语法片段', type: 'snippet' }),
     ),

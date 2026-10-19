@@ -367,3 +367,30 @@ def test_rich_statement_preserves_images_structure_and_math_safely():
     assert '<ul>' in data['body_html'] and '$$$x^2$$$' in data['body_html']
     assert 'onerror' not in data['body_html'] and 'javascript:' not in data['body_html']
     assert data['diagnostics']['warnings'] and data['render_version']==2
+
+@pytest.mark.parametrize('platform,pid',[('atcoder','abc001_1'),('luogu','P1001'),('nowcoder','14301')])
+def test_collected_platform_verdict_sync(workspace,platform,pid):
+ _,service,_=workspace
+ config=service.accounts.settings.config_path
+ config.write_text(f'[[accounts]]\nplatform="{platform}"\nhandle="demo"\n')
+ problem=platform+':'+pid
+ service.draft(problem,Draft(code='code',revision=0))
+ aid=service.snapshot(problem,1)['id']
+ now=int(time.time())
+ def insert(account='demo',key=pid,timestamp=now,status='WA'):
+  with service.db.connect() as conn:
+   conn.execute('INSERT OR REPLACE INTO submissions VALUES(?,?,?,?,?,?,?,?)',(platform,account,'111',key,timestamp,status,json.dumps({'submitted_at':timestamp,'verdict':status}),now))
+ with pytest.raises(AIError,match='先同步'):service.sync(aid,Link(handle='demo',submission_id=111))
+ insert(account='someone')
+ with pytest.raises(AIError,match='先同步'):service.sync(aid,Link(handle='demo',submission_id=111))
+ with pytest.raises(AIError,match='先绑定'):service.sync(aid,Link(handle='someone',submission_id=111))
+ wrong={'atcoder':'abc001_2','luogu':'P1002','nowcoder':'14302'}[platform]
+ insert(key=wrong)
+ with pytest.raises(AIError,match='题号'):service.sync(aid,Link(handle='demo',submission_id=111))
+ insert(timestamp=now-3600)
+ with pytest.raises(AIError,match='时间'):service.sync(aid,Link(handle='demo',submission_id=111))
+ insert();result=service.sync(aid,Link(handle='demo',submission_id=111))
+ assert result['verdict']=='WA' and result['source']=='collected_official_record'
+ with service.db.connect() as conn:conn.execute('UPDATE wb_attempts SET review=? WHERE id=?',(json.dumps({'category':'logic'}),aid))
+ insert(status='AC');service.sync(aid,Link(handle='demo',submission_id=111))
+ assert service.attempt(aid)['verdict']=='AC' and service.attempt(aid)['review'] is None

@@ -8,7 +8,7 @@ vi.mock('./api', () => ({ api: apiMock }))
 
 let host: HTMLDivElement, root: Root
 const value = (goal = 1) => ({
-  settings: { daily_goal: goal, duration_days: 30, minutes_per_day: 60 },
+  settings: { daily_goal: goal, duration_days: 30 },
   active: false,
   locked_goal: goal,
   checkin: {},
@@ -62,6 +62,7 @@ it('disables preferences and saving until the initial server settings arrive', a
   expect(goal().disabled).toBe(true)
   expect(save().disabled).toBe(true)
   await act(async () => pending.resolve(value(3)))
+  expect(host.textContent).not.toContain('每天训练时间')
   expect(goal().disabled).toBe(false)
   expect(goal().value).toBe('3')
   expect(save().disabled).toBe(false)
@@ -78,7 +79,6 @@ it('does not replace unsaved preferences when a revision refreshes verified prog
   expect(apiMock).toHaveBeenCalledWith('/daily/settings', 'PUT', {
     daily_goal: 2,
     duration_days: 30,
-    minutes_per_day: 60,
   })
 })
 

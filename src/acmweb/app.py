@@ -82,7 +82,7 @@ def create_app(settings=None):
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.10.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.11.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -120,7 +120,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.10.1"}
+    def health():return {"status":"ok","version":"0.11.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -142,7 +142,9 @@ def create_app(settings=None):
 
     @app.get("/api/overview")
     def get_overview(days:int=Query(default=30,ge=0,le=90),platform:str=""):
-        return analytics.overview(database,days,platform)
+        result = analytics.overview(database,days,platform)
+        result["actual_time_evidence"] = app.state.daily.evidence()
+        return result
 
     @app.get("/api/submissions")
     def get_submissions(platform:str="",verdict:str="",search:str=Query(default="",max_length=100),offset:int=Query(default=0,ge=0),limit:int=Query(default=30,ge=1,le=100),days:int=Query(default=0,ge=0,le=90)):
@@ -213,8 +215,8 @@ def create_app(settings=None):
         return result
 
     @app.get("/api/catalog")
-    def catalog(minimum:int=Query(default=800,ge=800,le=3500),maximum:int=Query(default=1600,ge=800,le=3500),tags:str="",min_contest:int=Query(default=0,ge=0,le=100000)):
-        return {"items":candidates(database,minimum,maximum,[t for t in tags.split(',') if t],60,min_contest),"updated_at":database.get("catalog_updated_at"),"source":"Codeforces 官方题库"}
+    def catalog(minimum:int=Query(default=800,ge=800,le=3500),maximum:int=Query(default=1600,ge=800,le=3500),tags:str="",min_contest:int=Query(default=0,ge=0,le=100000),platform:Literal["codeforces","atcoder","luogu","nowcoder"]="codeforces"):
+        return {"items":candidates(database,minimum,maximum,[t for t in tags.split(',') if t],60,min_contest,platform=platform),"updated_at":database.get("catalog_updated_at") if platform=="codeforces" else None,"source":"Codeforces 官方题库" if platform=="codeforces" else "已获取的官方题面缓存（非完整题库）"}
 
     @app.post("/api/catalog/refresh")
     async def refresh():return jobs.start("catalog")
@@ -236,6 +238,7 @@ def create_app(settings=None):
 
     from .daily import Daily, register as register_daily
     app.state.daily = Daily(database, ai)
+    jobs.daily_evidence = app.state.daily.evidence
     register_daily(app, app.state.daily)
 
     from .workbench import Workbench, register

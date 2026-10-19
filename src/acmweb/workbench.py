@@ -25,32 +25,18 @@ CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,f
 CREATE TABLE IF NOT EXISTS wb_drafts (problem_id TEXT PRIMARY KEY,language TEXT NOT NULL,code TEXT NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_hints (problem_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(problem_id,seq));
 CREATE TABLE IF NOT EXISTS wb_attempts (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,language TEXT NOT NULL,code TEXT NOT NULL,code_hash TEXT NOT NULL,created_at INTEGER NOT NULL,handle TEXT,submission_id INTEGER,verdict TEXT NOT NULL DEFAULT 'UNLINKED',judge_data TEXT,review TEXT,last_synced INTEGER NOT NULL DEFAULT 0);
-CREATE UNIQUE INDEX IF NOT EXISTS wb_remote ON wb_attempts(handle,submission_id) WHERE submission_id IS NOT NULL;
+DROP INDEX IF EXISTS wb_remote;
+CREATE UNIQUE INDEX IF NOT EXISTS wb_remote_platform ON wb_attempts(substr(problem_id,1,instr(problem_id,':')-1),handle COLLATE NOCASE,submission_id) WHERE submission_id IS NOT NULL;
 '''
 
 
-def normalize(value):
-    if value.startswith('https://'):
-        u = urlsplit(value)
-        if u.hostname not in {'codeforces.com', 'www.codeforces.com'} or u.netloc != u.hostname or u.query or u.fragment:
-            raise AIError('仅支持 Codeforces 官方公开题目链接或题号')
-        match = re.fullmatch(r'/(?:problemset/problem/(\d+)/([A-Za-z]\d?)|contest/(\d+)/problem/([A-Za-z]\d?))/?', u.path)
-        if not match:
-            raise AIError('题目链接格式错误')
-        a, b, c, d = match.groups()
-        value = f'{a or c}-{b or d}'
-    match = re.fullmatch(r'(?:codeforces:)?([1-9]\d{0,4})-([A-Za-z]\d?)', value)
-    if not match:
-        raise AIError('请输入 Codeforces 题号，例如 4-A（暂不支持 Gym）')
-    return f'codeforces:{int(match[1])}-{match[2].upper()}'
-
-
-def source_url(pid):
-    contest, index = pid.split(':')[1].split('-')
-    return f'https://codeforces.com/problemset/problem/{contest}/{index}'
+from .problem_sources import normalize, source_url, fetch_statement, capabilities
 
 
 def parse_statement(html, pid):
+    if not normalize(pid).startswith('codeforces:'):
+        from .problem_sources import parse_statement as parse_other
+        return parse_other(html, pid)
     soup = BeautifulSoup(html, 'html.parser')
     root = soup.select_one('.problem-statement')
     if root is None:
@@ -214,6 +200,7 @@ class Workbench:
             p['recommendation_source'] = '已保存的 AI 推荐' if ai_reason else '训练规则匹配'
         pool.sort(key=lambda p: -p['match_score'])
         return {'items': pool[:30], 'recent': recent, 'profile': training_evidence(self.db),
+                'handles_by_platform': {p:[a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform')==p] for p in ('codeforces','atcoder','luogu','nowcoder')},
                 'handles': [a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform') == 'codeforces'],
                 'score_note': '匹配指数由难度、近期未通过的关联标签和已保存 AI 推荐计算，并非通过概率。'}
 
@@ -224,7 +211,7 @@ class Workbench:
             draft = conn.execute('SELECT * FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
             hints = conn.execute('SELECT data FROM wb_hints WHERE problem_id=? ORDER BY seq', (pid,)).fetchall()
             attempts = conn.execute('SELECT * FROM wb_attempts WHERE problem_id=? ORDER BY created_at DESC,id DESC LIMIT 30', (pid,)).fetchall()
-        return {'id': pid, 'url': source_url(pid), 'statement': json.loads(statement['data']) if statement else None,
+        return {'id': pid, 'capabilities': capabilities(pid, self.accounts.document().get('accounts', [])), 'url': source_url(pid), 'statement': json.loads(statement['data']) if statement else None,
                 'fetched_at': statement['fetched_at'] if statement else None,
                 'fetch_status': self.db.get('statement_status:'+pid, {}),
                 'draft': dict(draft) if draft else {'language': 'cpp17', 'code': '', 'revision': 0},
@@ -282,6 +269,12 @@ class Workbench:
 
     def statement(self, pid):
         pid = normalize(pid)
+        if not pid.startswith('codeforces:'):
+            try:
+                return self.store_statement(pid, fetch_statement(pid, self.accounts.document().get('accounts', [])))
+            except (AIError, CrawlError) as exc:
+                self.db.set('statement_status:'+pid, {'status':'failed','error':str(exc),'at':int(time.time())})
+                raise AIError(str(exc)) from None
         account = next((a for a in self.accounts.document().get('accounts', []) if a.get('platform') == 'codeforces' and a.get('cookie')), {})
         contest, index = pid.split(':')[1].split('-')
         failures = []
@@ -312,6 +305,8 @@ class Workbench:
 
     def sync(self, aid, data):
         attempt = self.attempt(aid)
+        if not attempt['problem_id'].startswith('codeforces:'):
+            return self.sync_collected(attempt, data)
         handles = [a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform') == 'codeforces']
         handle = next((h for h in handles if h.lower() == data.handle.lower()), None)
         if not handle:
@@ -359,7 +354,7 @@ class Workbench:
                 current = conn.execute('SELECT handle,submission_id FROM wb_attempts WHERE id=?', (aid,)).fetchone()
                 if current['submission_id'] and (current['submission_id'] != data.submission_id or current['handle'].lower() != handle.lower()):
                     raise AIError('另一请求已关联提交，请刷新页面')
-                if conn.execute('SELECT 1 FROM wb_attempts WHERE handle=? COLLATE NOCASE AND submission_id=? AND id!=?', (handle, data.submission_id, aid)).fetchone():
+                if conn.execute('SELECT 1 FROM wb_attempts WHERE substr(problem_id,1,instr(problem_id,":")-1)=? AND handle=? COLLATE NOCASE AND submission_id=? AND id!=?', ('codeforces', handle, data.submission_id, aid)).fetchone():
                     raise AIError('此平台提交已关联另一份代码快照')
                 conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?',
                              (handle, data.submission_id, status, json.dumps(judge), now, status, json.dumps(judge), aid))
@@ -369,6 +364,36 @@ class Workbench:
         except sqlite3.IntegrityError:
             raise AIError('此平台提交已关联另一份代码快照') from None
         return {'attempt_id': aid, 'verdict': status, 'code_verified': False}
+
+    def sync_collected(self, attempt, data):
+        platform, key = attempt['problem_id'].split(':', 1)
+        handles=[a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform')==platform]
+        if data.handle not in handles:
+            raise AIError('请先绑定此平台账号，账号名需与配置一致')
+        if attempt['submission_id'] and (attempt['submission_id']!=data.submission_id or attempt['handle']!=data.handle):
+            raise AIError('快照已关联提交号，不可更换')
+        now=int(time.time())
+        try:
+            with self.db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                row=conn.execute('SELECT * FROM submissions WHERE platform=? AND account=? AND id=?',(platform,data.handle,str(data.submission_id))).fetchone()
+                if not row: raise AIError('本用户尚未采集到此账号的提交号，请先同步该平台账号信息后重试')
+                if normalize(platform+':'+row['problem_id']) != attempt['problem_id']:
+                    raise AIError('提交题号不匹配，请选择本题的提交记录')
+                if row['submitted_at'] < attempt['created_at']-300 or row['submitted_at']>now+300:
+                    raise AIError('提交时间与本次快照不符，请关联本次练习提交')
+                raw=json.loads(row['data'])
+                judge={k:raw.get(k) for k in ('language','submitted_at','time_ms','memory_bytes','score','url')}
+                judge.update(verdict=row['verdict'],source='collected_official_record',platform=platform,collected_at=row['updated_at'])
+                status=row['verdict'] or 'PENDING'
+                serialized=json.dumps(judge)
+                current=conn.execute('SELECT * FROM wb_attempts WHERE id=?',(attempt['id'],)).fetchone()
+                if current['submission_id'] and (current['submission_id']!=data.submission_id or current['handle']!=data.handle):
+                    raise AIError('另一请求已关联提交，请刷新页面')
+                conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?',(data.handle,data.submission_id,status,serialized,now,status,serialized,attempt['id']))
+        except sqlite3.IntegrityError:
+            raise AIError('此平台提交已关联另一份代码快照') from None
+        return {'attempt_id':attempt['id'],'verdict':status,'code_verified':False,'source':'collected_official_record','collected_at':row['updated_at']}
 
     async def coach(self, pid, config, aid=None):
         pid = normalize(pid)
@@ -404,6 +429,20 @@ class Workbench:
 
 
 def register(app, service, jobs, daily=None):
+    @app.get('/api/platforms')
+    def platforms():
+        from .problem_sources import HOSTS
+        accounts=service.accounts.public()['items']
+        return {'items':[{'platform':p,'account_collection':True,'statement':True,'ai_hint':True,'auto_submit':False,'judge_sync':True,'accounts':[a for a in accounts if a['platform']==p]} for p in HOSTS]}
+
+    @app.post('/api/platforms/{platform}/collect')
+    async def collect_platform(platform: str):
+        from .problem_sources import HOSTS
+        if platform not in HOSTS: raise HTTPException(404, '平台不存在')
+        if not any(a.get('platform')==platform for a in service.accounts.document().get('accounts', [])):
+            raise HTTPException(400, '请先绑定此平台账号，再采集账号信息')
+        return jobs.start('crawl', {'platform':platform})
+
     @app.get('/api/workbench/editor-settings')
     def editor_settings():
         return EditorSettings.model_validate(service.db.get('editor_settings', {})).model_dump()

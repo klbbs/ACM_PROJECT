@@ -43,6 +43,8 @@ import './style.css'
 import { PlatformGuide } from './platform-guide'
 import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
+import { OnlineUsers } from './online-users'
+import { PlatformConnections } from './platform-connections'
 import { AdminPage } from './admin'
 import { DailyTasksPage } from './daily-tasks'
 
@@ -52,7 +54,6 @@ type Page =
   | 'workbench'
   | 'overview'
   | 'submissions'
-  | 'analysis'
   | 'practice'
   | 'settings'
   | 'community'
@@ -60,7 +61,6 @@ type Page =
 const nav = [
   { id: 'overview', name: '训练总览', icon: BarChart3 },
   { id: 'submissions', name: '提交记录', icon: Layers3 },
-  { id: 'analysis', name: 'AI 能力分析', icon: Sparkles },
   { id: 'workbench', name: '刷题工作台', icon: Code2 },
   { id: 'practice', name: '今日练习', icon: Target },
   { id: 'guide', name: '平台绑定教程', icon: BookOpen },
@@ -78,7 +78,7 @@ const statusNames: Record<string, string> = {
 }
 const jobNames: Record<string, string> = {
   crawl: '同步账号',
-  analysis: '能力分析',
+  analysis: '训练建议',
   recommend: '智能选题',
   catalog: '同步题库',
   ai_test: 'AI 连接测试',
@@ -439,7 +439,11 @@ function App() {
         </div>
         <nav>
           {nav
-            .filter((n) => (n.id !== 'community' || auth.multi_user) && (n.id !== 'admin' || auth.user?.role === 'admin'))
+            .filter(
+              (n) =>
+                (n.id !== 'community' || auth.multi_user) &&
+                (n.id !== 'admin' || auth.user?.role === 'admin'),
+            )
             .map((n) => (
               <button
                 key={n.id}
@@ -453,7 +457,6 @@ function App() {
               >
                 <n.icon size={19} />
                 <span className="nav-label">{n.name}</span>
-                {n.id === 'analysis' && <span className="nav-ai">AI</span>}
               </button>
             ))}
         </nav>
@@ -510,6 +513,7 @@ function App() {
             <strong>{current.name}</strong>
           </div>
           <div className="topbar-right">
+            {auth.multi_user && <OnlineUsers />}
             <form
               className="global-search"
               onSubmit={(e) => {
@@ -574,15 +578,13 @@ function App() {
                   ? '聚合你的算法足迹，发现薄弱环节，专注下一次突破。'
                   : page === 'submissions'
                     ? '每一次尝试都有价值，在记录中发现你的成长轨迹。'
-                    : page === 'analysis'
-                      ? '基于真实提交与题目标签，找到更值得投入的方向。'
-                      : page === 'practice'
-                        ? '从真实题库出发，为下一场比赛积累确定性。'
-                        : page === 'workbench'
-                          ? '在题目、代码与提示之间，把每次尝试变成下一次进步。'
-                          : page === 'community'
-                            ? '按需共享训练资料，管理成员与账号安全。'
-                            : '连接你的平台账号与 AI，让训练工作台持续运转。'}
+                    : page === 'practice'
+                      ? '从真实题库出发，为下一场比赛积累确定性。'
+                      : page === 'workbench'
+                        ? '在题目、代码与提示之间，把每次尝试变成下一次进步。'
+                        : page === 'community'
+                          ? '按需共享训练资料，管理成员与账号安全。'
+                          : '连接你的平台账号与 AI，让训练工作台持续运转。'}
               </p>
             </div>
             <div className="heading-actions">
@@ -596,9 +598,16 @@ function App() {
                     <RefreshCw size={15} />
                     同步账号
                   </Button>
-                  <Button className="primary" onClick={() => setPage('analysis')}>
+                  <Button
+                    className="primary"
+                    onClick={() =>
+                      document
+                        .getElementById('overview-training-advice')
+                        ?.scrollIntoView({ behavior: 'smooth' })
+                    }
+                  >
                     <Sparkles size={16} />
-                    生成 AI 分析
+                    更新训练建议
                   </Button>
                 </>
               )}
@@ -750,8 +759,14 @@ function App() {
                       ? '你的最新能力报告已就绪。回顾数据依据，把建议落实到下一次练习。'
                       : '连接模型，从提交模式中发现薄弱环节，生成适合自己的训练路线。'}
                   </p>
-                  <Button onClick={() => setPage('analysis')}>
-                    查看能力分析 <ArrowRight size={17} />
+                  <Button
+                    onClick={() =>
+                      document
+                        .getElementById('overview-training-advice')
+                        ?.scrollIntoView({ behavior: 'smooth' })
+                    }
+                  >
+                    查看训练建议 <ArrowRight size={17} />
                   </Button>
                   <span className="teaser-footer">
                     <ShieldCheck size={13} />
@@ -788,7 +803,14 @@ function App() {
                       <h2>值得关注的知识点</h2>
                       <p>按提交通过率排序 · 标签来自平台</p>
                     </div>
-                    <button className="text-button" onClick={() => setPage('analysis')}>
+                    <button
+                      className="text-button"
+                      onClick={() =>
+                        document
+                          .getElementById('overview-training-advice')
+                          ?.scrollIntoView({ behavior: 'smooth' })
+                      }
+                    >
                       深入分析 <ArrowRight size={14} />
                     </button>
                   </div>
@@ -835,9 +857,21 @@ function App() {
               onError={setError}
             />
           )}
-          {page === 'analysis' && (
+          {page === 'overview' && (
             <>
-              <section className="card analysis-start">
+              <section className="card">
+                <h2>近期实际训练用时</h2>
+                <p>
+                  {(overview.actual_time_evidence || []).length} 次已通过题目的自报用时，共{' '}
+                  {(overview.actual_time_evidence || []).reduce(
+                    (sum: number, r: Row) => sum + r.duration_minutes,
+                    0,
+                  )}{' '}
+                  分钟
+                </p>
+                <p className="help">完成每日题目后填写；用时为用户自报，不作为通过或签到证明。</p>
+              </section>
+              <section className="card analysis-start" id="overview-training-advice">
                 <div className="analysis-heading">
                   <div className="icon-tile">
                     <Bot size={25} />
@@ -874,7 +908,7 @@ function App() {
                 </p>
               </section>
               <div className="report-top">
-                <h2>训练诊断报告</h2>
+                <h2>训练建议与记录</h2>
                 <select
                   aria-label="历史分析报告"
                   value={report?.id || ''}
@@ -887,7 +921,7 @@ function App() {
                   <option value="">选择历史报告</option>
                   {reports.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {date(r.created_at)} · {r.kind === 'analysis' ? '能力分析' : '智能选题'}
+                      {date(r.created_at)} · {r.kind === 'analysis' ? '训练建议' : '智能选题'}
                     </option>
                   ))}
                 </select>
@@ -915,7 +949,7 @@ function App() {
                 <section className="card">
                   <Empty
                     title="你的第一份训练报告，等你开启"
-                    detail="先在连接与设置中接入 AI，再选择模型生成基于真实数据的能力分析。"
+                    detail="先在连接与设置中接入 AI，再选择模型生成基于真实数据的训练建议。"
                     action={
                       <Button className="secondary" onClick={() => setPage('settings')}>
                         配置 AI 接入 <ArrowRight size={15} />
@@ -1000,7 +1034,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.10.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.11.0</span>
             </span>
           </footer>
         </div>
@@ -1392,6 +1426,7 @@ function PracticePage({
   onError,
   onNotice,
 }: any) {
+  const [recommendPlatform, setRecommendPlatform] = useState('codeforces')
   const [minimum, setMinimum] = useState(800),
     [maximum, setMaximum] = useState(1600),
     [tag, setTag] = useState(''),
@@ -1409,11 +1444,11 @@ function PracticePage({
   }, [])
   useEffect(() => {
     api(
-      `/catalog?minimum=${minimum}&maximum=${maximum}&tags=${encodeURIComponent(tag)}&min_contest=${minContest}`,
+      `/catalog?platform=${recommendPlatform}&minimum=${minimum}&maximum=${maximum}&tags=${encodeURIComponent(tag)}&min_contest=${minContest}`,
     )
       .then(setCatalog)
       .catch((e) => onError(e.message))
-  }, [minimum, maximum, tag, minContest, revision])
+  }, [minimum, maximum, tag, minContest, revision, recommendPlatform])
   const selected = report?.kind === 'recommend' ? report.data.selected_problems : []
   const mark = async (p: Row, status: string) => {
     try {
@@ -1448,47 +1483,69 @@ function PracticePage({
             onClick={() => run('/catalog/refresh')}
           >
             <RefreshCw size={15} />
-            同步题库
+            同步 CF 题库
           </Button>
         </div>
         <div className="practice-filters">
           <label>
-            最低 CF 难度
-            <select value={minimum} onChange={(e) => setMinimum(Number(e.target.value))}>
-              {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
-                <option key={n}>{n}</option>
+            推荐平台
+            <select
+              value={recommendPlatform}
+              onChange={(e) => setRecommendPlatform(e.target.value)}
+            >
+              {Object.entries({
+                codeforces: 'Codeforces',
+                atcoder: 'AtCoder',
+                luogu: '洛谷',
+                nowcoder: '牛客',
+              }).map(([v, n]) => (
+                <option key={v} value={v}>
+                  {n}
+                </option>
               ))}
             </select>
           </label>
-          <label>
-            最高 CF 难度
-            <select value={maximum} onChange={(e) => setMaximum(Number(e.target.value))}>
-              {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
-                <option key={n}>{n}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            强化知识点
-            <select value={tag} onChange={(e) => setTag(e.target.value)}>
-              <option value="">不限知识点</option>
-              {overview.topics
-                .filter((t: Row) => !/^\d+$/.test(t.tag))
-                .map((t: Row) => (
-                  <option key={t.tag}>{t.tag}</option>
-                ))}
-            </select>
-          </label>
-          <label>
-            最小比赛 ID
-            <input
-              type="number"
-              min="0"
-              max="100000"
-              value={minContest}
-              onChange={(e) => setMinContest(Number(e.target.value))}
-            />
-          </label>
+          {recommendPlatform === 'codeforces' && (
+            <>
+              <label>
+                最低 CF 难度
+                <select value={minimum} onChange={(e) => setMinimum(Number(e.target.value))}>
+                  {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
+                    <option key={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                最高 CF 难度
+                <select value={maximum} onChange={(e) => setMaximum(Number(e.target.value))}>
+                  {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
+                    <option key={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                强化知识点
+                <select value={tag} onChange={(e) => setTag(e.target.value)}>
+                  <option value="">不限知识点</option>
+                  {overview.topics
+                    .filter((t: Row) => !/^\d+$/.test(t.tag))
+                    .map((t: Row) => (
+                      <option key={t.tag}>{t.tag}</option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                最小比赛 ID
+                <input
+                  type="number"
+                  min="0"
+                  max="100000"
+                  value={minContest}
+                  onChange={(e) => setMinContest(Number(e.target.value))}
+                />
+              </label>
+            </>
+          )}
         </div>
         <div className="ai-controls">
           {aiPicker}
@@ -1497,7 +1554,13 @@ function PracticePage({
             loading={busy}
             disabled={!model || !catalog.items.length || minimum > maximum}
             onClick={() =>
-              start({ minimum, maximum, tags: tag ? [tag] : [], min_contest: minContest })
+              start({
+                platform: recommendPlatform,
+                minimum,
+                maximum,
+                tags: recommendPlatform === 'codeforces' && tag ? [tag] : [],
+                min_contest: minContest,
+              })
             }
           >
             <Sparkles size={16} />
@@ -1505,11 +1568,20 @@ function PracticePage({
           </Button>
         </div>
         <p className="help">
-          当前推荐源为 Codeforces 官方题库 · 本次最多 60 道候选 ·{' '}
+          {catalog.source || '题库'} · 本次最多 60 道候选 ·{' '}
+          {recommendPlatform !== 'codeforces' &&
+            '请先在工作台获取该平台题面；候选仅包含自己缓存且未做过的官方题目，不跨平台换算难度。'}
           {catalog.updated_at ? `更新于 ${date(catalog.updated_at)}` : '尚未同步题库'}
         </p>
       </section>
-      <DailyTasksPage revision={revision} provider={provider} model={model} aiPicker={aiPicker} onError={onError} onNotice={onNotice} />
+      <DailyTasksPage
+        revision={revision}
+        provider={provider}
+        model={model}
+        aiPicker={aiPicker}
+        onError={onError}
+        onNotice={onNotice}
+      />
       {selected.length > 0 && (
         <>
           <div className="section-title">
@@ -1572,7 +1644,7 @@ function PracticePage({
               <thead>
                 <tr>
                   <th>题目</th>
-                  <th>CF 难度</th>
+                  <th>{recommendPlatform === 'codeforces' ? 'CF 难度' : '平台难度'}</th>
                   <th>知识点</th>
                   <th />
                 </tr>
@@ -1585,7 +1657,7 @@ function PracticePage({
                       <small>{p.problem_id}</small>
                     </td>
                     <td>
-                      <span className="difficulty">{p.difficulty}</span>
+                      <span className="difficulty">{p.difficulty ?? '未提供'}</span>
                     </td>
                     <td>
                       <div className="tags">
@@ -1621,7 +1693,7 @@ function PracticePage({
                 onClick={() => run('/catalog/refresh')}
               >
                 <RefreshCw size={15} />
-                同步题库
+                同步 CF 题库
               </Button>
             }
           />
@@ -1921,10 +1993,21 @@ function SettingsPage({
           </p>
           <label>
             默认模型
-            <select aria-label="默认模型 ID" value={config.model || ''} onChange={(e) => setConfig({ ...config, model: e.target.value })}>
+            <select
+              aria-label="默认模型 ID"
+              value={config.model || ''}
+              onChange={(e) => setConfig({ ...config, model: e.target.value })}
+            >
               <option value="">先保存 Key 并读取模型</option>
-              {apiModels.map((m) => <option key={m.id} value={m.id}>{apiModelSource === 'manual' ? '未验证 · ' : ''}{m.name || m.id}</option>)}
-              {config.model && !apiModels.some((m) => m.id === config.model) && <option value={config.model}>{config.model}（当前填写；未验证）</option>}
+              {apiModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {apiModelSource === 'manual' ? '未验证 · ' : ''}
+                  {m.name || m.id}
+                </option>
+              ))}
+              {config.model && !apiModels.some((m) => m.id === config.model) && (
+                <option value={config.model}>{config.model}（当前填写；未验证）</option>
+              )}
             </select>
           </label>
           <details>
@@ -2203,6 +2286,7 @@ function SettingsPage({
           </p>
         </section>
       </div>
+      <PlatformConnections revision={revision} run={run} onError={onError} />
       <section className="card settings-card">
         <div className="card-heading">
           <div>
