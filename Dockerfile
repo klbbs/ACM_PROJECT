@@ -11,6 +11,8 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 ACM_ENV=production ACM_MULTI_US
 WORKDIR /app
 COPY requirements.lock pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.lock
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap g++ openjdk-17-jdk-headless && \
+    rm -rf /var/lib/apt/lists/*
 COPY src/ ./src/
 COPY scripts/manage_users.py scripts/container_smoke.py ./scripts/
 RUN pip install --no-cache-dir --no-deps .

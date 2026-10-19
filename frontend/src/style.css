@@ -1548,6 +1548,99 @@ td small {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
+.daily-mission .card-heading {
+  align-items: flex-start;
+}
+.daily-mission .card-heading p {
+  color: #737b8d;
+  line-height: 1.6;
+  margin: 6px 0 0;
+}
+.daily-mission .practice-filters {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: end;
+  padding: 16px 0;
+  margin: 0;
+}
+.daily-mission .practice-filters label {
+  min-width: 0;
+}
+.daily-mission .practice-filters select {
+  width: 100%;
+  margin-top: 6px;
+}
+.checkin-month {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 12px 20px;
+  padding: 16px 0;
+  border-top: 1px solid #edf0f3;
+  color: #70798a;
+}
+.checkin-month strong {
+  display: block;
+  margin-top: 4px;
+  color: #263a46;
+  font-size: 20px;
+  font-weight: 600;
+}
+.daily-problem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid #edf0f3;
+}
+.daily-problem strong,
+.daily-problem p {
+  overflow-wrap: anywhere;
+}
+.daily-problem p {
+  margin: 5px 0 0;
+  color: #737b8d;
+  font-size: 12px;
+}
+.wb-test-case {
+  border-top: 1px solid #edf0f3;
+  padding: 14px 0;
+}
+.wb-test-case > div:first-child {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.wb-test-case label {
+  display: block;
+  min-width: 0;
+  color: #697386;
+  font-size: 12px;
+}
+.wb-test-case textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  resize: vertical;
+  font: 13px/1.55 'JetBrains Mono', Consolas, monospace;
+}
+.wb-test-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #8793a0;
+  background: #f7f9fa;
+}
+.wb-test-result.success {
+  border-color: #24866b;
+}
+.wb-test-result.warning {
+  border-color: #c47b32;
+}
+.wb-test-result pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .problem-card {
   display: flex;
   flex-direction: column;
@@ -1944,36 +2037,18 @@ td small {
     grid-template-columns: 1fr;
   }
 }
-.schedule-fields {
+.preference-fields {
   display: flex;
   align-items: flex-end;
   gap: 28px;
   margin-bottom: 18px;
   flex-wrap: wrap;
 }
-.schedule-fields > label:not(.checkbox) {
+.preference-fields > label:not(.checkbox) {
   min-width: 190px;
 }
-.schedule-fields > button {
+.preference-fields > button {
   margin-left: auto;
-}
-.time-input {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.time-input input {
-  width: 62px;
-  font-size: 12px;
-}
-.time-input > span {
-  color: #a3a7b6;
-}
-.time-input small {
-  font-size: 10px;
-  font-weight: 400;
-  color: #b2b7c3;
-  margin-left: 5px;
 }
 .checkbox {
   display: flex;
@@ -2262,6 +2337,16 @@ td small {
   }
   .practice-filters {
     grid-template-columns: 1fr 1fr;
+  }
+  .daily-mission .practice-filters,
+  .wb-test-case > div:first-child {
+    grid-template-columns: 1fr;
+  }
+  .daily-problem {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .daily-problem > div {
+    grid-column: 1 / -1;
   }
   .ai-picker select {
     min-width: 140px;
@@ -2611,25 +2696,18 @@ td small {
   .account-settings small {
     font-size: 8px;
   }
-  .schedule-fields {
+  .preference-fields {
     gap: 17px;
   }
-  .schedule-fields > label:not(.checkbox) {
+  .preference-fields > label:not(.checkbox) {
     min-width: 0;
     flex: 1;
   }
-  .schedule-fields > button {
+  .preference-fields > button {
     width: 100%;
   }
-  .schedule-fields .checkbox {
+  .preference-fields .checkbox {
     font-size: 10px;
-  }
-  .time-input small {
-    font-size: 8px;
-  }
-  .time-input input {
-    width: 47px;
-    padding: 8px;
   }
   .table-toolbar {
     flex-wrap: wrap;

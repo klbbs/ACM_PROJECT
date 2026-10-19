@@ -343,20 +343,8 @@ function App() {
         <option value="codex">ChatGPT 官方账号</option>
         <option value="api">API Key 通道</option>
       </select>
-      {provider === 'api' && (
-        <input
-          aria-label="手动模型 ID"
-          placeholder="可直接填写模型 ID"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          maxLength={150}
-        />
-      )}
       <select aria-label="选择模型" value={model} onChange={(e) => setModel(e.target.value)}>
         <option value="">选择模型</option>
-        {model && !models.some((m) => m.id === model) && (
-          <option value={model}>{model}（手动输入）</option>
-        )}
         {models.map((m) => (
           <option key={m.id} value={m.id}>
             {m.name || m.id}
@@ -942,6 +930,7 @@ function App() {
               aiPicker={aiPicker}
               overview={overview}
               model={model}
+              provider={provider}
               busy={running('recommend')}
               catalogBusy={running('catalog')}
               start={(extra: Row) => startAnalysis(true, extra)}
@@ -1010,7 +999,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.9.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.10.0</span>
             </span>
           </footer>
         </div>
@@ -1392,6 +1381,7 @@ function PracticePage({
   aiPicker,
   overview,
   model,
+  provider,
   busy,
   catalogBusy,
   start,
@@ -1407,6 +1397,17 @@ function PracticePage({
     [minContest, setMinContest] = useState(0),
     [catalog, setCatalog] = useState<Row>({ items: [] }),
     [removed, setRemoved] = useState<string[]>([])
+  const [daily, setDaily] = useState<Row | null>(null),
+    [dailyGoal, setDailyGoal] = useState(1),
+    [dailyDuration, setDailyDuration] = useState(30),
+    [dailyBusy, setDailyBusy] = useState(false)
+  useEffect(() => {
+    api('/daily').then((value) => {
+      setDaily(value)
+      setDailyGoal(value.settings.daily_goal)
+      setDailyDuration(value.settings.duration_days)
+    }).catch((e) => onError(e.message))
+  }, [revision])
   useEffect(() => {
     api('/training')
       .then((p) => {
@@ -1432,6 +1433,7 @@ function PracticePage({
         status,
         note: '',
       })
+      if (status === 'done') setDaily(await api('/daily/complete', 'POST', { problem_id: p.id }))
       setRemoved((r) => [...r, p.id])
       onNotice(
         status === 'done' ? '已记录完成，后续选题会排除这道题' : '已跳过，后续推荐会排除这道题',
@@ -1439,6 +1441,19 @@ function PracticePage({
     } catch (e: any) {
       onError(e.message)
     }
+  }
+  const rollDaily = async () => {
+    setDailyBusy(true)
+    try { setDaily(await api('/daily/roll', 'POST', { provider, model })) }
+    catch (e: any) { onError(e.message) }
+    finally { setDailyBusy(false) }
+  }
+  const completeDaily = async (problem_id: string) => {
+    try {
+      setDaily(await api('/daily/complete', 'POST', { problem_id }))
+      onNotice('今日任务进度和签到已更新')
+      setRemoved((items) => [...items, problem_id])
+    } catch (e: any) { onError(e.message) }
   }
   return (
     <>
@@ -1517,6 +1532,21 @@ function PracticePage({
           当前推荐源为 Codeforces 官方题库 · 本次最多 60 道候选 ·{' '}
           {catalog.updated_at ? `更新于 ${date(catalog.updated_at)}` : '尚未同步题库'}
         </p>
+      </section>
+      <section className="card daily-mission">
+        <div className="card-heading">
+          <div><h2>每日任务与签到</h2><p>完成一道题记普通签到；完成 AI 选题并达到今日目标记 K 签。首次选题后每天可换题两次。</p></div>
+          <span className={`badge ${daily?.checkin?.kind === 'k' ? 'success' : 'neutral'}`}>{daily?.checkin?.kind === 'k' ? '今日 K 签' : daily?.checkin?.kind === 'normal' ? '今日普通签到' : '尚未签到'}</span>
+        </div>
+        <div className="practice-filters">
+          <label>每日题量<select value={dailyGoal} onChange={(e) => setDailyGoal(Number(e.target.value))}>{Array.from({length: 10}, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n} 题</option>)}</select></label>
+          <label>任务周期<select value={dailyDuration} onChange={(e) => setDailyDuration(Number(e.target.value))}><option value={7}>7 天</option><option value={14}>14 天</option><option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option></select></label>
+          <Button className="secondary" disabled={dailyBusy} onClick={async () => { try { setDaily(await api('/daily/settings', 'PUT', {daily_goal: dailyGoal, duration_days: dailyDuration})); onNotice('每日任务已保存') } catch (e: any) { onError(e.message) } }}>保存每日任务</Button>
+          <Button className="primary" loading={dailyBusy} disabled={!daily?.active || !model || daily?.rerolls_remaining === 0} onClick={rollDaily}>{daily?.rolls?.length ? 'AI 换一道题' : 'AI 选今日题目'}（可换 {daily?.rerolls_remaining ?? 2} 次）</Button>
+        </div>
+        <div className="checkin-month"><span>本月 K 签 <strong>{daily?.checkin?.month_k || 0}</strong></span><span>本月普通签到 <strong>{daily?.checkin?.month_normal || 0}</strong></span><span>本月总签到 <strong>{daily?.checkin?.month_total || 0}</strong></span><span>累计签到 <strong>{daily?.checkin?.all_total || 0}</strong></span><span>今日完成 <strong>{daily?.completed || 0}/{dailyGoal}</strong></span></div>
+        {!daily?.active && <p className="help">任务周期未开始或已结束。保存任务后开始新的周期。</p>}
+        {daily?.rolls?.map((roll: Row) => <article className="daily-problem" key={roll.seq}><div><strong>{roll.data.problem_id} · {roll.data.title}</strong><p>{roll.data.reason}</p></div><a className="button secondary" href={roll.data.url} target="_blank" rel="noreferrer">打开题目</a><Button className="icon-btn" title="记录完成" aria-label="记录完成" onClick={() => completeDaily(roll.problem_id)}><Check size={17}/></Button></article>)}
       </section>
       {selected.length > 0 && (
         <>
@@ -1678,15 +1708,7 @@ function SettingsPage({
     avoid_tags: [],
     prefer_recent: true,
   })
-  const [accounts, setAccounts] = useState<Row[]>([]),
-    [schedule, setSchedule] = useState<Row>({
-      enabled: false,
-      hour: 9,
-      minute: 0,
-      analyze: false,
-      provider: 'api',
-      model: '',
-    })
+  const [accounts, setAccounts] = useState<Row[]>([])
   useEffect(() => {
     api('/training')
       .then(setTraining)
@@ -1696,9 +1718,6 @@ function SettingsPage({
       .catch((e) => onError(e.message))
     api('/accounts')
       .then((d) => setAccounts(d.items))
-      .catch((e) => onError(e.message))
-    api('/schedule')
-      .then(setSchedule)
       .catch((e) => onError(e.message))
   }, [revision])
   const [editingAccount, setEditingAccount] = useState<Row>({
@@ -1916,23 +1935,13 @@ function SettingsPage({
             </select>
           </label>
           <label>
-            默认模型 ID
-            <input
-              aria-label="默认模型 ID"
-              list="provider-models"
-              value={config.model || ''}
-              onChange={(e) => setConfig({ ...config, model: e.target.value })}
-              placeholder="填写账号可用的模型 ID；也可保存 Key 后读取模型列表"
-              maxLength={150}
-            />
+            默认模型
+            <select aria-label="默认模型 ID" value={config.model || ''} onChange={(e) => setConfig({ ...config, model: e.target.value })}>
+              <option value="">先保存 Key 并读取模型</option>
+              {apiModels.map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
+              {config.model && !apiModels.some((m) => m.id === config.model) && <option value={config.model}>{config.model}（已保存）</option>}
+            </select>
           </label>
-          <datalist id="provider-models">
-            {apiModels.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name || m.id}
-              </option>
-            ))}
-          </datalist>
           <Button
             className="text-button"
             loading={readingModels}
@@ -1944,6 +1953,10 @@ function SettingsPage({
                 const data = await api('/ai/models?provider=api')
                 setApiModels(data.items)
                 setApiModelNote(data.note)
+                if (!data.items.some((m: Row) => m.id === config.model)) {
+                  const nextModel = data.default_model || data.items[0]?.id || ''
+                  setConfig((current) => ({ ...current, model: nextModel }))
+                }
               } catch (e: any) {
                 onError(e.message)
               } finally {
@@ -2415,7 +2428,7 @@ function SettingsPage({
             />
           </label>
         </div>
-        <div className="schedule-fields">
+        <div className="preference-fields">
           <label>
             优先知识点（英文标签，逗号分隔）
             <input
@@ -2465,103 +2478,6 @@ function SettingsPage({
         <p className="help">
           比赛 ID 与 Round
           编号不同；可用此下限控制题目新旧。题库会排除已有提交，以及本地导入的已练习记录。
-        </p>
-      </section>
-      <section className="card settings-card">
-        <div className="card-heading">
-          <div>
-            <h2>
-              <span className="inline">
-                <Clock3 size={19} />
-                每日训练工作流
-              </span>
-            </h2>
-            <p>按北京时间执行；网页关闭后，只要服务运行就会继续。</p>
-          </div>
-          <label className="switch">
-            <input
-              aria-label="启用每日同步"
-              type="checkbox"
-              checked={schedule.enabled}
-              onChange={(e) => setSchedule({ ...schedule, enabled: e.target.checked })}
-            />
-            <span />
-          </label>
-        </div>
-        <div className="schedule-fields">
-          <label>
-            每天执行时间
-            <div className="time-input">
-              <input
-                aria-label="小时"
-                type="number"
-                min="0"
-                max="23"
-                value={schedule.hour}
-                onChange={(e) => setSchedule({ ...schedule, hour: Number(e.target.value) })}
-              />
-              <span>:</span>
-              <input
-                aria-label="分钟"
-                type="number"
-                min="0"
-                max="59"
-                value={schedule.minute}
-                onChange={(e) => setSchedule({ ...schedule, minute: Number(e.target.value) })}
-              />
-              <small>Asia/Shanghai</small>
-            </div>
-          </label>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={schedule.analyze}
-              onChange={(e) => setSchedule({ ...schedule, analyze: e.target.checked })}
-            />
-            同步成功后生成 AI 能力报告
-          </label>
-        </div>
-        <div className="schedule-fields">
-          <label>
-            自动分析通道
-            <select
-              value={schedule.provider}
-              onChange={(e) => setSchedule({ ...schedule, provider: e.target.value })}
-            >
-              <option value="api">API Key</option>
-              <option value="codex" disabled={!config.codex_enabled}>
-                ChatGPT 官方账号
-              </option>
-            </select>
-          </label>
-          <label>
-            自动分析模型
-            <input
-              value={schedule.model}
-              placeholder={model || '填写模型 ID'}
-              onChange={(e) => setSchedule({ ...schedule, model: e.target.value })}
-            />
-          </label>
-          <Button
-            className="primary"
-            onClick={async () => {
-              try {
-                const { timezone, next_run, ...payload } = schedule
-                setSchedule(await api('/schedule', 'PUT', payload))
-                onNotice('每日工作流已保存')
-              } catch (e: any) {
-                onError(e.message)
-              }
-            }}
-          >
-            保存定时任务
-          </Button>
-        </div>
-        <p className="help">
-          {schedule.next_run
-            ? `下次运行：${schedule.next_run}`
-            : '每日工作流默认关闭，可按需开启。'}{' '}
-          使用单个服务进程，避免与已有的外部定时任务重复执行。
         </p>
       </section>
     </>

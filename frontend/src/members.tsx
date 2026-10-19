@@ -5,7 +5,7 @@ type Row = Record<string, any>
 
 export function UserLogin({ status }: { status: Row }) {
   const [mode, setMode] = useState(status.setup_required ? 'setup' : 'login')
-  const [username, setUsername] = useState(status.setup_required ? 'kds' : ''),
+  const [username, setUsername] = useState(status.setup_required ? 'kendas' : ''),
     [password, setPassword] = useState(status.setup_required ? 'kds' : '')
   const [code, setCode] = useState(''),
     [confirm, setConfirm] = useState(status.setup_required ? 'kds' : '')
@@ -48,7 +48,7 @@ export function UserLogin({ status }: { status: Row }) {
               : '登录 ACM Lab'}
         </h1>
         <p>
-          独立训练空间，按需共享资料。首次初始化已填入管理员帐号和密码 <strong>kds</strong>；初始化后请立即修改密码。
+          独立训练空间，按需共享资料。首位管理员帐号为 <strong>kendas</strong>；使用初始化密码后请立即修改。
         </p>
         <label>
           用户名

@@ -144,11 +144,11 @@ def test_task_and_report_lifecycle(client,monkeypatch):
     assert report['data']['data_window']['submissions']==2
 
 
-def test_schedule_persists_and_uses_shanghai(client):
-    data=client.put('/api/schedule',json={'enabled':True,'hour':9,'minute':5,'analyze':False,'provider':'api','model':''}).json()
-    assert data['timezone']=='Asia/Shanghai' and data['next_run']
-    assert client.get('/api/schedule').json()['enabled']
-    assert client.put('/api/schedule',json={'enabled':True,'hour':25}).status_code==422
+def test_user_driven_daily_task_api(client):
+    state=client.put('/api/daily/settings',json={'daily_goal':2,'duration_days':14})
+    assert state.status_code==200
+    assert state.json()['active'] and state.json()['settings']['daily_goal']==2
+    assert state.json()['rerolls_remaining']==2
 
 
 def test_training_preferences_and_invalid_range(client):

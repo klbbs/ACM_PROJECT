@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { undo, redo } from '@codemirror/commands'
-import { CompletionContext } from '@codemirror/autocomplete'
+import { CompletionContext, completionStatus, startCompletion } from '@codemirror/autocomplete'
 import { Vim } from '@replit/codemirror-vim'
 import CodeEditor from './code-editor'
 import { EditorBoundary } from './editor-shell'
@@ -103,6 +103,27 @@ it('rejects an oversized UTF-8 transaction without changing existing text', asyn
   expect(codeBytes(value)).toBe(65535)
   expect(props.onChange).not.toHaveBeenCalled()
   expect(props.onError).toHaveBeenCalled()
+})
+
+it('uses Tab to accept a completion while Enter inserts a newline', async () => {
+  const view = await render({ value: 'int mai' })
+  await act(async () => {
+    view.focus()
+    view.dispatch({ selection: { anchor: view.state.doc.length } })
+    expect(startCompletion(view)).toBe(true)
+    await vi.waitFor(() => expect(completionStatus(view.state)).toBe('active'))
+  })
+  expect(host.querySelector('.cm-tooltip-autocomplete')).not.toBeNull()
+  await act(async () => view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+  expect(view.state.doc.toString()).toContain('\n')
+  expect(host.querySelector('.cm-tooltip-autocomplete')).toBeNull()
+  await act(async () => {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'int mai' }, selection: { anchor: 7 } })
+    expect(startCompletion(view)).toBe(true)
+    await vi.waitFor(() => expect(completionStatus(view.state)).toBe('active'))
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+  })
+  expect(view.state.doc.toString()).toContain('main')
 })
 
 it('waits for composition to complete before publishing Chinese input', async () => {

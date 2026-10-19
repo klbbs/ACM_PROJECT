@@ -75,8 +75,8 @@ def main():
             if not user:
                 parser.error('用户不存在')
         if args.action == 'reset-password':
-            password = getpass.getpass('新密码（至少 15 位）：')
-            if not 15 <= len(password) <= 128 or password != getpass.getpass('确认新密码：'):
+            password = getpass.getpass('新密码（至少 10 位）：')
+            if not 10 <= len(password) <= 128 or password != getpass.getpass('确认新密码：'):
                 parser.error('密码长度不符合要求或两次不一致')
             hashed = password_hash(password)
             with users.connect() as db:

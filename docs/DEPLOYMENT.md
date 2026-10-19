@@ -58,6 +58,10 @@ python3 scripts/bootstrap.py
 
 AI 翻译先检查已审核的共享译文，命中时直接免费复用，不调用模型。用户明确勾选同意后才发送题面；代码、Cookie、提交记录和个人提示历史不会随翻译请求发送。生成的 AI 译文默认只在个人空间可见，用户点击「上传翻译供审核」后才进入管理员队列。管理员审核通过后，其他用户可以免费使用同一题面版本的共享译文；同一服务端模型身份对一个题面版本只接受一份待审或已通过译文。题面更新、手动导入或图片/公式占位符校验失败都会使旧译文失效。
 
+个人 AI 译文只保存在当前后端进程内存，服务重启后需要重新生成；只有用户提交审核的共享译文保存在共享数据库。每日任务由登录用户自行配置每日题量和任务周期，每天首次 AI 选题后可换题两次，不依赖后台定时任务。
+
+工作台自测在服务器使用 bubblewrap 的隔离网络命名空间运行 C++17/20、Python 3 和 Java 17。Docker 宿主机必须允许创建 bubblewrap 所需的 Linux 命名空间；未开放时接口明确返回 503，不会降级为无隔离执行。容器将 bubblewrap、g++ 和 OpenJDK 17 安装在运行镜像中。
+
 Google Cloud Translation Basic v2 使用官方 `translation.googleapis.com/language/translate/v2`，Microsoft 使用官方 `api.cognitive.microsofttranslator.com/translate`。密钥只从服务端环境变量读取，不返回前端，不跟随重定向；请按各平台官方配额、区域和计费规则配置。
 
 ## 迁移与备份

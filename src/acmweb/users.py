@@ -16,7 +16,7 @@ HASH_SLOTS = threading.BoundedSemaphore(2)
 
 @contextmanager
 def instance_lock(path):
-    """A scheduler/tenant runtime must have only one serving process."""
+    """A tenant runtime must have only one serving process."""
     import fcntl
     fd = os.open(path,os.O_CREAT|os.O_RDWR,0o600)
     try:
@@ -87,6 +87,15 @@ class Users:
               expires_at INTEGER NOT NULL DEFAULT 0);
             PRAGMA user_version=1;
             ''')
+            legacy = db.execute("SELECT id FROM users WHERE username='kds' COLLATE NOCASE").fetchone()
+            if legacy:
+                target = db.execute("SELECT id FROM users WHERE username='kendas' COLLATE NOCASE", ()).fetchone()
+                if target:
+                    db.execute("UPDATE users SET username=?,active=0,role='member' WHERE id=?", ('kds-retired-' + legacy['id'][:10], legacy['id']))
+                    db.execute('DELETE FROM sessions WHERE user_id=?', (legacy['id'],))
+                else:
+                    db.execute("UPDATE users SET username='kendas' WHERE id=?", (legacy['id'],))
+                self.audit('admin.renamed_to_kendas', target['id'] if target else legacy['id'], legacy['id'], db)
         path.chmod(0o600)
         # Unknown users still perform the same expensive password verification.
         self.dummy_hash = password_hash(secrets.token_urlsafe(32))

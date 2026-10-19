@@ -126,7 +126,7 @@ def create_multi_app(settings, factory):
         with instance_lock(settings.data_dir/'.multiuser.lock'):
             cleanup = None
             try:
-                # Restore schedules only for active users with an existing workspace.
+                # Restore existing user workspaces on server restart.
                 with identities.connect() as db:
                     users = db.execute('SELECT id FROM users WHERE active=1').fetchall()
                 for user in users:
@@ -140,7 +140,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.9.0',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.10.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -197,7 +197,7 @@ def create_multi_app(settings, factory):
                     if path in {'/api/auth/setup','/api/auth/login','/api/auth/register'}:
                         identities.limit('auth-ip:'+digest(peer),30,900)
                         identities.limit('auth-global',60,60)
-                    elif user and (path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings')) or path in {'/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test'}):
+                    elif user and (path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings')) or path in {'/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
             else:
@@ -217,7 +217,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.9.0','mode':'multi-user'}
+        return {'status':'ok','version':'0.10.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -232,6 +232,8 @@ def create_multi_app(settings, factory):
 
     @app.post('/api/auth/setup')
     def setup(payload:InitialAdminCredentials,response:Response):
+        if payload.username.lower() != 'kendas':
+            raise HTTPException(422, '管理员账号固定为 kendas')
         if identities.count():
             raise HTTPException(409,'管理员已初始化')
         if not settings.access_token or not hmac.compare_digest(digest(payload.setup_token),digest(settings.access_token)):
@@ -250,7 +252,7 @@ def create_multi_app(settings, factory):
 
     @app.post('/api/auth/login')
     def login(payload:LoginCredentials,response:Response):
-        if len(payload.password) < 10 and payload.username.lower() != 'kds':
+        if len(payload.password) < 10 and payload.username.lower() != 'kendas':
             raise HTTPException(422,'成员密码至少 10 位')
         identities.limit('login-name:'+digest(payload.username.lower()),10,900)
         user = identities.authenticate(payload.username.lower(),payload.password)

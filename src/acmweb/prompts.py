@@ -38,6 +38,10 @@ TASK_POLICIES = {
     'connection_test': (
         '这是最小连接与 JSON 格式测试，不包含用户数据（no user data）。仅输出 {"ok":true}，不要添加其他字段。'
     ),
+    'daily_roll': (
+        '从 candidates 中选择恰好一道最适合用户今日练习的题目。仅返回题目 id 和一句简短理由；'
+        '只能选择候选项原样 id，不提供题解、提示、伪代码或算法步骤。'
+    ),
 }
 
 

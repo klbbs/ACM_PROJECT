@@ -23,7 +23,7 @@
 
 Compose 默认启用多人模式。先运行 `python3 scripts/bootstrap.py`，在 `.env` 填写 `ACM_ALLOWED_HOSTS` 和 `ACM_PUBLIC_ORIGIN` 为你的 HTTPS 站点，然后 `docker compose up -d --build`。首次访问使用部署令牌创建管理员，之后通过用户名和密码登录；在「共享资料与成员」生成邀请码。
 
-每位用户的平台账号、Cookie、训练数据、API Key 与官方登录独立；仅主动发布的资料或报告摘要共享。旧数据保留，需显式导入管理员的空空间。初始化页面预填管理员账号和密码 `kds`；首次登录后请立即修改初始密码。登录后管理员可在「管理后台」审核或撤下题面译文、管理成员和查看安全审计。
+每位用户的平台账号、Cookie、训练数据、API Key 与官方登录独立；仅主动发布的资料或报告摘要共享。旧数据保留，需显式导入管理员的空空间。管理员账号名为 `kendas`。登录后管理员可在「管理后台」审核或撤下题面译文、管理成员和查看安全审计。
 
 完整部署、权限、旧数据迁移和密码恢复见 [多人版运维说明](docs/MULTIUSER.md)。
 
@@ -60,7 +60,7 @@ cd ..
 在「连接与设置 → AI API 接入」配置：
 
 - 选择 OpenAI、DeepSeek、Claude、Gemini、Qwen（中国/新加坡）、Kimi、硅基流动、智谱或自定义网关预设。
-- 填入自己的 Key 和默认模型 ID，可「保存并读取模型列表」；不提供目录的服务可手动填写 ID。
+- 填入自己的 Key 后保存并读取模型目录，再从下拉栏选择默认模型；不提供目录的服务会提示手动输入 ID。
 - 按模型支持情况调整结构化输出、思考/推理强度、输出上限与超时，默认不发送 temperature。
 - 保存后可主动执行会计费的连接测试，在分析/选题/工作台使用 API Key 通道。
 
@@ -81,7 +81,7 @@ ACM_IMAGE_TARGET=server-codex
 
 多人模式使用 `data/users/<用户ID>/codex/` 保存各自的官方授权，不继承其他成员或宿主机登录。旧版个人模式仍使用 `data/codex/`。挂载数据目录后重建容器保留授权，对外访问必须配置 HTTPS。
 
-模型列表可能包含缓存，实际调用成功才代表有权限。ChatGPT 登录与 API Key 的额度及计费独立；API Key 仍可用于每日自动分析。服务器首次授权必须由你在官方网页完成，本项目不代填密码或抓取 ChatGPT Cookie。
+模型列表可能包含缓存，实际调用成功才代表有权限。ChatGPT 登录与 API Key 的额度及计费独立；API Key 可用于每日任务选题和训练分析。服务器首次授权必须由你在官方网页完成，本项目不代填密码或抓取 ChatGPT Cookie。
 
 参考：[官方无桌面登录](https://learn.chatgpt.com/docs/auth)、[官方 App Server 登录协议](https://learn.chatgpt.com/docs/app-server)。
 
@@ -120,7 +120,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.9.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.10.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

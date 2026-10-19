@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -46,15 +44,6 @@ class Analyze(BaseModel):
     min_contest: int = Field(default=0,ge=0,le=100000)
 
 
-class Schedule(BaseModel):
-    enabled: bool = False
-    hour: int = Field(default=9,ge=0,le=23)
-    minute: int = Field(default=0,ge=0,le=59)
-    analyze: bool = False
-    provider: Literal["api","codex"] = "api"
-    model: str = Field(default="",max_length=150)
-
-
 class Feedback(BaseModel):
     platform: Literal["codeforces","atcoder","luogu","nowcoder"]
     problem_id: str = Field(min_length=1,max_length=100)
@@ -86,36 +75,12 @@ def create_app(settings=None):
     account_config=Accounts(settings)
     ai=AIProvider(database,settings,codex)
     jobs=Jobs(database,settings,ai,account_config)
-    scheduler=AsyncIOScheduler(timezone="Asia/Shanghai")
-
-    async def scheduled():
-        schedule=database.get("schedule",{})
-        try:
-            job=jobs.start("crawl")
-            task=jobs.tasks[job["id"]][1]
-            await task
-            with database.connect() as db:
-                state=db.execute("SELECT status FROM web_jobs WHERE id=?",(job["id"],)).fetchone()[0]
-            if schedule.get("analyze") and state=="completed":
-                jobs.start("analysis",{"provider":schedule.get("provider","api"),"model":schedule.get("model",""),"days":30})
-        except AIError:
-            pass
-
-    def configure_schedule():
-        if scheduler.get_job("daily"):
-            scheduler.remove_job("daily")
-        schedule=database.get("schedule",{})
-        if schedule.get("enabled"):
-            scheduler.add_job(scheduled,CronTrigger(hour=schedule.get("hour",9),minute=schedule.get("minute",0),timezone="Asia/Shanghai"),id="daily",max_instances=1,coalesce=True,misfire_grace_time=3600)
-
     @asynccontextmanager
     async def lifespan(app):
-        configure_schedule();scheduler.start()
         yield
-        scheduler.shutdown(wait=False)
         await jobs.close();await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.9.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.10.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -153,7 +118,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.9.0"}
+    def health():return {"status":"ok","version":"0.10.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -259,12 +224,6 @@ def create_app(settings=None):
                        (payload.platform,payload.problem_id,payload.status,payload.note,int(time.time())))
         return {"ok":True}
 
-    @app.get("/api/schedule")
-    def get_schedule():
-        schedule=database.get("schedule",Schedule().model_dump())
-        job=scheduler.get_job("daily")
-        return {**schedule,"timezone":"Asia/Shanghai","next_run":str(job.next_run_time) if job and scheduler.running else None}
-
     @app.get("/api/training")
     def get_training():return {**Training().model_dump(),**database.get("training",{})}
 
@@ -273,15 +232,13 @@ def create_app(settings=None):
         if payload.minimum>payload.maximum:raise HTTPException(400,"最低难度不能超过最高难度")
         database.set("training",payload.model_dump());return payload.model_dump()
 
-    @app.put("/api/schedule")
-    def set_schedule(payload:Schedule):
-        if payload.analyze and not payload.model:raise HTTPException(400,"自动分析需要指定模型")
-        if payload.provider=="codex" and not settings.enable_codex:raise HTTPException(400,"请先在服务器启用官方账号通道，或选择 API Key")
-        database.set("schedule",payload.model_dump());configure_schedule();return get_schedule()
+    from .daily import Daily, register as register_daily
+    app.state.daily = Daily(database, ai)
+    register_daily(app, app.state.daily)
 
     from .workbench import Workbench, register
     app.state.workbench = Workbench(database, ai, account_config)
-    register(app, app.state.workbench, jobs)
+    register(app, app.state.workbench, jobs, app.state.daily)
 
     # Generated translations stay in the user's private database. Moderated
     # translations use one central store in multi-user deployments so an

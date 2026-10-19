@@ -3,13 +3,14 @@ import { basicSetup } from 'codemirror'
 import { Compartment, EditorState, Prec, Transaction } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { openSearchPanel } from '@codemirror/search'
-import { indentWithTab, redo } from '@codemirror/commands'
+import { indentWithTab, insertNewline, redo } from '@codemirror/commands'
 import { indentUnit } from '@codemirror/language'
 import {
   autocompletion,
   startCompletion,
   closeCompletion,
   acceptCompletion,
+  completionStatus,
   moveCompletionSelection,
 } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
@@ -106,7 +107,21 @@ export default function CodeEditor(props: CodeEditorProps) {
               },
               { key: 'ArrowDown', run: moveCompletionSelection(true) },
               { key: 'ArrowUp', run: moveCompletionSelection(false) },
-              { key: 'Enter', run: acceptCompletion },
+              {
+                key: 'Tab',
+                run: (editor) =>
+                  completionStatus(editor.state)
+                    ? acceptCompletion(editor)
+                    : (indentWithTab.run?.(editor) ?? false),
+              },
+              {
+                key: 'Enter',
+                run: (editor) => {
+                  if (!completionStatus(editor.state)) return false
+                  closeCompletion(editor)
+                  return insertNewline(editor)
+                },
+              },
               { key: 'Escape', run: closeCompletion },
               indentWithTab,
             ]),

@@ -4,8 +4,14 @@ import hashlib
 import json
 import re
 import sqlite3
+import os
+import resource
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit, urljoin
 
 from bs4 import BeautifulSoup
@@ -18,6 +24,7 @@ from ojcrawler.models import CrawlError
 from ojcrawler.storage import codeforces_judge_verdict
 from .catalog import candidates
 from .codex_bridge import AIError
+from .daily import Complete
 
 DDL = '''
 CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,fetched_at INTEGER NOT NULL);
@@ -131,6 +138,17 @@ class StatementImport(Strict):
 
 class Open(Strict):
     problem: str = Field(max_length=300)
+
+
+class TestCase(Strict):
+    input: str = Field(max_length=20000)
+    output: str = Field(max_length=20000)
+
+
+class SelfTest(Strict):
+    code: str = Field(min_length=1, max_length=65536)
+    language: Literal['cpp17', 'cpp20', 'python3', 'java17'] = 'cpp17'
+    cases: list[TestCase] = Field(min_length=1, max_length=20)
 
 
 class Coach(Strict):
@@ -263,6 +281,73 @@ class Workbench:
             conn.execute('INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at) VALUES(?,?,?,?,?,?)',
                          (aid, pid, draft['language'], draft['code'], hashlib.sha256(draft['code'].encode()).hexdigest(), int(time.time())))
         return {'id': aid}
+
+    @staticmethod
+    def _sandbox_limits(cpu_seconds=4, memory_bytes=768 * 1024 * 1024):
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024, 2 * 1024 * 1024))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+        if hasattr(resource, 'RLIMIT_NPROC'):
+            resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
+
+    def self_test(self, pid, data):
+        pid = normalize(pid)
+        if not shutil.which('bwrap'):
+            raise HTTPException(503, '服务器未安装 bubblewrap，自测功能已禁用')
+        probe = ['bwrap', '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
+                 '--ro-bind', '/usr', '/usr', '--ro-bind', '/bin', '/bin',
+                 '--proc', '/proc', '--dev', '/dev', '--', '/bin/true']
+        try:
+            sandbox = subprocess.run(probe, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            sandbox = None
+        if sandbox is None or sandbox.returncode:
+            raise HTTPException(503, '服务器未开放 bubblewrap 所需的 Linux 命名空间，自测功能已禁用')
+        source = {'cpp17': ('main.cpp', ['g++', '-std=c++17', '-O2', '-pipe', 'main.cpp', '-o', 'main'], ['./main']),
+                  'cpp20': ('main.cpp', ['g++', '-std=c++20', '-O2', '-pipe', 'main.cpp', '-o', 'main'], ['./main']),
+                  'python3': ('main.py', [], ['python3', 'main.py']),
+                  'java17': ('Main.java', ['javac', 'Main.java'], ['java', '-Xmx256m', 'Main'])}[data.language]
+        results = []
+        with tempfile.TemporaryDirectory(prefix='acm-selftest-') as directory:
+            root = Path(directory)
+            (root / source[0]).write_text(data.code, encoding='utf-8')
+            runtime_paths = ['/usr', '/bin', '/lib', '/lib64', '/etc/alternatives', '/etc/java-17-openjdk']
+            command = ['bwrap', '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
+                       '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin', '--ro-bind', '/usr', '/usr',
+                       '--ro-bind', '/bin', '/bin', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+                       '--bind', str(root), '/work', '--chdir', '/work']
+            for path in runtime_paths[2:]:
+                if os.path.exists(path): command += ['--ro-bind', path, path]
+            for case in data.cases:
+                try:
+                    if source[1]:
+                        compile_result = subprocess.run(command + ['--'] + source[1], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25, check=False,
+                            preexec_fn=lambda: self._sandbox_limits(20, 1024 * 1024 * 1024))
+                        if compile_result.returncode:
+                            results.append({'status': 'CE', 'message': compile_result.stderr.decode('utf-8', 'replace')[-4000:]})
+                            break
+                    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                        try:
+                            run = subprocess.run(command + ['--'] + source[2], input=case.input.encode(),
+                                stdout=stdout, stderr=stderr, timeout=4, check=False, preexec_fn=self._sandbox_limits)
+                            stdout.seek(0); stderr.seek(0)
+                            actual = stdout.read(2 * 1024 * 1024 + 1).decode('utf-8', 'replace')
+                            error = stderr.read(2 * 1024 * 1024 + 1).decode('utf-8', 'replace')[-4000:]
+                            if len(actual.encode()) > 2 * 1024 * 1024:
+                                results.append({'status': 'OLE', 'actual': '', 'expected': case.output})
+                            else:
+                                status = 'RE' if run.returncode else ('AC' if actual.rstrip() == case.output.rstrip() else 'WA')
+                                results.append({'status': status, 'actual': actual[:20000], 'expected': case.output,
+                                                'message': error if status == 'RE' else ''})
+                        except subprocess.TimeoutExpired:
+                            results.append({'status': 'TLE', 'actual': '', 'expected': case.output})
+                except subprocess.TimeoutExpired:
+                    results.append({'status': 'TLE', 'actual': '', 'expected': case.output, 'message': '编译超时'})
+                    break
+        return {'problem_id': pid, 'results': results}
 
     @staticmethod
     def decode(row):
@@ -402,7 +487,7 @@ class Workbench:
             return {'problem_id': pid, 'attempt_id': aid}
 
 
-def register(app, service, jobs):
+def register(app, service, jobs, daily=None):
     @app.get('/api/workbench/editor-settings')
     def editor_settings():
         return EditorSettings.model_validate(service.db.get('editor_settings', {})).model_dump()
@@ -443,6 +528,10 @@ def register(app, service, jobs):
             raise HTTPException(409, '代码和已保存草稿不一致')
         return service.snapshot(pid, data.revision)
 
+    @app.post('/api/workbench/problem/{pid}/self-test')
+    def self_test(pid: str, data: SelfTest):
+        return service.self_test(pid, data)
+
     @app.post('/api/workbench/problem/{pid}/hint')
     async def hint(pid: str, data: Coach):
         return jobs.start('wb_hint', {'pid': normalize(pid), **data.model_dump()})
@@ -461,6 +550,12 @@ def register(app, service, jobs):
         if kind == 'wb_statement': return await asyncio.to_thread(service.statement, payload['pid'])
         if kind == 'wb_sync':
             result = await asyncio.to_thread(service.sync, payload['aid'], Link.model_validate({k: payload[k] for k in ('handle', 'submission_id')}))
+            if result['verdict'] == 'AC' and daily:
+                attempt = service.attempt(payload['aid'])
+                try:
+                    await asyncio.to_thread(daily.complete, Complete(problem_id=attempt['problem_id']))
+                except Exception:
+                    result['checkin_error'] = '判题已保存，但签到未更新；请到每日任务手动记录完成'
             if payload.get('review') and result['verdict'] not in {'UNLINKED', 'PENDING', 'AC'}:
                 try:
                     attempt = service.attempt(payload['aid'])

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from acmweb.app import create_app
 from acmweb.settings import Settings
+from acmweb.daily import Settings as DailySettings
 from acmweb.codex_bridge import AIError
 from acmweb.workbench import Draft, Link, Coach, normalize, parse_statement, training_evidence
 from ojcrawler.models import Collection, Submission, verdict
@@ -51,6 +52,28 @@ def test_statement_plaintext_samples_and_url_validation():
     for value in ('https://evil.invalid/4/A', 'https://codeforces.com:443/problemset/problem/4/A', 'https://codeforces.com@127.0.0.1/problemset/problem/4/A', 'https://codeforces.com/problemset/problem/4/A?x=1', '../../account.toml', '100000-A'):
         with pytest.raises(AIError): normalize(value)
     with pytest.raises(AIError): parse_statement('<html>Cloudflare verification</html>', 'codeforces:4-A')
+
+
+def test_local_self_test_runs_in_network_isolated_sandbox(workspace):
+    client, _, _ = workspace
+    result = client.post('/api/workbench/problem/4-A/self-test', json={
+        'language': 'cpp17', 'code': '#include <iostream>\nint main(){int a,b;if(std::cin>>a>>b)std::cout<<a+b<<"\\n";}',
+        'cases': [{'input': '2 3\n', 'output': '5\n'}, {'input': '10 4', 'output': '14'}],
+    })
+    if result.status_code == 503:
+        assert '命名空间' in result.json()['detail'] or 'bubblewrap' in result.json()['detail']
+        return
+    assert result.status_code == 200, result.text
+    assert [row['status'] for row in result.json()['results']] == ['AC', 'AC']
+    assert client.post('/api/workbench/problem/4-A/self-test', json={'code': 'x', 'language': 'cpp17', 'cases': []}).status_code == 422
+
+
+def test_personal_translation_only_lives_in_process_memory(workspace):
+    _, service, app = workspace
+    translations = app.state.translations
+    with service.db.connect() as db:
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_translations'").fetchone()
+    assert translations.ephemeral == {}
 
 
 def test_draft_conflict_snapshot_immutable_and_utf8_limit(workspace):
@@ -282,6 +305,21 @@ def test_background_job_safe_result_and_optional_auto_review(workspace, monkeypa
         time.sleep(.01)
     assert job['status'] == 'completed' and 'review_error' in job['result']
     assert 'int main' not in json.dumps(job) and service.attempt(aid)['verdict'] == 'WA'
+
+
+def test_verified_accepted_workbench_submission_updates_k_checkin(workspace, monkeypatch):
+    _, service, app = workspace
+    app.state.daily.configure(DailySettings(daily_goal=1, duration_days=14))
+    with service.db.connect() as db:
+        db.execute('INSERT INTO daily_rolls VALUES(?,?,?,?,?)', (
+            app.state.daily.today(), 1, 'codeforces:4-A', json.dumps({'id': 'codeforces:4-A'}), int(time.time())))
+    aid = snapshot(service)
+    mock_judge(monkeypatch, status='OK')
+    result = asyncio.run(app.state.jobs.run_workbench('wb_sync', {
+        'aid': aid, 'handle': 'demo', 'submission_id': 12345,
+    }))
+    assert result['verdict'] == 'AC' and 'checkin_error' not in result, result
+    assert app.state.daily.state()['checkin']['kind'] == 'k'
 
 
 def test_editor_preferences_defaults_validation_and_persistence(workspace):

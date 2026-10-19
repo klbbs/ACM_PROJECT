@@ -36,7 +36,7 @@ def site(tmp_path,monkeypatch):
             cookie = response.cookies['acm_user_session']
             status = client.get('/api/auth/status',headers={'Cookie':'acm_user_session='+cookie}).json()
             return {**status,'cookie':cookie}
-        admin = capture(request(None,'POST','/api/auth/setup',{'username':'owner','password':PASSWORD,'setup_token':settings.access_token}))
+        admin = capture(request(None,'POST','/api/auth/setup',{'username':'kendas','password':PASSWORD,'setup_token':settings.access_token}))
         invite = request(admin,'POST','/api/admin/invitations',{}).json()['invitation']
         member = capture(request(None,'POST','/api/auth/register',{'username':'member','password':PASSWORD,'invitation':invite}))
         yield request,admin,member,app,settings,client
@@ -71,8 +71,8 @@ def test_private_workspace_isolation_and_no_global_credentials(site):
     assert request(admin,'GET','/api/submissions').json()['total'] == 1
     assert request(member,'GET','/api/submissions').json()['total'] == 0
     assert request(member,'GET',f"/api/reports?user_id={admin['user']['id']}").json()['items'] == []
-    assert request(admin,'PUT','/api/schedule',{'enabled':True,'hour':7,'minute':30,'analyze':False}).status_code == 200
-    assert request(member,'GET','/api/schedule').json()['enabled'] is False
+    assert request(admin,'PUT','/api/daily/settings',{'daily_goal':3,'duration_days':14}).json()['settings']['daily_goal'] == 3
+    assert request(member,'GET','/api/daily').json()['settings']['daily_goal'] == 1
     assert 'legacy=PRIVATE' in settings.config_path.read_text()
 
 
@@ -118,8 +118,8 @@ def test_cookie_csrf_host_origin_and_setup_guards(site):
     assert request(admin,'POST','/api/auth/logout',{},extra={'Origin':'https://evil.example'}).status_code == 403
     assert request(admin,'POST','/api/auth/logout',{},extra={'Sec-Fetch-Site':'cross-site'}).status_code == 403
     assert request(admin,'GET','/api/accounts',extra={'Host':'evil.example'}).status_code == 400
-    assert request(None,'POST','/api/auth/setup',{'username':'new_admin','password':PASSWORD,'setup_token':settings.access_token}).status_code == 409
-    response = request(None,'POST','/api/auth/login',{'username':'OWNER','password':PASSWORD})
+    assert request(None,'POST','/api/auth/setup',{'username':'kendas','password':PASSWORD,'setup_token':settings.access_token}).status_code == 409
+    response = request(None,'POST','/api/auth/login',{'username':'KENDAS','password':PASSWORD})
     assert response.status_code == 200
     assert 'HttpOnly' in response.headers['set-cookie'] and 'SameSite=strict' in response.headers['set-cookie']
     assert request(admin,'POST','/api/shared',{'title':'x','body':'x'*530000}).status_code == 413
@@ -203,9 +203,9 @@ def test_production_secure_cookie_and_security_headers(tmp_path):
     settings = Settings(data_dir=tmp_path,multi_user=True,production=True,
                         access_token='production-setup-secret-long-enough',allowed_hosts=('acm.example.test',))
     with TestClient(create_app(settings),base_url='https://acm.example.test') as client:
-        bad = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={'username':'owner','password':PASSWORD,'setup_token':'错误初始化令牌'})
+        bad = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={'username':'kendas','password':PASSWORD,'setup_token':'错误初始化令牌'})
         assert bad.status_code == 403
-        result = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={'username':'owner','password':PASSWORD,'setup_token':settings.access_token})
+        result = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={'username':'kendas','password':PASSWORD,'setup_token':settings.access_token})
         assert result.status_code == 200
         assert 'Secure' in result.headers['set-cookie']
         assert 'HttpOnly' in result.headers['set-cookie']
@@ -219,7 +219,7 @@ def test_canonical_origin_behind_https_proxy(tmp_path):
                         access_token='production-setup-secret-long-enough',allowed_hosts=('acm.example.test',),
                         public_origin='https://acm.example.test')
     with TestClient(create_app(settings),base_url='http://acm.example.test') as client:
-        result = client.post('/api/auth/setup',headers={'X-ACM-Request':'1','Origin':'https://acm.example.test'},json={'username':'owner','password':PASSWORD,'setup_token':settings.access_token})
+        result = client.post('/api/auth/setup',headers={'X-ACM-Request':'1','Origin':'https://acm.example.test'},json={'username':'kendas','password':PASSWORD,'setup_token':settings.access_token})
         assert result.status_code == 200
         cookie = result.cookies['acm_user_session']
         headers = {'Cookie':'acm_user_session='+cookie,'X-ACM-Request':'1','Origin':'https://acm.example.test'}
@@ -276,3 +276,24 @@ def test_ai_connection_test_is_private_csrf_protected_and_does_not_create_report
     assert job['status']=='completed' and job['result']['model']=='synthetic'
     assert request(admin,'GET','/api/reports').json()['items']==[]
     assert request(member,'GET','/api/jobs').json()['items']==[]
+
+
+def test_ten_character_password_registration_login_and_change(site):
+    request, admin, *_ = site
+    invitation = request(admin,'POST','/api/admin/invitations',{}).json()['invitation']
+    payload = {'username':'ten_chars','password':'Abcdef123','invitation':invitation}
+    assert request(None,'POST','/api/auth/register',payload).status_code == 422
+    payload['password'] = 'Abcdef1234'
+    response = request(None,'POST','/api/auth/register',payload)
+    assert response.status_code == 200,response.text
+    response = request(None,'POST','/api/auth/login',{'username':'ten_chars','password':'Abcdef1234'})
+    assert response.status_code == 200,response.text
+    cookie = response.cookies['acm_user_session']
+    who = request(None,'GET','/api/auth/status',extra={'Cookie':'acm_user_session='+cookie}).json()
+    who['cookie'] = cookie
+    change = {'current_password':'Abcdef1234','new_password':'Xyzabcd12'}
+    assert request(who,'POST','/api/auth/password',change).status_code == 422
+    change['new_password'] = 'Xyzabcd123'
+    assert request(who,'POST','/api/auth/password',change).status_code == 200
+    assert request(who,'GET','/api/accounts').status_code == 401
+    assert request(None,'POST','/api/auth/login',{'username':'ten_chars','password':'Xyzabcd123'}).status_code == 200

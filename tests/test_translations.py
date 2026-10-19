@@ -140,7 +140,7 @@ def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_
             return client.request(method, path, headers=headers, **({'json': body} if body is not None else {}))
 
         setup = client.post('/api/auth/setup', headers={'X-ACM-Request': '1'}, json={
-            'username': 'owner', 'password': 'Correct-password-123', 'setup_token': settings.access_token,
+            'username': 'kendas', 'password': 'Correct-password-123', 'setup_token': settings.access_token,
         })
         assert setup.status_code == 200, setup.text
         owner_cookie = setup.cookies['acm_user_session']
@@ -178,6 +178,9 @@ def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_
             time.sleep(0.01)
         assert job['status'] == 'completed', job
         tid = job['result']['translation_id']
+        assert tid in owner_child.state.translations.ephemeral
+        with owner_child.state.database.connect() as db:
+            assert not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_translations'").fetchone()
         uploaded = request(owner, 'POST', f'/api/translations/{tid}/upload', {})
         assert uploaded.status_code == 200, uploaded.text
         shared_id = uploaded.json()['id']

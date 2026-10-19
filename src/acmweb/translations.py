@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -209,8 +210,10 @@ class Translations:
         # The owner is assigned from the authenticated tenant by the parent
         # application. It is never accepted from a browser request.
         self.owner = owner
+        self.ephemeral = {}
+        self.ephemeral_lock = threading.Lock()
         with self.db.connect() as db:
-            db.execute('CREATE TABLE IF NOT EXISTS private_translations (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,fingerprint TEXT NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL)')
+            db.execute('DROP TABLE IF EXISTS private_translations')
 
     def statement(self, pid):
         statement = self.wb.state(pid)['statement']
@@ -222,10 +225,11 @@ class Translations:
         return statement.get('source') == 'official' and statement.get('url') == source_url(normalize(statement['id']))
 
     def get(self, tid):
-        with self.db.connect() as db:
-            row = db.execute('SELECT data FROM private_translations WHERE id=?', (tid,)).fetchone()
-        if not row: raise HTTPException(404, '本人的服务器翻译记录不存在')
-        return json.loads(row['data'])
+        with self.ephemeral_lock:
+            row = self.ephemeral.get(tid)
+        if not row or row['created_at'] < int(time.time()) - 86400:
+            raise HTTPException(404, '个人译文已过期，请重新生成')
+        return row
 
     @staticmethod
     def services():
@@ -235,9 +239,11 @@ class Translations:
         pid = normalize(pid)
         statement = self.statement(pid)
         fp = fingerprint(statement)
-        with self.db.connect() as db:
-            rows = db.execute('SELECT data FROM private_translations WHERE problem_id=? AND fingerprint=? ORDER BY created_at DESC LIMIT 30', (pid, fp)).fetchall()
-        private = [{**json.loads(r['data']), **self.shared.own_status(self.owner, json.loads(r['data'])['id'])} for r in rows]
+        now = int(time.time())
+        with self.ephemeral_lock:
+            self.ephemeral = {key: value for key, value in self.ephemeral.items() if value['created_at'] >= now - 86400}
+            private = [item for item in self.ephemeral.values() if item['problem_id'] == pid and item['fingerprint'] == fp]
+        private = [{**item, **self.shared.own_status(self.owner, item['id'])} for item in private]
         shared = self.shared.approved(pid, fp) if self.shareable(statement) else []
         url = quote(source_url(pid), safe='')
         return {'fingerprint': fp, 'shareable': self.shareable(statement), 'items': private + shared, 'services': self.services(), 'links': {'google': f'https://translate.google.com/?sl=auto&tl=zh-CN&op=websites&text={url}', 'bing': f'https://www.bing.com/translator?from=auto&to=zh-Hans&text={url}'}, 'note': '共享译文经过人工审核；AI 译文可能有误，请结合原题。普通翻译使用管理员配置的官方付费 API，未配置时可打开官方翻译网页。'}
@@ -264,8 +270,8 @@ class Translations:
         model_key = hashlib.sha256(json.dumps({k: provenance.get(k) for k in ('channel', 'endpoint', 'vendor', 'protocol', 'model')}, sort_keys=True).encode()).hexdigest()
         tid, now = uuid.uuid4().hex, int(time.time())
         item = {'id': tid, 'problem_id': pid, 'fingerprint': fp, 'engine': payload.engine, 'model': provenance.get('model'), 'provenance': provenance, 'model_key': model_key, 'statement': translated, 'created_at': now, 'scope': 'private', 'shareable': payload.engine == 'ai' and self.shareable(statement), 'status': 'private'}
-        with self.db.connect() as db:
-            db.execute('INSERT INTO private_translations VALUES(?,?,?,?,?)', (tid, pid, fp, json.dumps(item, ensure_ascii=False), now))
+        with self.ephemeral_lock:
+            self.ephemeral[tid] = item
         return {'translation_id': tid, 'reused': False}
 
     async def ordinary(self, engine, blocks):
