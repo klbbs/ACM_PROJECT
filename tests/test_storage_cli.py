@@ -37,6 +37,41 @@ def test_metadata_survives_incremental_replay(tmp_path):
     store.close()
 
 
+@pytest.mark.parametrize('platform,expected_accounts', [('codeforces', ['demo']), ('atcoder', ['DEMO', 'demo'])])
+def test_account_casing_reuses_existing_keys_only_for_codeforces(tmp_path, platform, expected_accounts):
+    store = Store(tmp_path / 'db')
+    try:
+        store.save('first', 101, Collection(platform, 'demo', submissions=[
+            Submission('1', '1-A', 100, 'WA', problem={'title': 'Preserved title'})], complete=True))
+        store.save('replayed', 201, Collection(platform, 'DEMO', submissions=[
+            Submission('1', '1-A', 100, 'AC'), Submission('2', '1-B', 200, 'WA')], complete=True))
+        rows = store.export()
+        assert sorted({row['account'] for row in rows}) == expected_accounts
+        if platform == 'codeforces':
+            assert len(rows) == 2
+            assert rows[0]['verdict'] == 'AC' and rows[0]['problem']['title'] == 'Preserved title'
+            assert store.watermark(platform, 'DEMO') == store.watermark(platform, 'demo') == 200
+            assert store.db.execute('SELECT COUNT(*) FROM accounts').fetchone()[0] == 1
+        else:
+            assert len(rows) == 3  # Other platforms retain their original case-sensitive semantics.
+    finally:
+        store.close()
+
+
+def test_casing_reuse_does_not_merge_or_delete_preexisting_duplicate_history(tmp_path):
+    store = Store(tmp_path / 'db')
+    try:
+        store.save('first', 101, Collection('codeforces', 'demo', submissions=[Submission('1', '1-A', 100, 'WA')], complete=True))
+        with store.db:
+            store.db.execute("INSERT INTO submissions SELECT platform,'DEMO',id,problem_id,submitted_at,verdict,data,updated_at FROM submissions")
+        keys_before = store.db.execute('SELECT platform,account,id FROM submissions ORDER BY account').fetchall()
+        store.save('next', 201, Collection('codeforces', 'DEMO', submissions=[Submission('1', '1-A', 100, 'AC')], complete=True))
+        assert store.db.execute('SELECT platform,account,id FROM submissions ORDER BY account').fetchall() == keys_before
+        assert len(store.export()) == 2
+    finally:
+        store.close()
+
+
 def test_cli_failure_isolation_and_exit_status(tmp_path, monkeypatch):
     from ojcrawler import cli
     class Adapter:

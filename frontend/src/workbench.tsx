@@ -629,6 +629,13 @@ function Attempt({
   const [handle, setHandle] = useState(a.handle || handles[0] || ''),
     [sid, setSid] = useState(a.submission_id ? String(a.submission_id) : '')
   const [autoReview, setAutoReview] = useState(false)
+  useEffect(() => {
+    setHandle((previous: string) => {
+      if (a.handle)
+        return handles.find((h: string) => h.toLowerCase() === a.handle.toLowerCase()) || a.handle
+      return handles.includes(previous) ? previous : handles[0] || ''
+    })
+  }, [a.handle, handles])
   const [contest, index] = a.problem_id.split(':')[1].split('-')
   return (
     <article className="wb-attempt">
@@ -696,6 +703,9 @@ function Attempt({
           disabled={!!a.handle}
         >
           <option value="">选择已配置账号</option>
+          {a.handle && !handles.some((h: string) => h.toLowerCase() === a.handle.toLowerCase()) && (
+            <option value={a.handle}>{a.handle}（已关联；需重新配置账号后同步）</option>
+          )}
           {handles.map((h: string) => (
             <option key={h} value={h}>
               {h}

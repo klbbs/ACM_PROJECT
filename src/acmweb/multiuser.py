@@ -123,7 +123,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.7.0',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.7.1',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -200,7 +200,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.7.0','mode':'multi-user'}
+        return {'status':'ok','version':'0.7.1','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):

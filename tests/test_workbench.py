@@ -10,6 +10,8 @@ from acmweb.app import create_app
 from acmweb.settings import Settings
 from acmweb.codex_bridge import AIError
 from acmweb.workbench import Draft, Link, Coach, normalize, parse_statement, training_evidence
+from ojcrawler.models import Collection, Submission, verdict
+from ojcrawler.storage import Store
 
 HTML = '''<div class="problem-statement"><div class="header"><div class="title">A. Test</div><div class="time-limit">1 second</div></div><div><p>Find a number.</p><script>evil()</script><img src="https://evil.invalid/x"></div><div class="input-specification">Input n</div><div class="sample-tests"><div class="sample-test"><div class="input"><pre><div class="test-example-line">2</div><div class="test-example-line">3</div></pre></div><div class="output"><pre>5<br/>6</pre></div></div></div></div>'''
 
@@ -113,6 +115,130 @@ def test_duplicate_submission_and_transport_failure(workspace, monkeypatch):
     monkeypatch.setattr('acmweb.workbench.Client.json', broken)
     with pytest.raises(RuntimeError): service.sync(other, Link(handle='demo', submission_id=12345))
     assert service.attempt(other)['verdict'] == 'UNLINKED'
+
+
+def test_handle_casing_change_allows_rejudge_but_not_duplicate_link(workspace, monkeypatch):
+    _, service, _ = workspace
+    aid = snapshot(service)
+    other = service.snapshot('4-A', 1)['id']
+    mock_judge(monkeypatch)
+    service.sync(aid, Link(handle='demo', submission_id=12345))
+    service.accounts.effective_path.write_text('[[accounts]]\nplatform="codeforces"\nhandle="DEMO"\n')
+    with service.db.connect() as db:
+        db.execute('UPDATE wb_attempts SET last_synced=0 WHERE id=?', (aid,))
+    mock_judge(monkeypatch, status='OK')
+    assert service.sync(aid, Link(handle='demo', submission_id=12345))['verdict'] == 'AC'
+    with service.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM submissions').fetchone()[0] == 1
+    with pytest.raises(AIError, match='另一份'):
+        service.sync(other, Link(handle='DEMO', submission_id=12345))
+    assert service.attempt(other)['verdict'] == 'UNLINKED'
+
+
+def test_crawl_rejudge_updates_workbench_review_and_training_evidence(workspace, monkeypatch):
+    _, service, app = workspace
+    aid = snapshot(service)
+    row = mock_judge(monkeypatch)
+    service.sync(aid, Link(handle='demo', submission_id=12345))
+    original = service.attempt(aid)
+    review = {'category': 'boundary'}
+    with service.db.connect() as db:
+        db.execute('UPDATE wb_attempts SET review=? WHERE id=?', (json.dumps(review), aid))
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', 'codeforces:4-A', json.dumps({'tags': ['math']})))
+    result = Collection('codeforces', 'DEMO', submissions=[Submission('12345', '4-A', row['creationTimeSeconds'], 'WA', raw=row)])
+    store = Store(service.db.path)
+    try:
+        # An unchanged daily replay keeps the AI review.
+        store.save('unchanged', original['last_synced'], result)
+        assert service.attempt(aid)['review'] == review
+        # A verdict from a different problem/account must not touch this snapshot.
+        result.account = 'someone'
+        result.submissions[0].verdict = 'AC'
+        store.save('other-account', original['last_synced'] + 1, result)
+        assert service.attempt(aid)['verdict'] == 'WA'
+        result.account = 'DEMO'
+        result.submissions[0].problem_id = '4-B'
+        store.save('other-problem', original['last_synced'] + 2, result)
+        assert service.attempt(aid)['verdict'] == 'WA'
+        # The account's daily collection observes a rejudge without explicit WB sync.
+        result.submissions[0].problem_id = '4-A'
+        result.submissions[0].raw = {**row, 'verdict': 'OK', 'passedTestCount': 20}
+        store.save('rejudge', original['last_synced'] + 3, result)
+    finally:
+        store.close()
+    updated = service.attempt(aid)
+    assert updated['verdict'] == 'AC' and updated['review'] is None
+    assert updated['judge_data']['passedTestCount'] == 20
+    assert updated['code'] == original['code'] and updated['code_hash'] == original['code_hash']
+    evidence = training_evidence(service.db)
+    assert evidence['verified_verdicts'] == {'AC': 1} and evidence['ai_hypotheses'] == []
+    assert evidence['topics']['math'] == {'accepted_snapshots': 1, 'non_accepted_snapshots': 0}
+    with pytest.raises(AIError, match='仅对本题'):
+        asyncio.run(service.coach('4-A', Coach(provider='api', model='mock'), aid))
+
+
+def test_rejudge_same_verdict_invalidates_inflight_review(workspace, monkeypatch):
+    _, service, app = workspace
+    aid = snapshot(service)
+    row = mock_judge(monkeypatch)
+    service.sync(aid, Link(handle='demo', submission_id=12345))
+    synced = service.attempt(aid)['last_synced']
+    async def generate(*args):
+        store = Store(service.db.path)
+        try:
+            changed = {**row, 'passedTestCount': 3}
+            store.save('same-second-rejudge', synced, Collection('codeforces', 'demo', submissions=[
+                Submission('12345', '4-A', row['creationTimeSeconds'], 'WA', raw=changed)]))
+        finally:
+            store.close()
+        return json.dumps({'category': 'boundary', 'line': 1, 'evidence': '检查边界。', 'question': '最小输入如何？', 'confidence': 'low'})
+    monkeypatch.setattr(app.state.ai, '_api_generate', generate)
+    with pytest.raises(AIError, match='判题已改变'):
+        asyncio.run(service.coach('4-A', Coach(provider='api', model='mock'), aid))
+    assert service.attempt(aid)['review'] is None
+
+
+@pytest.mark.parametrize('remote_status', ['TESTING', 'QUEUED', 'PRETESTS_PASSED', None])
+def test_daily_crawl_unknown_or_running_judge_cannot_be_reviewed(workspace, monkeypatch, remote_status):
+    _, service, _ = workspace
+    aid = snapshot(service)
+    row = mock_judge(monkeypatch)
+    service.sync(aid, Link(handle='demo', submission_id=12345))
+    with service.db.connect() as db:
+        db.execute('UPDATE wb_attempts SET review=? WHERE id=?', (json.dumps({'category': 'boundary'}), aid))
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', 'codeforces:4-A', json.dumps({'tags': ['math']})))
+    store = Store(service.db.path)
+    try:
+        store.save('judge-running', service.attempt(aid)['last_synced'] + 1, Collection('codeforces', 'DEMO', submissions=[
+            Submission('12345', '4-A', row['creationTimeSeconds'], verdict(remote_status),
+                       raw={**row, 'verdict': remote_status})]))
+    finally:
+        store.close()
+    attempt = service.attempt(aid)
+    assert attempt['verdict'] == 'PENDING' and attempt['review'] is None
+    assert attempt['judge_data']['verdict'] == remote_status
+    assert training_evidence(service.db)['topics'] == {}
+    with pytest.raises(AIError, match='仅对本题'):
+        asyncio.run(service.coach('4-A', Coach(provider='api', model='mock'), aid))
+
+
+def test_choices_never_resurrect_attempted_done_or_skipped_ai_recommendations(workspace):
+    _, service, _ = workspace
+    service.db.set('training', {'minimum': 1000, 'maximum': 1600})
+    ids = ['10-A', '10-B', '10-C', '10-D', '10-E']
+    with service.db.connect() as db:
+        for pid in ids:
+            problem = {'id': 'codeforces:' + pid, 'platform': 'codeforces', 'problem_id': pid,
+                       'title': pid, 'difficulty': 1800 if pid == '10-E' else 1200, 'tags': [], 'contest_id': 10}
+            db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', problem['id'], json.dumps(problem)))
+        db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)', ('codeforces', 'demo', '1', '10-A', 1, 'WA', '{}', 1))
+        db.executemany('INSERT INTO practice_feedback VALUES(?,?,?,?,?)', [
+            ('codeforces', '10-B', 'done', '', 1), ('codeforces', '10-C', 'skip', '', 1)])
+        db.execute('INSERT INTO ai_reports VALUES(?,?,?,?,?,?)', ('report', 1, 'recommend', 'api', 'mock',
+                   json.dumps({'selected_problems': [{'id': 'codeforces:' + pid, 'reason': 'AI recommendation'} for pid in ids]})))
+    choices = service.choices()
+    assert {item['id'] for item in choices['items']} == {'codeforces:10-D', 'codeforces:10-E'}
+    assert all(item['recommendation_source'] == '已保存的 AI 推荐' for item in choices['items'])
 
 
 def test_hints_and_review_constraints_no_credentials(workspace, monkeypatch):

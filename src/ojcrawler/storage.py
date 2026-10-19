@@ -4,6 +4,19 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+from .models import verdict
+
+
+def codeforces_judge_verdict(value, *, normalized=False):
+    """Only known final CF states are evidence of a completed judgement."""
+    known = {'OK', 'WRONG_ANSWER', 'TIME_LIMIT_EXCEEDED', 'MEMORY_LIMIT_EXCEEDED',
+             'RUNTIME_ERROR', 'COMPILATION_ERROR', 'IDLENESS_LIMIT_EXCEEDED',
+             'PRESENTATION_ERROR', 'FAILED', 'PARTIAL', 'CHALLENGED', 'SKIPPED',
+             'REJECTED'}
+    if normalized:
+        known.update({'AC', 'WA', 'TLE', 'MLE', 'RE', 'CE'})
+    return verdict(value) if value in known else 'PENDING'
+
 
 def dumps(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -15,6 +28,35 @@ def write_json(path, value):
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def sync_workbench_submission(db, platform, account, submission, collected_at):
+    """Refresh linked judge evidence without changing the user's code snapshot.
+
+    The crawler also runs standalone, where workbench tables do not exist.
+    This update belongs to the caller's submission transaction.
+    """
+    if platform != "codeforces" or not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='wb_attempts'"
+    ).fetchone():
+        return
+    raw = submission.get("raw") or {}
+    fallback = {"verdict": submission["verdict"],
+                "creationTimeSeconds": submission["submitted_at"],
+                "programmingLanguage": submission.get("language"),
+                "timeConsumedMillis": submission.get("time_ms"),
+                "memoryConsumedBytes": submission.get("memory_bytes")}
+    judge = {key: raw.get(key, fallback.get(key)) for key in (
+        "verdict", "passedTestCount", "timeConsumedMillis", "memoryConsumedBytes",
+        "creationTimeSeconds", "programmingLanguage")}
+    encoded = json.dumps(judge)
+    status = codeforces_judge_verdict(judge['verdict'], normalized='verdict' not in raw)
+    db.execute("""UPDATE wb_attempts SET verdict=?,judge_data=?,last_synced=?,
+        review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END
+        WHERE handle=? COLLATE NOCASE AND submission_id=? AND problem_id=?
+        AND last_synced<=?""", (status, encoded, collected_at,
+        status, encoded, account, submission["id"],
+        "codeforces:" + submission["problem_id"], collected_at))
 
 
 @contextmanager
@@ -61,15 +103,29 @@ class Store:
         """)
 
     def watermark(self, platform, account):
-        row = self.db.execute("SELECT watermark FROM accounts WHERE platform=? AND account=?", (platform, account)).fetchone()
-        return row[0] if row else 0
+        collation = " COLLATE NOCASE" if platform == "codeforces" else ""
+        row = self.db.execute("SELECT MAX(watermark) FROM accounts WHERE platform=? AND account=?" + collation, (platform, account)).fetchone()
+        return row[0] or 0
+
+    def account_key(self, platform, account):
+        if platform == "codeforces":
+            # Preserve existing primary keys; never rename, merge or delete history.
+            for table in ('accounts', 'submissions'):
+                old = self.db.execute(f"SELECT account FROM {table} WHERE platform=? AND account=? COLLATE NOCASE ORDER BY account=? DESC,account LIMIT 1",
+                                      (platform, account, account)).fetchone()
+                if old:
+                    return old[0]
+        return account
 
     def save(self, run_id, collected_at, result):
         with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            account = self.account_key(result.platform, result.account)
             for row in result.submissions:
                 data = asdict(row)
-                old = self.db.execute("SELECT data FROM submissions WHERE platform=? AND account=? AND id=?",
-                                      (result.platform, result.account, row.id)).fetchone()
+                collation = " COLLATE NOCASE" if result.platform == "codeforces" else ""
+                old = self.db.execute("SELECT data,account FROM submissions WHERE platform=? AND account=?" + collation + " AND id=? ORDER BY account=? DESC,account LIMIT 1",
+                                      (result.platform, account, row.id, account)).fetchone()
                 if old:
                     previous_problem = json.loads(old[0]).get("problem", {})
                     # Replayed submissions may omit previously enriched metadata.
@@ -78,7 +134,8 @@ class Store:
                     ON CONFLICT(platform,account,id) DO UPDATE SET
                     problem_id=excluded.problem_id, submitted_at=excluded.submitted_at,
                     verdict=excluded.verdict, data=excluded.data, updated_at=excluded.updated_at""",
-                    (result.platform, result.account, row.id, row.problem_id, row.submitted_at, row.verdict, dumps(data), collected_at))
+                    (result.platform, old[1] if old else account, row.id, row.problem_id, row.submitted_at, row.verdict, dumps(data), collected_at))
+                sync_workbench_submission(self.db, result.platform, result.account, data, collected_at)
             self.db.execute("INSERT INTO snapshots VALUES(?,?,?,?,?,?,?,?,?)", (
                 run_id, result.platform, result.account, collected_at, dumps(result.profile),
                 dumps(result.rating_history), int(result.complete), dumps(result.warnings), result.error))
@@ -87,7 +144,7 @@ class Store:
                 maximum = max((s.submitted_at for s in result.submissions), default=0)
                 self.db.execute("""INSERT INTO accounts VALUES(?,?,?) ON CONFLICT(platform,account)
                     DO UPDATE SET watermark=MAX(accounts.watermark,excluded.watermark)""",
-                    (result.platform, result.account, maximum))
+                    (result.platform, account, maximum))
 
     def save_run(self, run):
         with self.db:

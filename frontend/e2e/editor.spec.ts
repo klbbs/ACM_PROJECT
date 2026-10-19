@@ -272,3 +272,70 @@ test('AI presets expose dedicated fields and preserve secrets per endpoint', asy
   await expect(page.getByRole('button', { name: '测试已保存配置（会计费）' })).toBeVisible()
   // Deliberately do not trigger a billable request: no actual provider key is used.
 })
+
+test('practice loop keeps hints, immutable snapshots, WA reviews and AC submission records', async ({
+  page,
+}) => {
+  // All upstream judge/AI responses are synthetic in the isolated test server.
+  await page.request.put('/api/accounts', {
+    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
+  })
+  await open(page)
+  await page.getByLabel('代码语言').selectOption('python3')
+  const editor = page.getByLabel('源代码', { exact: true })
+  await editor.fill('print("deliberately wrong")')
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /给我一个小提示/ })).toBeDisabled()
+  await page.getByLabel('AI 通道').selectOption('api')
+  await page.getByLabel('手动模型 ID').fill('fixture-coach')
+  await page.getByRole('checkbox', { name: /我同意将本题题面/ }).check()
+  await page.getByRole('button', { name: /给我一个小提示/ }).click()
+  await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible({
+    timeout: 15000,
+  })
+  const beforeSnapshots = await page.locator('.wb-attempt').count()
+  await page.getByRole('button', { name: '保存提交快照', exact: true }).click()
+  await expect(page.locator('.wb-attempt')).toHaveCount(beforeSnapshots + 1)
+  const wa = page.locator('.wb-attempt').first()
+  await wa.getByLabel('平台提交号').fill('920001')
+  await wa.getByRole('checkbox', { name: /本次同步得到未通过结果/ }).check()
+  await wa.getByRole('button', { name: '关联并核验判题', exact: true }).click()
+  await expect(wa.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
+  await expect(wa.getByText(/仅针对本地快照检查边界/)).toBeVisible()
+  await editor.fill('print("corrected practice version")')
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
+  await wa.getByText('查看不可变代码快照', { exact: true }).click()
+  await expect(wa.locator('.wb-snapshot')).toHaveText('print("deliberately wrong")')
+  await page.getByRole('button', { name: '保存提交快照', exact: true }).click()
+  await expect(page.locator('.wb-attempt')).toHaveCount(beforeSnapshots + 2)
+  const ac = page.locator('.wb-attempt').first()
+  await ac.getByLabel('平台提交号').fill('920002')
+  await ac.getByRole('button', { name: '关联并核验判题', exact: true }).click()
+  await expect(ac.getByText('AC', { exact: true })).toBeVisible({ timeout: 15000 })
+  await expect(ac.getByRole('button', { name: '分析本次错因（不提供答案）' })).toHaveCount(0)
+  await page.getByRole('button', { name: '提交记录', exact: true }).click()
+  await expect(page.getByText('4-A · #920001', { exact: true })).toBeVisible()
+  await expect(page.getByText('4-A · #920002', { exact: true })).toBeVisible()
+  await page.getByLabel('筛选判题结果').selectOption('WA')
+  await expect(page.getByText('4-A · #920001', { exact: true })).toBeVisible()
+  await expect(page.getByText('4-A · #920002', { exact: true })).toHaveCount(0)
+  await page.reload()
+  await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
+  await page.getByRole('button', { name: /^codeforces:4-A / }).click()
+  await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('源代码', { exact: true })).toHaveText(
+    'print("corrected practice version")',
+  )
+  await expect(page.locator('.wb-attempt').getByText('AC', { exact: true })).toBeVisible()
+  await expect(page.locator('.wb-attempt').getByText('WA', { exact: true })).toBeVisible()
+  await page.request.put('/api/accounts', {
+    data: { items: [{ platform: 'codeforces', handle: 'FIXTURE_USER', enrich: false }] },
+  })
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await expect(page.getByLabel('优先知识点（英文标签，逗号分隔）')).toBeVisible()
+  await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
+  await page.getByRole('button', { name: /^codeforces:4-A / }).click()
+  await expect(page.getByLabel('提交账号').first()).toHaveValue('FIXTURE_USER')
+})

@@ -1003,7 +1003,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.7.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.7.1</span>
             </span>
           </footer>
         </div>
@@ -1227,7 +1227,9 @@ function SubmissionPage({ days, platform, search, setSearch, revision, onError }
               <tr key={r.platform + r.account + r.id}>
                 <td>
                   <strong>{r.problem?.title || r.problem_id}</strong>
-                  <small>{r.problem_id}</small>
+                  <small>
+                    {r.problem_id} · #{r.id}
+                  </small>
                 </td>
                 <td>
                   <span className="inline">

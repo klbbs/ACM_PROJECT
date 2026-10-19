@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from acmweb.app import create_app
@@ -21,6 +22,28 @@ def main():
                             allow_env_ai_key=False, multi_user=False, production=False,
                             access_token='', public_origin='')
         app = create_app(settings)
+        # Test-process-only substitutes: never post code or call paid AI APIs.
+        from acmweb import workbench
+        async def fixture_ai(model, prompt, schema):
+            if schema.get('title') == 'Hint':
+                return json.dumps({'focus':'边界检查','hint':'先检查输入较小的一端。','question':'边界输入是否满足所有要求？'},ensure_ascii=False)
+            if schema.get('title') == 'Review':
+                return json.dumps({'category':'boundary','line':1,'evidence':'仅针对本地快照检查边界；未运行代码。','question':'最小输入符合要求吗？','confidence':'low'},ensure_ascii=False)
+            raise RuntimeError('Unexpected test AI schema')
+        app.state.ai._api_generate = fixture_ai
+        original_json = workbench.Client.json
+        def fixture_judge(self, url, **kwargs):
+            if url != 'https://codeforces.com/api/contest.status':
+                return original_json(self,url,**kwargs)
+            handle = kwargs.get('params',{}).get('handle','')
+            rows = [{'id':sid,'creationTimeSeconds':int(time.time()),
+                     'problem':{'contestId':4,'index':'A','name':'Synthetic acceptance problem','rating':1200,'tags':['math']},
+                     'author':{'members':[{'handle':handle}]},'verdict':status,
+                     'programmingLanguage':'Python 3','passedTestCount':1,'timeConsumedMillis':46,
+                     'memoryConsumedBytes':786432} for sid,status in [(920001,'WRONG_ANSWER'),(920002,'OK')]]
+            return {'status':'OK','result':rows}
+        workbench.Client.json = fixture_judge
+        app.state.database.set('training',{'minimum':800,'maximum':1800})
         with app.state.database.connect() as db:
             for contest in (4, 5):
                 pid = f'codeforces:{contest}-A'

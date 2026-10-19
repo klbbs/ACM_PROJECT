@@ -169,3 +169,11 @@ def test_chat_upstream_truncation_not_saved(client,monkeypatch):
     monkeypatch.setattr('acmweb.ai.httpx.AsyncClient',lambda **kwargs:Fake())
     with pytest.raises(AIError,match='截断'):
         asyncio.run(client.app.state.ai._api_generate('test','prompt',{}))
+
+
+def test_legacy_partial_training_settings_include_form_defaults(client):
+    client.app.state.database.set('training',{'minimum':800,'maximum':1800})
+    data=client.get('/api/training').json()
+    assert data['minimum']==800 and data['maximum']==1800
+    assert data['preferred_tags']==[] and data['avoid_tags']==[]
+    assert data['goal_rating']==2000 and data['prefer_recent'] is True

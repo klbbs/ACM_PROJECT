@@ -2656,6 +2656,8 @@ td small {
   border: 1px solid #e4e7ee;
   border-radius: 10px;
   margin: 9px 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .wb-choice:hover,
 .wb-choice.selected {
@@ -2666,6 +2668,9 @@ td small {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+}
+.wb-choice strong {
+  min-width: 0;
 }
 .wb-choice small {
   display: block;
@@ -2682,6 +2687,7 @@ td small {
 .wb-content {
   min-width: 0;
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
   gap: 20px;
 }
 .wb-heading {
@@ -2774,13 +2780,8 @@ td small {
   color: #765910;
   border-radius: 8px;
 }
-@media (min-width: 1550px) {
-  .wb-content {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-  .wb-content > .card {
-    min-width: 0;
-  }
+.wb-content > .card {
+  min-width: 0;
 }
 @media (max-width: 1000px) {
   .wb-layout {

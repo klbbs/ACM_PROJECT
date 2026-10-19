@@ -14,7 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 from fastapi import HTTPException, Query
 from ojcrawler.http import Client
-from ojcrawler.models import verdict, CrawlError
+from ojcrawler.models import CrawlError
+from ojcrawler.storage import codeforces_judge_verdict
 from .catalog import candidates
 from .codex_bridge import AIError
 
@@ -194,12 +195,14 @@ class Workbench:
             recent = [dict(r) for r in conn.execute('SELECT problem_id,updated_at FROM wb_drafts ORDER BY updated_at DESC LIMIT 30')]
             all_catalog = {r['id']: json.loads(r['data']) for r in conn.execute("SELECT id,data FROM problem_catalog WHERE platform='codeforces'")}
             rows = conn.execute("SELECT problem_id,verdict FROM wb_attempts WHERE verdict NOT IN ('UNLINKED','PENDING','AC')").fetchall()
+            excluded = {'codeforces:' + r[0] for r in conn.execute("SELECT DISTINCT problem_id FROM submissions WHERE platform='codeforces'")}
+            excluded.update(r[0] + ':' + r[1] for r in conn.execute("SELECT platform,problem_id FROM practice_feedback WHERE status IN ('done','skip')"))
         selected = {p['id']: p.get('reason', '') for p in json.loads(report['data']).get('selected_problems', [])} if report else {}
         weak_tags = set()
         for row in rows:
             weak_tags.update(all_catalog.get(row['problem_id'], {}).get('tags', []))
         for pid in selected:
-            if pid in all_catalog and pid not in {p['id'] for p in pool}:
+            if pid in all_catalog and pid not in excluded and pid not in {p['id'] for p in pool}:
                 pool.append(all_catalog[pid])
         target = (prefs.get('minimum', 1000) + prefs.get('maximum', 1600)) / 2
         for p in pool:
@@ -340,8 +343,7 @@ class Workbench:
             raise AIError('提交账号或题号不匹配（暂不支持团队提交）')
         if found.get('creationTimeSeconds', 0) < attempt['created_at'] - 300:
             raise AIError('此提交早于代码快照，请关联本次练习提交')
-        known = {'OK', 'WRONG_ANSWER', 'TIME_LIMIT_EXCEEDED', 'MEMORY_LIMIT_EXCEEDED', 'RUNTIME_ERROR', 'COMPILATION_ERROR', 'IDLENESS_LIMIT_EXCEEDED', 'PRESENTATION_ERROR', 'FAILED', 'PARTIAL', 'CHALLENGED', 'SKIPPED', 'REJECTED'}
-        status = verdict(found['verdict']) if found.get('verdict') in known else 'PENDING'
+        status = codeforces_judge_verdict(found.get('verdict'))
         now = int(time.time())
         judge = {k: found.get(k) for k in ('verdict', 'passedTestCount', 'timeConsumedMillis', 'memoryConsumedBytes', 'creationTimeSeconds', 'programmingLanguage')}
         pid = f'{contest}-{index}'
@@ -354,12 +356,15 @@ class Workbench:
             with self.db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 current = conn.execute('SELECT handle,submission_id FROM wb_attempts WHERE id=?', (aid,)).fetchone()
-                if current['submission_id'] and (current['submission_id'] != data.submission_id or current['handle'] != handle):
+                if current['submission_id'] and (current['submission_id'] != data.submission_id or current['handle'].lower() != handle.lower()):
                     raise AIError('另一请求已关联提交，请刷新页面')
-                conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? THEN review ELSE NULL END WHERE id=?',
-                             (handle, data.submission_id, status, json.dumps(judge), now, status, aid))
+                if conn.execute('SELECT 1 FROM wb_attempts WHERE handle=? COLLATE NOCASE AND submission_id=? AND id!=?', (handle, data.submission_id, aid)).fetchone():
+                    raise AIError('此平台提交已关联另一份代码快照')
+                conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?',
+                             (handle, data.submission_id, status, json.dumps(judge), now, status, json.dumps(judge), aid))
+                existing = conn.execute("SELECT account FROM submissions WHERE platform='codeforces' AND account=? COLLATE NOCASE AND id=?", (handle, str(data.submission_id))).fetchone()
                 conn.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(platform,account,id) DO UPDATE SET verdict=excluded.verdict,data=excluded.data,updated_at=excluded.updated_at',
-                             ('codeforces', handle, str(data.submission_id), pid, found['creationTimeSeconds'], status, json.dumps(standard), now))
+                             ('codeforces', existing['account'] if existing else handle, str(data.submission_id), pid, found['creationTimeSeconds'], status, json.dumps(standard), now))
         except sqlite3.IntegrityError:
             raise AIError('此平台提交已关联另一份代码快照') from None
         return {'attempt_id': aid, 'verdict': status, 'code_verified': False}
@@ -401,7 +406,7 @@ class Workbench:
                 raise AIError('AI 引用代码行号越界，已丢弃')
             with self.db.connect() as conn:
                 if attempt:
-                    changed = conn.execute('UPDATE wb_attempts SET review=? WHERE id=? AND verdict=? AND last_synced=?', (json.dumps(result, ensure_ascii=False), aid, attempt['verdict'], attempt['last_synced'])).rowcount
+                    changed = conn.execute('UPDATE wb_attempts SET review=? WHERE id=? AND verdict=? AND last_synced=? AND judge_data=?', (json.dumps(result, ensure_ascii=False), aid, attempt['verdict'], attempt['last_synced'], json.dumps(attempt['judge_data']))).rowcount
                     if not changed:
                         raise AIError('判题已改变，请重新复盘')
                 else:
