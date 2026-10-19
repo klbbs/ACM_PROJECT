@@ -46,6 +46,10 @@ class Moderation(Strict):
     note: str = Field(default='', max_length=1000)
 
 
+class Revocation(Strict):
+    note: str = Field(min_length=1, max_length=1000)
+
+
 def fingerprint(statement):
     # Only immutable statement content contributes; fetch metadata never does.
     keys = ('id', 'url', 'title', 'body_html', 'sections', 'samples', 'images', 'time_limit', 'memory_limit')
@@ -125,7 +129,8 @@ class SharedTranslations:
         with self.connect() as db:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS translations (id TEXT PRIMARY KEY,owner TEXT NOT NULL,private_id TEXT NOT NULL,problem_id TEXT NOT NULL,fingerprint TEXT NOT NULL,target TEXT NOT NULL,model_key TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,source_statement TEXT NOT NULL,submitted_at INTEGER NOT NULL,reviewed_at INTEGER,reviewer TEXT,review_note TEXT NOT NULL DEFAULT '');
-            CREATE UNIQUE INDEX IF NOT EXISTS translation_active ON translations(problem_id,fingerprint,target,model_key) WHERE status IN ('pending','approved');
+            DROP INDEX IF EXISTS translation_active;
+            CREATE UNIQUE INDEX translation_active ON translations(problem_id,fingerprint,target,model_key) WHERE status IN ('pending','approved','revoked');
             CREATE TABLE IF NOT EXISTS translation_audit (id INTEGER PRIMARY KEY,at INTEGER NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,target TEXT NOT NULL);
             ''')
         path.chmod(0o600)
@@ -183,6 +188,19 @@ class SharedTranslations:
             if row.rowcount != 1: raise HTTPException(409, '译文不存在或已经审核')
             db.execute('INSERT INTO translation_audit(at,actor,action,target) VALUES(?,?,?,?)', (int(time.time()), actor, payload.decision, sid))
         return {'id': sid, 'status': payload.decision}
+
+    def revoke(self, sid, actor, payload):
+        now = int(time.time())
+        with self.connect() as db:
+            row = db.execute("UPDATE translations SET status='revoked',reviewed_at=?,reviewer=?,review_note=? WHERE id=? AND status='approved'", (now, actor, payload.note, sid))
+            if row.rowcount != 1: raise HTTPException(409, '译文不存在或当前未共享')
+            db.execute('INSERT INTO translation_audit(at,actor,action,target) VALUES(?,?,?,?)', (now, actor, 'revoked', sid))
+        return {'id': sid, 'status': 'revoked'}
+
+    def audit(self):
+        with self.connect() as db:
+            rows = db.execute('SELECT at,actor,action,target FROM translation_audit ORDER BY id DESC LIMIT 100').fetchall()
+        return {'items': [dict(row) for row in rows]}
 
 
 class Translations:
@@ -309,7 +327,7 @@ def register_shared(app, store, context):
         return store.upload(service, actor, tid)
 
     @app.get('/api/translations/review')
-    async def queue(request: Request, status: Literal['pending', 'approved', 'rejected'] = 'pending'):
+    async def queue(request: Request, status: Literal['pending', 'approved', 'rejected', 'revoked'] = 'pending'):
         await context(request, True)
         return store.queue(status)
 
@@ -317,3 +335,13 @@ def register_shared(app, store, context):
     async def review(sid: str, payload: Moderation, request: Request):
         actor, _ = await context(request, True)
         return store.review(sid, actor, payload)
+
+    @app.post('/api/translations/{sid}/revoke')
+    async def revoke(sid: str, payload: Revocation, request: Request):
+        actor, _ = await context(request, True)
+        return store.revoke(sid, actor, payload)
+
+    @app.get('/api/translations/audit')
+    async def audit(request: Request):
+        await context(request, True)
+        return store.audit()

@@ -4,18 +4,20 @@ import { api, date } from './api'
 import { TranslationStatement } from './translation-panel'
 
 type Row = Record<string, any>
-type Status = 'pending' | 'approved' | 'rejected'
+type Status = 'pending' | 'approved' | 'rejected' | 'revoked'
 
 const statusNames: Record<Status, string> = {
   pending: '待审核',
   approved: '已通过',
   rejected: '已拒绝',
+  revoked: '已撤下',
 }
 
 const statusTone: Record<Status, string> = {
   pending: 'warning',
   approved: 'success',
   rejected: 'neutral',
+  revoked: 'neutral',
 }
 
 function provenance(item: Row) {
@@ -37,9 +39,11 @@ export function AdminPage({
     pending: [],
     approved: [],
     rejected: [],
+    revoked: [],
   })
   const [users, setUsers] = useState<Row[]>([]),
-    [audit, setAudit] = useState<Row[]>([])
+    [audit, setAudit] = useState<Row[]>([]),
+    [translationAudit, setTranslationAudit] = useState<Row[]>([])
   const [notes, setNotes] = useState<Record<string, string>>({}),
     [invitation, setInvitation] = useState<Row | null>(null),
     [busy, setBusy] = useState(false),
@@ -48,20 +52,24 @@ export function AdminPage({
   const reload = async () => {
     setLoading(true)
     try {
-      const [pending, approved, rejected, members, events] = await Promise.all([
+      const [pending, approved, rejected, revoked, members, events, translationEvents] = await Promise.all([
         api<{ items: Row[] }>('/translations/review?status=pending'),
         api<{ items: Row[] }>('/translations/review?status=approved'),
         api<{ items: Row[] }>('/translations/review?status=rejected'),
+        api<{ items: Row[] }>('/translations/review?status=revoked'),
         api<{ items: Row[] }>('/admin/users'),
         api<{ items: Row[] }>('/admin/audit'),
+        api<{ items: Row[] }>('/translations/audit'),
       ])
       setQueues({
         pending: pending.items,
         approved: approved.items,
         rejected: rejected.items,
+        revoked: revoked.items,
       })
       setUsers(members.items)
       setAudit(events.items)
+      setTranslationAudit(translationEvents.items)
     } catch (error) {
       onError(error instanceof Error ? error.message : '管理员数据加载失败')
     } finally {
@@ -79,6 +87,7 @@ export function AdminPage({
       pending: queues.pending.length,
       approved: queues.approved.length,
       rejected: queues.rejected.length,
+      revoked: queues.revoked.length,
     }),
     [queues],
   )
@@ -203,6 +212,30 @@ export function AdminPage({
                   </div>
                 </>
               )}
+              {status === 'approved' && (
+                <>
+                  <label>
+                    撤下原因
+                    <textarea
+                      rows={2}
+                      maxLength={1000}
+                      value={notes[item.id] || ''}
+                      onChange={(event) => setNotes((current) => ({ ...current, [item.id]: event.target.value }))}
+                      placeholder="说明译文存在的问题"
+                    />
+                  </label>
+                  <button
+                    className="secondary"
+                    disabled={busy || !notes[item.id]?.trim()}
+                    onClick={() => action(async () => {
+                      await api(`/translations/${encodeURIComponent(item.id)}/revoke`, 'POST', { note: notes[item.id].trim() })
+                      onNotice('译文已撤下，不再对用户共享')
+                    })}
+                  >
+                    撤下共享
+                  </button>
+                </>
+              )}
               {item.review_note && <p className="help">审核意见：{item.review_note}</p>}
             </article>
           ))}
@@ -260,10 +293,10 @@ export function AdminPage({
       <section className="card admin-card">
         <div className="card-heading"><h2>最近安全审计</h2><span className="muted">仅显示最近 100 条</span></div>
         <div className="audit-list">
-          {audit.map((event) => (
-            <p key={event.id}><time>{date(event.created_at)}</time> · {event.username || '未登录'} · {event.event}</p>
+          {([...translationAudit.map((event) => ({...event, created_at: event.at, username: event.actor, event: `译文 ${event.action} · ${event.target}`})), ...audit] as Row[]).slice(0, 100).map((event, index) => (
+            <p key={event.id || `translation-${index}`}><time>{date(event.created_at)}</time> · {event.username || '未登录'} · {event.event}</p>
           ))}
-          {!audit.length && <p className="help">暂无审计记录。</p>}
+          {!audit.length && !translationAudit.length && <p className="help">暂无审计记录。</p>}
         </div>
       </section>
     </div>

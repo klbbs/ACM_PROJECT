@@ -33,6 +33,16 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=10,max_length=128,repr=False)
 
 
+class InitialAdminCredentials(Credentials):
+    password: str = Field(min_length=3,max_length=128,repr=False)
+
+
+class LoginCredentials(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    username: str = Field(pattern=r'^[a-zA-Z0-9_]{3,32}$')
+    password: str = Field(min_length=3,max_length=128,repr=False)
+
+
 class UserUpdate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     role: Literal['admin','member']
@@ -221,7 +231,7 @@ def create_multi_app(settings, factory):
                             samesite='strict',max_age=86400,path='/')
 
     @app.post('/api/auth/setup')
-    def setup(payload:Credentials,response:Response):
+    def setup(payload:InitialAdminCredentials,response:Response):
         if identities.count():
             raise HTTPException(409,'管理员已初始化')
         if not settings.access_token or not hmac.compare_digest(digest(payload.setup_token),digest(settings.access_token)):
@@ -232,12 +242,16 @@ def create_multi_app(settings, factory):
 
     @app.post('/api/auth/register')
     def register(payload:Credentials,response:Response):
+        if len(payload.password) < 10:
+            raise HTTPException(422,'成员密码至少 10 位')
         uid = identities.create(payload.username.lower(),payload.password,invitation=payload.invitation,max_users=settings.max_users)
         set_session(response,uid)
         return {'ok':True}
 
     @app.post('/api/auth/login')
-    def login(payload:Credentials,response:Response):
+    def login(payload:LoginCredentials,response:Response):
+        if len(payload.password) < 10 and payload.username.lower() != 'kds':
+            raise HTTPException(422,'成员密码至少 10 位')
         identities.limit('login-name:'+digest(payload.username.lower()),10,900)
         user = identities.authenticate(payload.username.lower(),payload.password)
         set_session(response,user['id'])
