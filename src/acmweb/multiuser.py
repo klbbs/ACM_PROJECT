@@ -22,7 +22,7 @@ COOKIE = 'acm_user_session'
 class Credentials(BaseModel):
     model_config = ConfigDict(extra='forbid')
     username: str = Field(pattern=r'^[a-zA-Z0-9_]{3,32}$')
-    password: str = Field(min_length=15,max_length=128,repr=False)
+    password: str = Field(min_length=10,max_length=128,repr=False)
     invitation: str = Field(default='',max_length=200,repr=False)
     setup_token: str = Field(default='',max_length=1000,repr=False)
 
@@ -30,7 +30,7 @@ class Credentials(BaseModel):
 class PasswordChange(BaseModel):
     model_config = ConfigDict(extra='forbid')
     current_password: str = Field(min_length=1,max_length=128,repr=False)
-    new_password: str = Field(min_length=15,max_length=128,repr=False)
+    new_password: str = Field(min_length=10,max_length=128,repr=False)
 
 
 class UserUpdate(BaseModel):
@@ -130,7 +130,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.8.0',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.9.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -207,7 +207,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.8.0','mode':'multi-user'}
+        return {'status':'ok','version':'0.9.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):

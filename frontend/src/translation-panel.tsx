@@ -30,7 +30,7 @@ function provenance(item: Row) {
     .filter(Boolean)
     .join(' · ')
 }
-function TranslationStatement({ statement }: { statement: Row }) {
+export function TranslationStatement({ statement }: { statement: Row }) {
   return (
     <>
       <React.Suspense fallback={<p>正在排版译文…</p>}>

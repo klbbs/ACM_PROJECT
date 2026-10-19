@@ -5,7 +5,7 @@ type Row = Record<string, any>
 
 export function UserLogin({ status }: { status: Row }) {
   const [mode, setMode] = useState(status.setup_required ? 'setup' : 'login')
-  const [username, setUsername] = useState(''),
+  const [username, setUsername] = useState(status.setup_required ? 'kds' : ''),
     [password, setPassword] = useState('')
   const [code, setCode] = useState(''),
     [confirm, setConfirm] = useState('')
@@ -47,7 +47,10 @@ export function UserLogin({ status }: { status: Row }) {
               ? '受邀加入 ACM Lab'
               : '登录 ACM Lab'}
         </h1>
-        <p>独立训练空间，按需共享资料。密码至少 15 位。</p>
+        <p>
+          独立训练空间，按需共享资料。首次初始化默认填写管理员用户名 <strong>kds</strong>；密码至少
+          10 位，请使用独立的强密码。
+        </p>
         <label>
           用户名
           <input
@@ -67,7 +70,7 @@ export function UserLogin({ status }: { status: Row }) {
             type="password"
             autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
             value={password}
-            minLength={15}
+            minLength={10}
             maxLength={128}
             required
             onChange={(e) => setPassword(e.target.value)}
@@ -463,7 +466,7 @@ export function MemberPage({
             <input
               type="password"
               autoComplete="new-password"
-              minLength={15}
+              minLength={10}
               maxLength={128}
               required
               value={newPassword}

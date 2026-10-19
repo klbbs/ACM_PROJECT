@@ -23,7 +23,7 @@
 
 Compose 默认启用多人模式。先运行 `python3 scripts/bootstrap.py`，在 `.env` 填写 `ACM_ALLOWED_HOSTS` 和 `ACM_PUBLIC_ORIGIN` 为你的 HTTPS 站点，然后 `docker compose up -d --build`。首次访问使用部署令牌创建管理员，之后通过用户名和密码登录；在「共享资料与成员」生成邀请码。
 
-每位用户的平台账号、Cookie、训练数据、API Key 与官方登录独立；仅主动发布的资料或报告摘要共享。旧数据保留，需显式导入管理员的空空间。
+每位用户的平台账号、Cookie、训练数据、API Key 与官方登录独立；仅主动发布的资料或报告摘要共享。旧数据保留，需显式导入管理员的空空间。初始化页面会预填管理员用户名 `kds`，但密码必须至少 10 位，不能使用 `kds` 作为密码。登录后管理员可在「管理后台」审核题面译文、管理成员和查看安全审计。
 
 完整部署、权限、旧数据迁移和密码恢复见 [多人版运维说明](docs/MULTIUSER.md)。
 
@@ -120,7 +120,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.8.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.9.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

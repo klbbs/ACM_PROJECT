@@ -1804,6 +1804,132 @@ td small {
   overflow-y: auto;
   font-size: 12px;
 }
+.admin-dashboard {
+  display: grid;
+  gap: 18px;
+}
+.admin-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+.admin-hero h2,
+.admin-card h2 {
+  margin: 4px 0 8px;
+}
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #7567b5;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.admin-metric {
+  display: grid;
+  gap: 5px;
+  min-height: 82px;
+  padding: 15px 17px;
+  border: 1px solid #e9e7f2;
+  border-radius: 8px;
+  background: #fff;
+  color: #62677a;
+  text-align: left;
+  cursor: pointer;
+}
+.admin-metric:hover,
+.admin-metric.selected {
+  border-color: #a89bd9;
+  box-shadow: 0 5px 18px #7264b414;
+}
+.admin-metric strong {
+  color: #252942;
+  font-size: 25px;
+  line-height: 1;
+}
+.admin-metric-static {
+  cursor: default;
+  background: #f9f8fc;
+}
+.admin-card {
+  min-width: 0;
+}
+.admin-translation-list {
+  display: grid;
+  gap: 14px;
+}
+.admin-translation {
+  display: grid;
+  gap: 14px;
+  padding: 18px 0;
+  border-top: 1px solid #eeeff4;
+}
+.admin-translation:first-child {
+  border-top: 0;
+}
+.admin-translation-heading,
+.admin-translation-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.admin-translation-heading h3 {
+  margin: 0 0 4px;
+}
+.admin-translation-meta {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  color: #7c8295;
+  font-size: 12px;
+}
+.admin-translation-preview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.admin-translation-preview details {
+  min-width: 0;
+  padding: 11px 13px;
+  border: 1px solid #ecebf2;
+  border-radius: 7px;
+  background: #fbfbfd;
+}
+.admin-translation-preview details[open] {
+  grid-column: 1 / -1;
+}
+.admin-translation-preview summary {
+  cursor: pointer;
+  color: #4e5470;
+  font-weight: 600;
+}
+.admin-invitation {
+  display: grid;
+  gap: 5px;
+  margin: 12px 0 16px;
+}
+@media (max-width: 720px) {
+  .admin-hero {
+    display: grid;
+  }
+  .admin-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-translation-preview {
+    grid-template-columns: 1fr;
+  }
+  .admin-translation-preview details[open] {
+    grid-column: auto;
+  }
+}
 .settings-card form > label {
   margin: 18px 0;
 }

@@ -43,6 +43,7 @@ import './style.css'
 import { PlatformGuide } from './platform-guide'
 import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
+import { AdminPage } from './admin'
 
 type Row = Record<string, any>
 type Page =
@@ -54,6 +55,7 @@ type Page =
   | 'practice'
   | 'settings'
   | 'community'
+  | 'admin'
 const nav = [
   { id: 'overview', name: '训练总览', icon: BarChart3 },
   { id: 'submissions', name: '提交记录', icon: Layers3 },
@@ -63,6 +65,7 @@ const nav = [
   { id: 'guide', name: '平台绑定教程', icon: BookOpen },
   { id: 'settings', name: '连接与设置', icon: Settings2 },
   { id: 'community', name: '共享资料与成员', icon: BookOpen },
+  { id: 'admin', name: '管理后台', icon: ShieldCheck },
 ] as const
 const statusNames: Record<string, string> = {
   queued: '等待中',
@@ -447,7 +450,7 @@ function App() {
         </div>
         <nav>
           {nav
-            .filter((n) => n.id !== 'community' || auth.multi_user)
+            .filter((n) => (n.id !== 'community' || auth.multi_user) && (n.id !== 'admin' || auth.user?.role === 'admin'))
             .map((n) => (
               <button
                 key={n.id}
@@ -964,6 +967,9 @@ function App() {
           {page === 'community' && auth.multi_user && (
             <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}
+          {page === 'admin' && auth.user?.role === 'admin' && (
+            <AdminPage user={auth.user} onError={setError} onNotice={setNotice} />
+          )}
           {page === 'settings' && (
             <SettingsPage
               provider={provider}
@@ -1004,7 +1010,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.8.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.9.0</span>
             </span>
           </footer>
         </div>
