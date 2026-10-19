@@ -48,7 +48,7 @@ export function UserLogin({ status }: { status: Row }) {
               : '登录 ACM Lab'}
         </h1>
         <p>
-          独立训练空间，按需共享资料。管理员帐号为 <strong>kendas</strong>；初始化时自行设置至少 10 位密码。
+          独立训练空间，按需共享资料。
         </p>
         <label>
           用户名
