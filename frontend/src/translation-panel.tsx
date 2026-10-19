@@ -107,6 +107,18 @@ export function TranslationPanel({
       alive = false
     }
   }, [problemId, revision, statement])
+  useEffect(() => {
+    const completed = [...jobs]
+      .reverse()
+      .find(
+        (job) =>
+          job.kind === 'translation' &&
+          job.status === 'completed' &&
+          job.result?.translation_id &&
+          data?.items.some((item: Row) => item.id === job.result.translation_id),
+      )
+    if (completed) setSelected(completed.result.translation_id)
+  }, [jobs, data])
   const reload = async () => {
     const result = await api(`/workbench/problem/${encodeURIComponent(problemId)}/translations`)
     setData(result)
