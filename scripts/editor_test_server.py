@@ -25,6 +25,10 @@ def main():
         # Test-process-only substitutes: never post code or call paid AI APIs.
         from acmweb import workbench
         async def fixture_ai(model, prompt, schema):
+            if schema.get('title') == 'DailySelection':
+                payload = json.loads(prompt.rsplit('\n', 1)[-1])
+                return json.dumps({'selected_problems': [{'id': item['id'], 'reason': '根据合成候选的难度与每日训练时间选择。'}
+                    for item in payload['candidates'][:payload['requested_count']]]}, ensure_ascii=False)
             if schema.get('title') == 'Hint':
                 return json.dumps({'focus':'边界检查','hint':'先检查输入较小的一端。','question':'边界输入是否满足所有要求？'},ensure_ascii=False)
             if schema.get('title') == 'Review':
@@ -44,8 +48,9 @@ def main():
             return {'status':'OK','result':rows}
         workbench.Client.json = fixture_judge
         app.state.database.set('training',{'minimum':800,'maximum':1800})
+        seeded_statements = []
         with app.state.database.connect() as db:
-            for contest in (4, 5):
+            for contest in range(4, 12):
                 pid = f'codeforces:{contest}-A'
                 problem = {'id': pid, 'platform': 'codeforces', 'problem_id': f'{contest}-A',
                            'title': f'编辑器测试示例 {contest}（合成数据）', 'difficulty': 1200,
@@ -55,7 +60,22 @@ def main():
                              'time_limit': '1 second', 'memory_limit': '256 MB',
                              'render_version': 2, 'sections': ['此题仅用于编辑器自动化测试，不是真实题面。'], 'has_images': False}
                 db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', pid, json.dumps(problem)))
-                db.execute('INSERT INTO wb_problems VALUES(?,?,?)', (pid, json.dumps(statement), 1))
+                seeded_statements.append((pid, json.dumps(statement), 1))
+                db.execute('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements[-1])
+        @app.post('/_fixture/reset-workbench')
+        def reset_workbench():
+            # This route exists only in this guarded, temporary loopback fixture.
+            # Restore original statement samples as well as private practice state.
+            from fastapi import HTTPException
+            if any(not task.done() for _, task in app.state.jobs.tasks.values()):
+                raise HTTPException(409, 'Previous fixture job is still running')
+            with app.state.database.connect() as db:
+                for table in ('wb_hints', 'wb_attempts', 'wb_drafts', 'wb_problems',
+                              'submissions', 'accounts', 'snapshots', 'runs', 'practice_feedback'):
+                    db.execute('DELETE FROM ' + table)
+                db.executemany('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements)
+            return {'ok': True}
+
         uvicorn.run(app, host='127.0.0.1', port=18766, access_log=False)
 
 

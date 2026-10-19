@@ -18,7 +18,7 @@ type Props = {
   children: React.ReactNode
 }
 const statusNames: Record<string, string> = {
-  private: '仅自己可见',
+  private: '临时译文（30 分钟）',
   pending: '等待管理员审核',
   approved: '审核已通过',
   rejected: '审核未通过',
@@ -95,7 +95,7 @@ export function TranslationPanel({
           if (added) {
             setSelected(added.id)
             pendingGeneration.current = null
-            setNotice('译文已保存到你的个人空间。')
+            setNotice('译文仅在服务器内存暂存 30 分钟，服务重启后清除；需要共享时请及时上传审核。')
           }
         }
         setSelected((id) => (result.items.some((item: Row) => item.id === id) ? id : ''))
@@ -196,7 +196,8 @@ export function TranslationPanel({
         </summary>
         <p className="help">
           选择已有共享译文不会调用 AI。新翻译仅发送本题题面，不发送你的代码、提交记录或平台
-          Cookie。AI 可能分段调用并计费，请先核对下方模型。
+          Cookie。个人译文仅在内存暂存 30 分钟，服务重启后清除；仅主动上传的共享译文持久保存。
+          AI 可能分段调用并计费，请先核对下方模型。
         </p>
         <div className="translation-form">
           <label>
@@ -270,7 +271,7 @@ export function TranslationPanel({
             </button>
           </div>
         )}
-        {active && <p role="status">题面翻译正在进行，可继续编码；完成后会保存在个人空间。</p>}
+        {active && <p role="status">题面翻译正在进行，可继续编码；完成后仅在内存暂存 30 分钟。</p>}
         {!data?.shareable && (
           <p className="help">手动导入等未经核验的题面仅支持个人翻译，不接受共享上传。</p>
         )}
@@ -348,7 +349,7 @@ export function TranslationPanel({
           <option value="">原题</option>
           {(data?.items || []).map((item: Row) => (
             <option key={item.id} value={item.id}>
-              {item.scope === 'shared' ? '免费共享' : '个人译文'} ·{' '}
+              {item.scope === 'shared' ? '免费共享' : '临时个人译文'} ·{' '}
               {item.model || engineNames[item.engine]} · {statusNames[item.status] || item.status}
             </option>
           ))}
@@ -363,7 +364,7 @@ export function TranslationPanel({
         <div className="translation-result">
           <div className="translation-result-meta">
             <span>
-              {current.scope === 'shared' ? '免费共享译文 · 不调用 AI' : '个人译文'} ·{' '}
+              {current.scope === 'shared' ? '免费共享译文 · 不调用 AI' : '临时个人译文'} ·{' '}
               {engineNames[current.engine]} · {provenance(current)} · {statusNames[current.status]}
             </span>
             {current.engine === 'ai' &&

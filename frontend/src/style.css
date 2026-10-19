@@ -3378,3 +3378,16 @@ td small {
     padding: 10px;
   }
 }
+
+.wb-selftest { margin-top: 1rem; border-top: 1px solid var(--line, #e2e5ed); padding-top: 1rem; }
+.wb-selftest summary { cursor: pointer; font-weight: 600; }
+.wb-selftest > label:not(.wb-consent) { display: block; margin: .8rem 0; }
+.wb-selftest textarea { display: block; box-sizing: border-box; width: 100%; margin-top: .4rem; font-family: 'JetBrains Mono', Consolas, monospace; }
+.wb-selftest pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }
+
+.daily-task-list { display: grid; gap: 12px; margin-top: 16px; }
+.daily-task-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.daily-problem > div:first-child { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.daily-mission .consent { display: flex; gap: 9px; align-items: flex-start; margin: 15px 0; }
+.daily-mission .consent input { width: auto; flex-shrink: 0; margin-top: 4px; }
+@media (max-width: 700px) { .daily-problem { flex-wrap: wrap; } .daily-task-actions { width: 100%; } }

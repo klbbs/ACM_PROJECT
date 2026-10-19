@@ -34,7 +34,7 @@ class PasswordChange(BaseModel):
 
 
 class InitialAdminCredentials(Credentials):
-    password: str = Field(min_length=3,max_length=128,repr=False)
+    password: str = Field(min_length=10,max_length=128,repr=False)
 
 
 class LoginCredentials(BaseModel):
@@ -66,6 +66,7 @@ class Workspaces:
 
     def budget(self):
         count = sum(not task.done() for app, _ in self.apps.values() for _,task in app.state.jobs.tasks.values())
+        count += sum(bool(getattr(app.state.daily, 'active_ai', False)) for app, _ in self.apps.values())
         if count >= 4:
             from .codex_bridge import AIError
             raise AIError('服务器任务已满，请稍后重试')
@@ -88,6 +89,7 @@ class Workspaces:
                 # from any upload payload sent by the browser.
                 app.state.translations.owner = uid
                 app.state.jobs.guard = self.budget
+                app.state.daily.guard = self.budget
                 app.state.codex.process_slots = self.process_slots
                 lifecycle = app.router.lifespan_context(app)
                 await lifecycle.__aenter__()
@@ -124,6 +126,7 @@ def create_multi_app(settings, factory):
     @asynccontextmanager
     async def lifespan(app):
         with instance_lock(settings.data_dir/'.multiuser.lock'):
+            identities.normalize_administrator()
             cleanup = None
             try:
                 # Restore existing user workspaces on server restart.
@@ -140,7 +143,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.10.0',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.10.1',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -217,7 +220,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.10.0','mode':'multi-user'}
+        return {'status':'ok','version':'0.10.1','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -244,6 +247,8 @@ def create_multi_app(settings, factory):
 
     @app.post('/api/auth/register')
     def register(payload:Credentials,response:Response):
+        if payload.username.lower() in {'admin', 'kendas', 'kds'}:
+            raise HTTPException(409, '该用户名由站点保留')
         if len(payload.password) < 10:
             raise HTTPException(422,'成员密码至少 10 位')
         uid = identities.create(payload.username.lower(),payload.password,invitation=payload.invitation,max_users=settings.max_users)
@@ -300,6 +305,8 @@ def create_multi_app(settings, factory):
         actor = require(request,True)
         if uid == actor['id']:
             raise HTTPException(400,'不能停用自己或修改自己的角色')
+        if payload.role == 'admin':
+            raise HTTPException(409, '站点只保留原管理员 kendas，不能新增管理员')
         with identities.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT role,active FROM users WHERE id=?',(actor['id'],)).fetchone()

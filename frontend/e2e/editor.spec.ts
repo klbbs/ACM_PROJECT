@@ -11,6 +11,8 @@ async function open(page: Page, problem = '4-A') {
   await expect(page.getByLabel('编辑器键位')).toBeEnabled()
 }
 async function reset(page: Page) {
+  const restored = await page.request.post('/_fixture/reset-workbench')
+  expect(restored.ok()).toBe(true)
   await page.request.put('/api/workbench/editor-settings', {
     data: { keymap: 'standard', font_size: 14, line_wrapping: false },
   })
@@ -136,7 +138,7 @@ test('chunk load failure exposes a fallback with the existing code', async ({ pa
   )
 })
 
-test('Enter accepts a keyword, Tab indents or jumps snippet fields, and replacement is local', async ({
+test('Tab accepts a keyword or jumps snippet fields, and replacement is local', async ({
   page,
 }) => {
   await open(page)
@@ -144,7 +146,7 @@ test('Enter accepts a keyword, Tab indents or jumps snippet fields, and replacem
   await editor.fill('ret')
   await editor.press('Control+Space')
   await expect(page.getByRole('option').filter({ hasText: /^return/ })).toBeVisible()
-  await editor.press('Enter')
+  await editor.press('Tab')
   await expect(editor).toHaveText('return')
   await editor.fill('vec')
   await editor.press('Control+Space')
@@ -155,7 +157,7 @@ test('Enter accepts a keyword, Tab indents or jumps snippet fields, and replacem
       .first(),
   ).toBeVisible()
   await editor.press('Tab')
-  await expect.poll(() => editor.textContent()).toBe('    vec')
+  await expect.poll(() => editor.textContent()).toBe('vector')
   await editor.press('Escape')
   await editor.fill('for')
   await editor.press('Control+Space')
@@ -251,13 +253,36 @@ test('statement renders readable math and images with usable links on failure', 
   await expect(page.locator('.statement-check summary')).toContainText('1 张图片')
 })
 
+test('Enter closes completion and inserts a newline without accepting its keyword', async ({
+  page,
+}) => {
+  await open(page)
+  const editor = page.locator('.cm-content')
+  await editor.fill('ret')
+  await editor.press('Control+Space')
+  await expect(page.getByRole('option').filter({ hasText: /^return/ })).toBeVisible()
+  await editor.press('Enter')
+  await expect(editor.locator('.cm-line')).toHaveCount(2)
+  await editor.press('Control+s')
+  await expect
+    .poll(
+      async () => (await (await page.request.get('/api/workbench/problem/4-A')).json()).draft.code,
+    )
+    .toBe('ret\n')
+  await expect(page.locator('.cm-tooltip-autocomplete')).toBeHidden()
+  await editor.fill('')
+  await editor.press('Tab')
+  await expect.poll(() => editor.textContent()).toBe('    ')
+})
+
 test('AI presets expose dedicated fields and preserve secrets per endpoint', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
   await page.getByLabel('模型提供方').selectOption('deepseek')
   await expect(page.getByLabel('API 地址', { exact: true })).toHaveValue('https://api.deepseek.com')
   await expect(page.getByLabel('思考模式')).toBeVisible()
-  await page.getByLabel('默认模型 ID', { exact: true }).fill('test-model')
+  await page.getByText('目录未包含可用模型？手动填写模型 ID', { exact: true }).click()
+  await page.getByLabel('手动模型 ID', { exact: true }).fill('test-model')
   await page.getByLabel('API Key', { exact: true }).fill('synthetic-deepseek-key')
   await page.getByRole('button', { name: '保存 API 配置' }).click()
   await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
@@ -277,6 +302,16 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   page,
 }) => {
   // All upstream judge/AI responses are synthetic in the isolated test server.
+  await page.route('**/api/ai/models?provider=api', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ id: 'fixture-coach', name: '合成教练模型' }],
+        default_model: 'fixture-coach',
+        source: 'fixture',
+        note: '仅用于离线教练交互验收',
+      },
+    }),
+  )
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
   })
@@ -288,7 +323,8 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /给我一个小提示/ })).toBeDisabled()
   await page.getByLabel('AI 通道').selectOption('api')
-  await page.getByLabel('手动模型 ID').fill('fixture-coach')
+  await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
+  await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
   await page.getByRole('checkbox', { name: /我同意将本题题面/ }).check()
   await page.getByRole('button', { name: /给我一个小提示/ }).click()
   await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible({
@@ -338,4 +374,81 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await page.getByRole('button', { name: /^codeforces:4-A / }).click()
   await expect(page.getByLabel('提交账号').first()).toHaveValue('FIXTURE_USER')
+})
+
+test('self-test clearly reports disabled service and never sends code', async ({ page }) => {
+  let runs = 0
+  await page.route('**/api/workbench/self-test/capabilities', (route) =>
+    route.fulfill({
+      json: {
+        enabled: false,
+        languages: {},
+        message: '管理员尚未配置隔离自测服务。网站不会直接执行代码。',
+      },
+    }),
+  )
+  await page.route('**/api/workbench/self-test/run', (route) => {
+    runs++
+    return route.abort()
+  })
+  await open(page)
+  await page.getByText('代码自测 · 自定义输入', { exact: true }).click()
+  await expect(page.getByText('管理员尚未配置隔离自测服务。网站不会直接执行代码。')).toBeVisible()
+  await expect(page.getByRole('button', { name: '运行自测', exact: true })).toHaveCount(0)
+  expect(runs).toBe(0)
+})
+
+test('self-test uses custom input, compares output and keeps results out of submissions', async ({
+  page,
+}) => {
+  await page.route('**/api/workbench/self-test/capabilities', (route) =>
+    route.fulfill({
+      json: {
+        enabled: true,
+        languages: { cpp17: { id: 54, name: 'C++ (GCC 9.2.0)' } },
+        message: '合成隔离服务，仅用于界面验收',
+      },
+    }),
+  )
+  const sent: any[] = []
+  await page.route('**/api/workbench/self-test/run', async (route) => {
+    sent.push(route.request().postDataJSON())
+    await route.fulfill({
+      json: {
+        status_id: 3,
+        status: 'Accepted',
+        stdout: '7\n',
+        stderr: '',
+        compile_output: '',
+        time: '0.01',
+        memory: 128,
+        matched: false,
+        truncated: false,
+      },
+    })
+  })
+  await open(page)
+  await page.locator('.cm-content').fill('int main() { return 0; }')
+  await page.getByText('代码自测 · 自定义输入', { exact: true }).click()
+  await page.getByLabel('填入自测样例').selectOption('0')
+  await expect(page.getByLabel('自测输入', { exact: true })).toHaveValue('1\n2')
+  await page.getByLabel('自测输入', { exact: true }).fill('3 4\n')
+  await page.getByLabel('自测预期输出', { exact: true }).fill('8\n')
+  const run = page.getByRole('button', { name: '运行自测', exact: true })
+  await expect(run).toBeDisabled()
+  await page.getByLabel('我同意将本次代码和输入发送到管理员配置的隔离自测服务').check()
+  await run.click()
+  await expect(page.getByText('与预期输出不一致', { exact: false })).toBeVisible()
+  expect(sent).toEqual([
+    {
+      code: 'int main() { return 0; }',
+      language: 'cpp17',
+      stdin: '3 4\n',
+      expected: '8\n',
+      consent: true,
+    },
+  ])
+  await expect(page.locator('.wb-attempt')).toHaveCount(0)
+  await page.locator('.cm-content').fill('int main() { return 1; }')
+  await expect(page.locator('.wb-selftest-result')).toHaveCount(0)
 })

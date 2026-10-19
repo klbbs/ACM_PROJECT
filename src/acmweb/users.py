@@ -5,6 +5,7 @@ import os
 import secrets
 import sqlite3
 import threading
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -87,18 +88,63 @@ class Users:
               expires_at INTEGER NOT NULL DEFAULT 0);
             PRAGMA user_version=1;
             ''')
-            legacy = db.execute("SELECT id FROM users WHERE username='kds' COLLATE NOCASE").fetchone()
-            if legacy:
-                target = db.execute("SELECT id FROM users WHERE username='kendas' COLLATE NOCASE", ()).fetchone()
-                if target:
-                    db.execute("UPDATE users SET username=?,active=0,role='member' WHERE id=?", ('kds-retired-' + legacy['id'][:10], legacy['id']))
-                    db.execute('DELETE FROM sessions WHERE user_id=?', (legacy['id'],))
-                else:
-                    db.execute("UPDATE users SET username='kendas' WHERE id=?", (legacy['id'],))
-                self.audit('admin.renamed_to_kendas', target['id'] if target else legacy['id'], legacy['id'], db)
         path.chmod(0o600)
         # Unknown users still perform the same expensive password verification.
         self.dummy_hash = password_hash(secrets.token_urlsafe(32))
+
+    def normalize_administrator(self):
+        """Run under instance_lock; retain the original admin, never the demo.
+
+        Workspace directories are keyed by ID, so renaming the original row
+        preserves its password and all private data. Removed demo workspaces
+        stay on disk for offline recovery and can no longer authenticate.
+        """
+        with self.connect() as db:
+            original = db.execute("SELECT id FROM users WHERE lower(username)='admin' AND role='admin'").fetchone()
+            canonical = db.execute("SELECT id FROM users WHERE lower(username)='kendas' AND role='admin'").fetchone()
+            owner = original or canonical
+            if not owner:
+                if db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
+                    raise RuntimeError('未找到原 admin 或管理员 kendas；请停止服务，核实备份后由运维恢复原管理员身份，不能使用 kds 演示账号替代')
+                return
+            uid = owner['id']
+            duplicates = db.execute("SELECT id FROM users WHERE id<>? AND lower(username) IN ('kds','kendas')", (uid,)).fetchall()
+            extra_admins = db.execute("SELECT id FROM users WHERE role='admin' AND id<>?", (uid,)).fetchall()
+            if not original and not duplicates and not extra_admins:
+                return
+        # A one-time private SQLite snapshot precedes the identity changes.
+        backup = self.path.with_name('users.before-canonical-admin.sqlite3')
+        if not backup.exists():
+            fd, temporary = tempfile.mkstemp(prefix='.users-migration-', suffix='.sqlite3', dir=self.path.parent)
+            os.close(fd)
+            try:
+                with sqlite3.connect(self.path) as source, sqlite3.connect(temporary) as target:
+                    source.backup(target)
+                os.replace(temporary, backup)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        with sqlite3.connect(f'file:{backup}?mode=ro', uri=True) as saved:
+            if not saved.execute("SELECT 1 FROM sqlite_master WHERE name='users'").fetchone() or saved.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise RuntimeError('管理员迁移备份不完整，请先由运维检查；未修改账号')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            # Remove demo identities before renaming to satisfy username uniqueness.
+            for row in duplicates:
+                removed = row['id']
+                db.execute('DELETE FROM sessions WHERE user_id=?', (removed,))
+                db.execute('DELETE FROM invitations WHERE created_by=?', (removed,))
+                db.execute('UPDATE invitations SET used_by=NULL WHERE used_by=?', (removed,))
+                db.execute('UPDATE shared_entries SET owner_id=? WHERE owner_id=?', (uid, removed))
+                db.execute('DELETE FROM users WHERE id=?', (removed,))
+                self.audit('demo_user.removed', uid, removed, db)
+            for row in extra_admins:
+                db.execute("UPDATE users SET role='member' WHERE id=?", (row['id'],))
+                db.execute('DELETE FROM sessions WHERE user_id=?', (row['id'],))
+                self.audit('admin.extra_demoted', uid, row['id'], db)
+            db.execute("UPDATE users SET username='kendas',role='admin' WHERE id=?", (uid,))
+            db.execute('DELETE FROM sessions WHERE user_id=?', (uid,))
+            self.audit('admin.original_renamed', uid, uid, db)
 
     @contextmanager
     def connect(self):

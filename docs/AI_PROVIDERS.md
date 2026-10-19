@@ -86,3 +86,11 @@ docker compose up -d --build
 协议核对日期：2026-10-19。参考 [OpenAI 结构化输出](https://developers.openai.com/api/docs/guides/structured-outputs)、[DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[Claude Messages](https://platform.claude.com/docs/en/api/messages/create)、[Gemini 兼容接口](https://ai.google.dev/gemini-api/docs/openai)、[百炼兼容接口](https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope)、[Kimi](https://platform.moonshot.cn/docs)、[硅基流动](https://api-docs.siliconflow.cn/docs/userguide/quickstart)、[智谱](https://docs.bigmodel.cn/api-reference)。
 
 适配器、错误处理、密钥迁移、多用户隔离和页面配置用模拟响应/合成密钥测试。未使用用户真实付费 Key 验证各模型的在线权限、价格或所有参数组合；接入后由用户主动执行连接测试。
+
+## 0.10.1 模型目录与翻译缓存
+
+填写当前提供方 Key 后点击“保存并读取模型列表”，从下拉列表选择模型，再保存配置。切换地址会清空未保存的 Key 和旧目录；读取失败不会假装连接成功。Gemini 使用 Google 官方目录并过滤生成模型，Claude 使用原生目录分页。目录可见与模型实际可调用是两种权限，仍需执行连接测试。
+
+未实现模型目录的服务可展开手动模型 ID；目录仅在 404/405/501 时明确标记手动降级，401/403 则报告鉴权失败。目录分页中固定同一配置和密钥，避免中途切换 Key 造成混用。
+
+共享题面译文按服务器捕获的提供方、接口和模型身份精确命中；不同模型可各贡献一份，免费共享列表始终可直接读取，不触发 AI。私人译文仅在内存暂存 30 分钟，每用户最多 12 份/6 MiB，用户需在过期前主动上传审核；只有提交共享审核的译文才持久化。

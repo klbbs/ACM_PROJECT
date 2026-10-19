@@ -162,27 +162,69 @@ class AIProvider:
         return self.public_config()
 
     async def models(self, provider):
-        if provider=="codex":
-            return {"items":await self.codex.models(),"note":"官方客户端目录可能包含缓存；实际调用成功才代表模型可用"}
-        config=self.config()
-        if not self.key(config):
+        if provider == "codex":
+            if self.codex is None or not getattr(self.codex, 'enabled', True):
+                raise AIError('官方 Codex 通道当前不可用')
+            return {"items": await self.codex.models(), "note": "官方客户端目录可能包含缓存；实际调用成功才代表模型可用"}
+        if provider != 'api':
+            raise AIError('不支持的 AI 通道')
+        # Capture endpoint and credential together, including across pagination.
+        with self.config_lock:
+            config = self.config()
+            key = self.key(config)
+        if not key:
             raise AIError("请先配置 API Key")
+        gemini = config.get('vendor') == 'gemini'
+        if gemini:
+            if urlsplit(config['base_url']).hostname != 'generativelanguage.googleapis.com':
+                raise AIError('Gemini 模型目录只允许访问 Google 官方 API 地址')
+            url = 'https://generativelanguage.googleapis.com/v1beta/models'
+            headers = {'x-goog-api-key': key}
+        else:
+            url = self.validate_url(config['base_url']) + '/models'
+            headers = ({'x-api-key': key, 'anthropic-version': '2023-06-01'}
+                       if config['protocol'] == 'anthropic' else {'Authorization': 'Bearer ' + key})
         try:
-            async with httpx.AsyncClient(timeout=25,follow_redirects=False) as client:
-                response=await client.get(self.validate_url(config["base_url"])+"/models",headers=self.headers(config))
-                if response.status_code!=200:
-                    if response.status_code in {404,405,501} and config.get('model'):
-                        return {'items':[{'id':config['model'],'name':config['model']}],'source':'manual','default_model':config['model'],'note':'提供方未实现模型列表；这里只显示手动填写的模型，尚未验证生成权限'}
-                    raise AIError(f"模型列表请求失败，HTTP {response.status_code}；可手动配置模型 ID")
-                body=response.json()
-                if not isinstance(body,dict):raise ValueError('invalid model list')
-                items=body.get("data",body.get("models",[]))
-                if not isinstance(items,list) or any(not isinstance(m,dict) for m in items):raise ValueError('invalid model entries')
-                items=[m for m in items if isinstance(m.get('id',m.get('slug')),str) and m.get('id',m.get('slug'))]
-                if config["model"] and not any(m.get("id")==config["model"] for m in items):
-                    items.append({"id":config["model"],"display_name":config["model"]+"（手动配置，未单独验证）"})
-                return {"items":[{"id":m.get("id",m.get("slug")),"name":m.get("display_name",m.get("id",m.get("slug")))} for m in items],"note":"来自当前提供方的实时模型列表；列表权限不代表生成权限", "source":"remote","default_model":config["model"]}
-        except (httpx.HTTPError,ValueError,TypeError) as exc:
+            items, cursor, seen, truncated = [], None, set(), False
+            async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
+                for page in range(10):
+                    params = ({'pageToken' if gemini else 'after_id': cursor} if cursor else {})
+                    response = await client.get(url, headers=headers, **({'params': params} if params else {}))
+                    if response.status_code != 200:
+                        if page == 0 and response.status_code in {404, 405, 501} and config.get('model'):
+                            return {'items': [{'id': config['model'], 'name': config['model']}], 'source': 'manual',
+                                    'default_model': config['model'], 'note': '提供方未实现模型列表；这里只显示手动填写的模型，尚未验证生成权限'}
+                        raise AIError(f"模型列表请求失败，HTTP {response.status_code}；可手动配置模型 ID")
+                    body = response.json()
+                    if not isinstance(body, dict): raise ValueError('invalid model list')
+                    batch = body.get('models' if gemini else 'data', [])
+                    if not isinstance(batch, list) or any(not isinstance(m, dict) for m in batch):
+                        raise ValueError('invalid model entries')
+                    if gemini:
+                        batch = [{'id': m['name'].removeprefix('models/'),
+                                  'display_name': m.get('displayName', m['name'])}
+                                 for m in batch if isinstance(m.get('name'), str)
+                                 and isinstance(m.get('supportedGenerationMethods'), list)
+                                 and 'generateContent' in m['supportedGenerationMethods']]
+                    for item in batch:
+                        mid = item.get('id', item.get('slug'))
+                        if not isinstance(mid, str) or not mid.strip() or len(mid) > 150 or any(ord(c) < 32 for c in mid):
+                            continue
+                        if mid in seen: continue
+                        seen.add(mid)
+                        name = item.get('display_name', mid)
+                        items.append({'id': mid, 'name': name if isinstance(name, str) else mid})
+                    cursor = (body.get('nextPageToken') if gemini else
+                              body.get('last_id') if config['protocol'] == 'anthropic' and body.get('has_more') else None)
+                    if not cursor: break
+                    if not isinstance(cursor, str) or len(cursor) > 2048: raise ValueError('invalid model cursor')
+                    if page == 9: truncated = True
+                if config['model'] and config['model'] not in seen:
+                    items.append({'id': config['model'], 'name': config['model'] + '（手动配置，未单独验证）'})
+                note = '来自当前提供方的实时模型列表；列表权限不代表生成权限'
+                if truncated: note += '；目录过大，仅展示前 10 页，可手动填写其他模型 ID'
+                return {'items': items, 'note': note, 'source': 'remote', 'default_model': config['model']}
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
             raise AIError("无法读取模型列表，请检查网络、API 地址和 Key") from exc
 
     async def complete(self, task, provider, model, payload: dict, schema: type[BaseModel]) -> AIResult:

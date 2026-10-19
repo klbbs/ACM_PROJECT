@@ -54,18 +54,12 @@ def test_statement_plaintext_samples_and_url_validation():
     with pytest.raises(AIError): parse_statement('<html>Cloudflare verification</html>', 'codeforces:4-A')
 
 
-def test_local_self_test_runs_in_network_isolated_sandbox(workspace):
-    client, _, _ = workspace
-    result = client.post('/api/workbench/problem/4-A/self-test', json={
-        'language': 'cpp17', 'code': '#include <iostream>\nint main(){int a,b;if(std::cin>>a>>b)std::cout<<a+b<<"\\n";}',
-        'cases': [{'input': '2 3\n', 'output': '5\n'}, {'input': '10 4', 'output': '14'}],
-    })
-    if result.status_code == 503:
-        assert '命名空间' in result.json()['detail'] or 'bubblewrap' in result.json()['detail']
-        return
-    assert result.status_code == 200, result.text
-    assert [row['status'] for row in result.json()['results']] == ['AC', 'AC']
-    assert client.post('/api/workbench/problem/4-A/self-test', json={'code': 'x', 'language': 'cpp17', 'cases': []}).status_code == 422
+def test_old_host_execution_endpoint_is_removed(workspace):
+    client, service, _ = workspace
+    assert not hasattr(service, 'self_test')
+    assert client.post('/api/workbench/problem/4-A/self-test', json={
+        'language': 'cpp17', 'code': 'x', 'cases': [{'input': '', 'output': ''}],
+    }).status_code in (404, 405)
 
 
 def test_personal_translation_only_lives_in_process_memory(workspace):
@@ -311,8 +305,10 @@ def test_verified_accepted_workbench_submission_updates_k_checkin(workspace, mon
     _, service, app = workspace
     app.state.daily.configure(DailySettings(daily_goal=1, duration_days=14))
     with service.db.connect() as db:
-        db.execute('INSERT INTO daily_rolls VALUES(?,?,?,?,?)', (
-            app.state.daily.today(), 1, 'codeforces:4-A', json.dumps({'id': 'codeforces:4-A'}), int(time.time())))
+        day = app.state.daily.today().isoformat()
+        db.execute('INSERT INTO daily_plans VALUES(?,?,?,?,?,?)', (day, 'ready', 1, day, day, int(time.time())))
+        db.execute('INSERT INTO daily_plan_tasks(day,ordinal,problem_id,data,active,created_at) VALUES(?,?,?,?,1,?)',
+                   (day, 0, 'codeforces:4-A', json.dumps({'id': 'codeforces:4-A'}), int(time.time())))
     aid = snapshot(service)
     mock_judge(monkeypatch, status='OK')
     result = asyncio.run(app.state.jobs.run_workbench('wb_sync', {

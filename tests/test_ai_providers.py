@@ -113,3 +113,48 @@ def test_bad_upstream_shapes_are_safe(ai,monkeypatch):
     with pytest.raises(AIError,match='模型列表'):asyncio.run(ai.models('api'))
     mock_http(monkeypatch,['SECRET'])
     with pytest.raises(AIError,match='JSON'):asyncio.run(ai._api_generate('m','prompt',{}))
+
+
+@pytest.mark.parametrize('vendor,protocol,base', [
+    ('gemini', 'chat', 'https://generativelanguage.googleapis.com/v1beta/openai'),
+    ('anthropic', 'anthropic', 'https://api.anthropic.com/v1'),
+])
+def test_native_model_catalog_pagination_and_credential_snapshot(ai, monkeypatch, vendor, protocol, base):
+    ai.save(ProviderConfig(vendor=vendor, protocol=protocol, base_url=base, api_key='original-key'))
+    calls = []
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if len(calls) == 1:
+                # A simultaneous save must not change the next page's credential.
+                ai.save(ProviderConfig(vendor=vendor, protocol=protocol, base_url=base, api_key='replacement-key'))
+            if vendor == 'gemini':
+                body = {'models': [
+                    {'name': 'models/gemini-' + str(len(calls)), 'displayName': 'Gemini', 'supportedGenerationMethods': ['generateContent']},
+                    {'name': 'models/embedding', 'supportedGenerationMethods': ['embedContent']},
+                ], **({'nextPageToken': 'next-page'} if len(calls) == 1 else {})}
+            else:
+                body = {'data': [{'id': 'claude-' + str(len(calls)), 'display_name': 'Claude'}],
+                        'has_more': len(calls) == 1, 'last_id': 'claude-1'}
+            return httpx.Response(200, json=body)
+    monkeypatch.setattr('acmweb.ai.httpx.AsyncClient', lambda **kwargs: Client())
+    result = asyncio.run(ai.models('api'))
+    assert len(result['items']) == 2 and len(calls) == 2
+    if vendor == 'gemini':
+        assert calls[0][0] == 'https://generativelanguage.googleapis.com/v1beta/models'
+        assert calls[1][1]['params'] == {'pageToken': 'next-page'}
+        assert all(c[1]['headers'] == {'x-goog-api-key': 'original-key'} for c in calls)
+    else:
+        assert calls[1][1]['params'] == {'after_id': 'claude-1'}
+        assert all(c[1]['headers']['x-api-key'] == 'original-key' for c in calls)
+    assert 'key' not in json.dumps(result)
+
+
+def test_model_catalog_unauthorized_does_not_fallback_or_echo_secrets(ai, monkeypatch):
+    ai.save(ProviderConfig(api_key='fixture-key', model='manual-id'))
+    calls = mock_http(monkeypatch, {'error': 'SECRET-RESPONSE'}, 401)
+    with pytest.raises(AIError, match='401') as exc:
+        asyncio.run(ai.models('api'))
+    assert 'SECRET' not in str(exc.value) and len(calls) == 1

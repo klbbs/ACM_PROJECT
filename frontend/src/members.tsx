@@ -6,9 +6,9 @@ type Row = Record<string, any>
 export function UserLogin({ status }: { status: Row }) {
   const [mode, setMode] = useState(status.setup_required ? 'setup' : 'login')
   const [username, setUsername] = useState(status.setup_required ? 'kendas' : ''),
-    [password, setPassword] = useState(status.setup_required ? 'kds' : '')
+    [password, setPassword] = useState('')
   const [code, setCode] = useState(''),
-    [confirm, setConfirm] = useState(status.setup_required ? 'kds' : '')
+    [confirm, setConfirm] = useState('')
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false)
   return (
@@ -48,12 +48,13 @@ export function UserLogin({ status }: { status: Row }) {
               : '登录 ACM Lab'}
         </h1>
         <p>
-          独立训练空间，按需共享资料。首位管理员帐号为 <strong>kendas</strong>；使用初始化密码后请立即修改。
+          独立训练空间，按需共享资料。管理员帐号为 <strong>kendas</strong>；初始化时自行设置至少 10 位密码。
         </p>
         <label>
           用户名
           <input
             value={username}
+            readOnly={mode === 'setup'}
             autoComplete="username"
             minLength={3}
             maxLength={32}
@@ -69,7 +70,7 @@ export function UserLogin({ status }: { status: Row }) {
             type="password"
             autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
             value={password}
-            minLength={mode === 'setup' || mode === 'login' ? 3 : 10}
+            minLength={mode === 'login' ? 3 : 10}
             maxLength={128}
             required
             onChange={(e) => setPassword(e.target.value)}
@@ -402,20 +403,6 @@ export function MemberPage({
                             }
                           >
                             {member.active ? '停用' : '启用'}
-                          </button>
-                          <button
-                            disabled={busy}
-                            className="text-button"
-                            onClick={() =>
-                              action(async () => {
-                                await api(`/admin/users/${member.id}`, 'PUT', {
-                                  role: member.role === 'admin' ? 'member' : 'admin',
-                                  active: !!member.active,
-                                })
-                              })
-                            }
-                          >
-                            {member.role === 'admin' ? '设为成员' : '设为管理员'}
                           </button>
                         </div>
                       )}

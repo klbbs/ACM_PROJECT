@@ -277,9 +277,6 @@ export function AdminPage({
                         <button className="text-button" disabled={busy} onClick={() => action(() => api(`/admin/users/${member.id}`, 'PUT', { role: member.role, active: !member.active }).then(() => undefined))}>
                           {member.active ? '停用' : '启用'}
                         </button>
-                        <button className="text-button" disabled={busy} onClick={() => action(() => api(`/admin/users/${member.id}`, 'PUT', { role: member.role === 'admin' ? 'member' : 'admin', active: !!member.active }).then(() => undefined))}>
-                          {member.role === 'admin' ? '设为成员' : '设为管理员'}
-                        </button>
                       </div>
                     )}
                   </td>

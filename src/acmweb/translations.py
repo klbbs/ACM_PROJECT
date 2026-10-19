@@ -1,4 +1,5 @@
 """Private, structure-preserving translations and moderated shared statements."""
+import asyncio
 import copy
 import hashlib
 import json
@@ -60,6 +61,12 @@ def fingerprint(statement):
 
 PROTECTED = re.compile(r'\$\$\$.*?\$\$\$|\$\$.*?\$\$|\$(?:\\.|[^$\n])+\$|\\\(.*?\\\)|\\\[.*?\\\]|https?://[^\s<>]+|`[^`]*`', re.S)
 TOKEN = re.compile(r'ACMPROTECT_[a-f0-9]{16}_\d+_END')
+
+
+def model_identity(provenance):
+    """Only server-captured transport identity participates in deduplication."""
+    return hashlib.sha256(json.dumps({k: provenance.get(k) for k in (
+        'channel', 'endpoint', 'vendor', 'protocol', 'model')}, sort_keys=True).encode()).hexdigest()
 
 
 class Document:
@@ -211,9 +218,58 @@ class Translations:
         # application. It is never accepted from a browser request.
         self.owner = owner
         self.ephemeral = {}
-        self.ephemeral_lock = threading.Lock()
+        self.expiry_handles = {}
+        self.ephemeral_lock = threading.RLock()
+        self.private_ttl = 30 * 60
+        self.private_limit = 12
+        self.private_max_bytes = 6 * 1024 * 1024
         with self.db.connect() as db:
+            # Remove legacy on-disk personal payloads, including old job results.
+            # Current jobs persist only an opaque ID and a reused flag.
+            db.execute('PRAGMA secure_delete=ON')
             db.execute('DROP TABLE IF EXISTS private_translations')
+            db.execute("UPDATE web_jobs SET result=NULL WHERE kind='translation' AND result IS NOT NULL")
+        with self.db.connect() as db:
+            db.execute('PRAGMA wal_checkpoint(PASSIVE)')
+
+    def _prune(self):
+        now = time.monotonic()
+        for tid, entry in list(self.ephemeral.items()):
+            if entry[0] <= now:
+                self._expire(tid)
+
+    def _expire(self, tid):
+        with self.ephemeral_lock:
+            self.ephemeral.pop(tid, None)
+            handle = self.expiry_handles.pop(tid, None)
+            if handle is not None:
+                handle.cancel()
+
+    def close(self):
+        with self.ephemeral_lock:
+            for handle in self.expiry_handles.values():
+                handle.cancel()
+            self.expiry_handles.clear()
+            self.ephemeral.clear()
+
+    def _remember(self, item):
+        size = len(json.dumps(item, ensure_ascii=False).encode('utf-8'))
+        if size > self.private_max_bytes:
+            raise AIError('译文超过临时缓存容量，请使用官方网页翻译')
+        with self.ephemeral_lock:
+            self._prune()
+            while self.ephemeral and (len(self.ephemeral) >= self.private_limit or
+                    sum(entry[1] for entry in self.ephemeral.values()) + size > self.private_max_bytes):
+                self._expire(next(iter(self.ephemeral)))
+            self.ephemeral[item['id']] = (time.monotonic() + self.private_ttl, size, copy.deepcopy(item))
+        # Evict even if this user makes no further requests. The callback captures
+        # only the opaque ID, never another copy of the private statement.
+        try:
+            handle = asyncio.get_running_loop().call_later(self.private_ttl, self._expire, item['id'])
+            with self.ephemeral_lock:
+                self.expiry_handles[item['id']] = handle
+        except RuntimeError:
+            pass
 
     def statement(self, pid):
         statement = self.wb.state(pid)['statement']
@@ -226,10 +282,11 @@ class Translations:
 
     def get(self, tid):
         with self.ephemeral_lock:
+            self._prune()
             row = self.ephemeral.get(tid)
-        if not row or row['created_at'] < int(time.time()) - 86400:
-            raise HTTPException(404, '个人译文已过期，请重新生成')
-        return row
+            if not row:
+                raise HTTPException(404, '临时译文不存在或已过期（30 分钟/服务重启后清除），请重新翻译')
+            return copy.deepcopy(row[2])
 
     @staticmethod
     def services():
@@ -239,23 +296,34 @@ class Translations:
         pid = normalize(pid)
         statement = self.statement(pid)
         fp = fingerprint(statement)
-        now = int(time.time())
         with self.ephemeral_lock:
-            self.ephemeral = {key: value for key, value in self.ephemeral.items() if value['created_at'] >= now - 86400}
-            private = [item for item in self.ephemeral.values() if item['problem_id'] == pid and item['fingerprint'] == fp]
+            self._prune()
+            private = [copy.deepcopy(entry[2]) for entry in reversed(list(self.ephemeral.values()))
+                       if entry[2]['problem_id'] == pid and entry[2]['fingerprint'] == fp]
         private = [{**item, **self.shared.own_status(self.owner, item['id'])} for item in private]
         shared = self.shared.approved(pid, fp) if self.shareable(statement) else []
         url = quote(source_url(pid), safe='')
-        return {'fingerprint': fp, 'shareable': self.shareable(statement), 'items': private + shared, 'services': self.services(), 'links': {'google': f'https://translate.google.com/?sl=auto&tl=zh-CN&op=websites&text={url}', 'bing': f'https://www.bing.com/translator?from=auto&to=zh-Hans&text={url}'}, 'note': '共享译文经过人工审核；AI 译文可能有误，请结合原题。普通翻译使用管理员配置的官方付费 API，未配置时可打开官方翻译网页。'}
+        return {'fingerprint': fp, 'shareable': self.shareable(statement), 'items': private + shared, 'services': self.services(), 'links': {'google': f'https://translate.google.com/?sl=auto&tl=zh-CN&op=websites&text={url}', 'bing': f'https://www.bing.com/translator?from=auto&to=zh-Hans&text={url}'}, 'private_ttl_seconds': self.private_ttl, 'note': '个人译文仅在内存暂存 30 分钟，服务重启后清除；仅主动上传的共享译文持久保存。共享译文经过人工审核；AI 译文可能有误，请结合原题。普通翻译使用管理员配置的官方付费 API，未配置时可打开官方翻译网页。'}
 
     async def generate(self, pid, payload):
         pid = normalize(pid)
         statement = self.statement(pid)
         fp = fingerprint(statement)
-        if self.shareable(statement):
+        if payload.engine == 'ai' and self.shareable(statement):
+            if not payload.model.strip(): raise AIError('请选择 AI 模型')
+            if payload.provider == 'api':
+                with self.ai.config_lock:
+                    config = self.ai.config()
+                expected = {'channel': 'api', 'endpoint': config['base_url'], 'vendor': config['vendor'],
+                            'protocol': config['protocol'], 'model': payload.model.strip()}
+            else:
+                expected = {'channel': 'codex', 'endpoint': 'codex://official', 'vendor': 'openai',
+                            'protocol': 'codex', 'model': payload.model.strip()}
+            expected_key = model_identity(expected)
             cached = self.shared.approved(pid, fp)
-            if cached:
-                return {'translation_id': cached[0]['id'], 'reused': True}
+            match = next((item for item in cached if item['model_key'] == expected_key), None)
+            if match:
+                return {'translation_id': match['id'], 'reused': True}
         doc = Document(statement)
         if not doc.blocks: raise AIError('题面没有可翻译的文字')
         if payload.engine == 'ai':
@@ -267,11 +335,10 @@ class Translations:
             provenance = {'channel': 'translation_api', 'vendor': payload.engine, 'model': 'official-service'}
         translated = doc.apply(data)
         # The key is derived solely from actual server-side identity, never supplied vendor text.
-        model_key = hashlib.sha256(json.dumps({k: provenance.get(k) for k in ('channel', 'endpoint', 'vendor', 'protocol', 'model')}, sort_keys=True).encode()).hexdigest()
+        model_key = model_identity(provenance)
         tid, now = uuid.uuid4().hex, int(time.time())
-        item = {'id': tid, 'problem_id': pid, 'fingerprint': fp, 'engine': payload.engine, 'model': provenance.get('model'), 'provenance': provenance, 'model_key': model_key, 'statement': translated, 'created_at': now, 'scope': 'private', 'shareable': payload.engine == 'ai' and self.shareable(statement), 'status': 'private'}
-        with self.ephemeral_lock:
-            self.ephemeral[tid] = item
+        item = {'id': tid, 'problem_id': pid, 'fingerprint': fp, 'engine': payload.engine, 'model': provenance.get('model'), 'provenance': provenance, 'model_key': model_key, 'statement': translated, 'created_at': now, 'expires_at': now + self.private_ttl, 'scope': 'private', 'shareable': payload.engine == 'ai' and self.shareable(statement), 'status': 'private'}
+        self._remember(item)
         return {'translation_id': tid, 'reused': False}
 
     async def ordinary(self, engine, blocks):

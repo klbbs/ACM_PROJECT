@@ -4,6 +4,7 @@ const StatementView = React.lazy(() =>
   import('./statement-view').then((m) => ({ default: m.StatementView })),
 )
 import { EditorShell } from './editor-shell'
+import { SelfTestPanel } from './self-test-panel'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
 import { Code2, Lightbulb, RefreshCw, Save, ExternalLink } from 'lucide-react'
@@ -44,9 +45,6 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
   const [settingsReady, setSettingsReady] = useState(false),
     [settingsBusy, setSettingsBusy] = useState(false)
   const [editorFullscreen, setEditorFullscreen] = useState(false)
-  const [testCases, setTestCases] = useState<Row[]>([]),
-    [testResults, setTestResults] = useState<Row[] | null>(null),
-    [testing, setTesting] = useState(false)
   useEffect(() => {
     let alive = true
     api<EditorSettings>('/workbench/editor-settings')
@@ -99,7 +97,6 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
     const result = await api(`/workbench/problem/${encodeURIComponent(id)}`)
     if (currentPid.current !== id) return
     setData(result)
-    if (initial) setTestCases(result.statement?.samples || [])
     if (initial) {
       setCode(result.draft.code)
       setLanguage(result.draft.language)
@@ -184,8 +181,6 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
       currentPid.current = state.id
       setPid(state.id)
       setData(state)
-      setTestCases(state.statement?.samples || [])
-      setTestResults(null)
       setCode(state.draft.code)
       setLanguage(state.draft.language)
       draftRevision.current = state.draft.revision
@@ -519,10 +514,10 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                 <details className="wb-shortcuts">
                   <summary>编辑器快捷键与补全说明</summary>
                   <p>
-                    Ctrl/Cmd+S 保存；Ctrl+Space 补全；方向键选择、Enter 接受、Esc 关闭；Tab
-                    缩进或跳转片段占位符；Ctrl/Cmd+F 搜索、Ctrl+H 替换。Vim 模式使用 :w
-                    保存，:q、:wq、:x 不退出网站。全屏请使用「退出全屏」按钮，Esc 保留给 Vim
-                    和补全。
+                    Ctrl/Cmd+S 保存；Ctrl+Space 补全；方向键选择、Tab 接受、Enter 换行、Esc
+                    关闭；无候选时 Tab 缩进或跳转片段占位符；Ctrl/Cmd+F 搜索、Ctrl+H 替换。Vim
+                    模式使用 :w 保存，:q、:wq、:x 不退出网站。全屏请使用「退出全屏」按钮，Esc 保留给
+                    Vim 和补全。
                   </p>
                   <p>
                     候选来自关键字、常用名称、基础语法片段和当前文件单词，不是类型推断或编译诊断；补全不调用
@@ -564,31 +559,17 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                   </button>
                 </div>
                 <p className="muted">
-                  最多 64 KiB；代码只在隔离沙箱的临时目录运行。保存快照后，请在 Codeforces
+                  最多 64 KiB；自测由管理员配置的专用隔离服务执行。保存快照后，请在 Codeforces
                   选择相应语言提交同一份代码。
                 </p>
               </section>
               <section className="card wb-self-test">
-                <div className="wb-heading">
-                  <h3>本地样例自测</h3>
-                  <button className="text-button" onClick={() => setTestCases((items) => [...items, { input: '', output: '' }])}>添加样例</button>
-                  <button className="primary" disabled={testing || !code.trim()} onClick={async () => {
-                    setTesting(true)
-                    try {
-                      const result = await api(`/workbench/problem/${encodeURIComponent(pid)}/self-test`, 'POST', { code, language, cases: testCases })
-                      setTestResults(result.results)
-                    } catch (error) { fail(error) } finally { setTesting(false) }
-                  }}>{testing ? '运行中…' : '运行自测'}</button>
-                </div>
-                <p className="help">样例可自行编辑；代码在服务器隔离环境中运行，不提交到判题平台。完成后临时文件会删除。</p>
-                {testCases.map((sample, index) => (
-                  <div className="wb-test-case" key={index}>
-                    <div><label>样例输入 {index + 1}<textarea rows={5} value={sample.input} onChange={(e) => setTestCases((items) => items.map((item, i) => i === index ? { ...item, input: e.target.value } : item))} /></label>
-                    <label>预期输出<textarea rows={5} value={sample.output} onChange={(e) => setTestCases((items) => items.map((item, i) => i === index ? { ...item, output: e.target.value } : item))} /></label></div>
-                    {testCases.length > 1 && <button className="text-button" onClick={() => setTestCases((items) => items.filter((_, i) => i !== index))}>删除样例</button>}
-                    {testResults?.[index] && <div className={`wb-test-result ${testResults[index].status === 'AC' ? 'success' : 'warning'}`}><strong>{testResults[index].status}</strong>{testResults[index].message && <pre>{testResults[index].message}</pre>}<details><summary>实际输出</summary><pre>{testResults[index].actual}</pre></details></div>}
-                  </div>
-                ))}
+                <SelfTestPanel
+                  key={pid}
+                  code={code}
+                  language={language}
+                  samples={statement?.samples || []}
+                />
               </section>
               <section className="card wb-coach">
                 <h3>

@@ -38,10 +38,10 @@ def test_admin_translation_moderation_and_initial_credentials(tmp_path):
             return {'cookie': cookie, 'csrf_token': csrf_token(cookie), 'user': app.state.identities.resolve(cookie)}
 
         setup = client.post('/api/auth/setup', headers={'X-ACM-Request': '1'}, json={
-            'username': 'kendas', 'password': 'kds', 'setup_token': settings.access_token,
+            'username': 'kendas', 'password': 'Correct-password-123', 'setup_token': settings.access_token,
         })
         assert setup.status_code == 200, setup.text
-        admin = login('kendas', 'kds')
+        admin = login('kendas', 'Correct-password-123')
         invite = request(admin, 'POST', '/api/admin/invitations', {}).json()['invitation']
         registration = request(None, 'POST', '/api/auth/register', {
             'username': 'member', 'password': 'Correct-password-123', 'invitation': invite,

@@ -44,6 +44,7 @@ import { PlatformGuide } from './platform-guide'
 import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
 import { AdminPage } from './admin'
+import { DailyTasksPage } from './daily-tasks'
 
 type Row = Record<string, any>
 type Page =
@@ -999,7 +1000,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.10.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.10.1</span>
             </span>
           </footer>
         </div>
@@ -1397,17 +1398,6 @@ function PracticePage({
     [minContest, setMinContest] = useState(0),
     [catalog, setCatalog] = useState<Row>({ items: [] }),
     [removed, setRemoved] = useState<string[]>([])
-  const [daily, setDaily] = useState<Row | null>(null),
-    [dailyGoal, setDailyGoal] = useState(1),
-    [dailyDuration, setDailyDuration] = useState(30),
-    [dailyBusy, setDailyBusy] = useState(false)
-  useEffect(() => {
-    api('/daily').then((value) => {
-      setDaily(value)
-      setDailyGoal(value.settings.daily_goal)
-      setDailyDuration(value.settings.duration_days)
-    }).catch((e) => onError(e.message))
-  }, [revision])
   useEffect(() => {
     api('/training')
       .then((p) => {
@@ -1433,7 +1423,6 @@ function PracticePage({
         status,
         note: '',
       })
-      if (status === 'done') setDaily(await api('/daily/complete', 'POST', { problem_id: p.id }))
       setRemoved((r) => [...r, p.id])
       onNotice(
         status === 'done' ? '已记录完成，后续选题会排除这道题' : '已跳过，后续推荐会排除这道题',
@@ -1441,19 +1430,6 @@ function PracticePage({
     } catch (e: any) {
       onError(e.message)
     }
-  }
-  const rollDaily = async () => {
-    setDailyBusy(true)
-    try { setDaily(await api('/daily/roll', 'POST', { provider, model })) }
-    catch (e: any) { onError(e.message) }
-    finally { setDailyBusy(false) }
-  }
-  const completeDaily = async (problem_id: string) => {
-    try {
-      setDaily(await api('/daily/complete', 'POST', { problem_id }))
-      onNotice('今日任务进度和签到已更新')
-      setRemoved((items) => [...items, problem_id])
-    } catch (e: any) { onError(e.message) }
   }
   return (
     <>
@@ -1533,21 +1509,7 @@ function PracticePage({
           {catalog.updated_at ? `更新于 ${date(catalog.updated_at)}` : '尚未同步题库'}
         </p>
       </section>
-      <section className="card daily-mission">
-        <div className="card-heading">
-          <div><h2>每日任务与签到</h2><p>完成一道题记普通签到；完成 AI 选题并达到今日目标记 K 签。首次选题后每天可换题两次。</p></div>
-          <span className={`badge ${daily?.checkin?.kind === 'k' ? 'success' : 'neutral'}`}>{daily?.checkin?.kind === 'k' ? '今日 K 签' : daily?.checkin?.kind === 'normal' ? '今日普通签到' : '尚未签到'}</span>
-        </div>
-        <div className="practice-filters">
-          <label>每日题量<select value={dailyGoal} onChange={(e) => setDailyGoal(Number(e.target.value))}>{Array.from({length: 10}, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n} 题</option>)}</select></label>
-          <label>任务周期<select value={dailyDuration} onChange={(e) => setDailyDuration(Number(e.target.value))}><option value={7}>7 天</option><option value={14}>14 天</option><option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option></select></label>
-          <Button className="secondary" disabled={dailyBusy} onClick={async () => { try { setDaily(await api('/daily/settings', 'PUT', {daily_goal: dailyGoal, duration_days: dailyDuration})); onNotice('每日任务已保存') } catch (e: any) { onError(e.message) } }}>保存每日任务</Button>
-          <Button className="primary" loading={dailyBusy} disabled={!daily?.active || !model || daily?.rerolls_remaining === 0} onClick={rollDaily}>{daily?.rolls?.length ? 'AI 换一道题' : 'AI 选今日题目'}（可换 {daily?.rerolls_remaining ?? 2} 次）</Button>
-        </div>
-        <div className="checkin-month"><span>本月 K 签 <strong>{daily?.checkin?.month_k || 0}</strong></span><span>本月普通签到 <strong>{daily?.checkin?.month_normal || 0}</strong></span><span>本月总签到 <strong>{daily?.checkin?.month_total || 0}</strong></span><span>累计签到 <strong>{daily?.checkin?.all_total || 0}</strong></span><span>今日完成 <strong>{daily?.completed || 0}/{dailyGoal}</strong></span></div>
-        {!daily?.active && <p className="help">任务周期未开始或已结束。保存任务后开始新的周期。</p>}
-        {daily?.rolls?.map((roll: Row) => <article className="daily-problem" key={roll.seq}><div><strong>{roll.data.problem_id} · {roll.data.title}</strong><p>{roll.data.reason}</p></div><a className="button secondary" href={roll.data.url} target="_blank" rel="noreferrer">打开题目</a><Button className="icon-btn" title="记录完成" aria-label="记录完成" onClick={() => completeDaily(roll.problem_id)}><Check size={17}/></Button></article>)}
-      </section>
+      <DailyTasksPage revision={revision} provider={provider} model={model} aiPicker={aiPicker} onError={onError} onNotice={onNotice} />
       {selected.length > 0 && (
         <>
           <div className="section-title">
@@ -1690,6 +1652,7 @@ function SettingsPage({
   const [presets, setPresets] = useState<Row[]>([])
   const [apiModels, setApiModels] = useState<Row[]>([])
   const [apiModelNote, setApiModelNote] = useState('')
+  const [apiModelSource, setApiModelSource] = useState('')
   const [readingModels, setReadingModels] = useState(false)
   useEffect(() => {
     api('/ai/presets')
@@ -1848,8 +1811,8 @@ function SettingsPage({
                 </span>
               </h2>
               <p>
-                选择提供方，填写自己的 Key 和模型
-                ID，再保存并测试。连接测试会实际调用模型并按提供方规则计费。
+                选择提供方并填写 Key，点击“保存并读取模型列表”，再从下拉栏选择模型并保存。
+                连接测试会实际调用模型并按提供方规则计费。
               </p>
             </div>
             <span className={`badge ${config.has_key ? 'success' : 'neutral'}`}>
@@ -1867,6 +1830,7 @@ function SettingsPage({
                 setKey('')
                 setApiModels([])
                 setApiModelNote('')
+                setApiModelSource('')
                 setConfig({
                   ...config,
                   vendor: preset.id,
@@ -1908,8 +1872,10 @@ function SettingsPage({
               value={config.base_url}
               onChange={(e) => {
                 setConfig({ ...config, base_url: e.target.value, has_key: false })
+                setKey('')
                 setApiModels([])
                 setApiModelNote('')
+                setApiModelSource('')
               }}
               placeholder="https://api.openai.com/v1"
               type="url"
@@ -1935,13 +1901,45 @@ function SettingsPage({
             </select>
           </label>
           <label>
+            API Key
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={key}
+              onChange={(e) => {
+                setKey(e.target.value)
+                setApiModels([])
+                setApiModelNote('')
+                setApiModelSource('')
+              }}
+              placeholder={config.has_key ? '已保存；留空保持原密钥' : '输入提供方的 API Key'}
+            />
+          </label>
+          <p className="help">
+            <ShieldCheck size={13} />
+            密钥不会返回浏览器，不会进入 Git 或 AI 提示词。
+          </p>
+          <label>
             默认模型
             <select aria-label="默认模型 ID" value={config.model || ''} onChange={(e) => setConfig({ ...config, model: e.target.value })}>
               <option value="">先保存 Key 并读取模型</option>
-              {apiModels.map((m) => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
-              {config.model && !apiModels.some((m) => m.id === config.model) && <option value={config.model}>{config.model}（已保存）</option>}
+              {apiModels.map((m) => <option key={m.id} value={m.id}>{apiModelSource === 'manual' ? '未验证 · ' : ''}{m.name || m.id}</option>)}
+              {config.model && !apiModels.some((m) => m.id === config.model) && <option value={config.model}>{config.model}（当前填写；未验证）</option>}
             </select>
           </label>
+          <details>
+            <summary>目录未包含可用模型？手动填写模型 ID</summary>
+            <label>
+              手动模型 ID
+              <input
+                aria-label="手动模型 ID"
+                value={config.model || ''}
+                onChange={(e) => setConfig({ ...config, model: e.target.value })}
+                maxLength={150}
+                placeholder="填写服务商提供的准确模型 ID；保存后可测试"
+              />
+            </label>
+          </details>
           <Button
             className="text-button"
             loading={readingModels}
@@ -1950,14 +1948,21 @@ function SettingsPage({
               setReadingModels(true)
               try {
                 if (!(await save())) return
+                setApiModels([])
+                setApiModelSource('')
+                setApiModelNote('正在向当前提供方读取模型目录…')
                 const data = await api('/ai/models?provider=api')
                 setApiModels(data.items)
                 setApiModelNote(data.note)
+                setApiModelSource(data.source || 'remote')
                 if (!data.items.some((m: Row) => m.id === config.model)) {
                   const nextModel = data.default_model || data.items[0]?.id || ''
                   setConfig((current) => ({ ...current, model: nextModel }))
                 }
               } catch (e: any) {
+                setApiModels([])
+                setApiModelSource('')
+                setApiModelNote('读取失败；请检查提供方、Key、API 地址和网络后重试。')
                 onError(e.message)
               } finally {
                 setReadingModels(false)
@@ -2063,20 +2068,6 @@ function SettingsPage({
               会占输出额度，截断时需提高上限。
             </p>
           </details>
-          <label>
-            API Key
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={config.has_key ? '已保存；留空保持原密钥' : '输入提供方的 API Key'}
-            />
-          </label>
-          <p className="help">
-            <ShieldCheck size={13} />
-            密钥不会返回浏览器，不会进入 Git 或 AI 提示词。
-          </p>
           <div className="settings-actions">
             <Button className="primary" loading={saving} onClick={() => save()}>
               保存 API 配置 <Check size={16} />

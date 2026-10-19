@@ -1,67 +1,212 @@
 import asyncio
 import json
+import time
+from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
-from acmweb.daily import Complete, Daily, Roll, Settings
+from acmweb.daily import Complete, Daily, Roll, Settings, TZ
 from acmweb.ai import AIResult
-from acmweb.app import create_app
-from acmweb.settings import Settings as AppSettings
+from acmweb.database import Database
+from acmweb.codex_bridge import AIError
 
 
-def test_daily_goal_roll_quota_checkins_and_month_totals(tmp_path, monkeypatch):
-    app = create_app(AppSettings(data_dir=tmp_path, config_path=tmp_path/'accounts.toml', enable_codex=False))
-    daily = app.state.daily
-    daily.db.set('daily_started_at', daily.today())
-    daily.db.set('daily_settings', {'daily_goal': 2, 'duration_days': 30})
+@pytest.fixture
+def daily(tmp_path):
+    db = Database(tmp_path / 'daily.sqlite3')
+    ai = AsyncMock()
+    service = Daily(db, ai)
+    service.configure(Settings(daily_goal=2, duration_days=14))
+    with db.connect() as conn:
+        conn.executemany('INSERT INTO problem_catalog VALUES(?,?,?)', [
+            ('codeforces', f'codeforces:{i}-A', json.dumps({'id': f'codeforces:{i}-A', 'problem_id': f'{i}-A',
+                'platform': 'codeforces', 'title': f'p{i}', 'difficulty': 1000, 'tags': [], 'contest_id': i,
+                'url': f'https://codeforces.com/problemset/problem/{i}/A'})) for i in range(1, 12)])
+    async def choose(task, provider, model, payload, schema):
+        assert task == 'daily_selection'
+        return AIResult({'selected_problems': [{'id': row['id'], 'reason': '适合练习'}
+            for row in payload['candidates'][:payload['requested_count']]]}, {'model': model})
+    ai.complete.side_effect = choose
+    return service
+
+
+def ac(daily, pid, ts=None, platform='codeforces', sid=None):
+    ts = int(time.time()) if ts is None else ts
     with daily.db.connect() as db:
-        db.executemany('INSERT INTO problem_catalog VALUES(?,?,?)', [
-            ('codeforces', f'codeforces:{i}-A', json.dumps({'id': f'codeforces:{i}-A', 'problem_id': f'{i}-A', 'platform': 'codeforces', 'title': f'p{i}', 'difficulty': 1000, 'tags': [], 'contest_id': i, 'url': f'https://codeforces.com/problemset/problem/{i}/A'}))
-            for i in range(1, 5)
-        ])
+        db.execute('INSERT OR REPLACE INTO submissions VALUES(?,?,?,?,?,?,?,?)',
+            (platform, 'demo', sid or pid, pid, ts, 'AC', '{}', ts))
 
-    selected = iter(['codeforces:1-A', 'codeforces:2-A', 'codeforces:3-A'])
-    async def complete(task, provider, model, payload, schema):
-        assert task == 'daily_roll'
-        pid = next(selected)
-        return AIResult({'id': pid, 'reason': '适合今日练习'}, {'model': model})
-    monkeypatch.setattr(app.state.ai, 'complete', complete)
 
-    state = asyncio.run(daily.roll(Roll(provider='api', model='mock')))
-    assert state['rerolls_remaining'] == 2
-    first = state['rolls'][0]['problem_id']
-    state = asyncio.run(daily.roll(Roll(provider='api', model='mock')))
-    assert state['rerolls_remaining'] == 1 and state['rolls'][1]['problem_id'] != first
-    state = asyncio.run(daily.roll(Roll(provider='api', model='mock')))
-    assert state['rerolls_remaining'] == 0
-    with pytest.raises(Exception, match='两次换题'):
-        asyncio.run(daily.roll(Roll(provider='api', model='mock')))
+def generate(daily):
+    return asyncio.run(daily.roll(Roll(provider='api', model='mock')))
 
-    state = daily.complete(Complete(problem_id=state['rolls'][0]['problem_id']))
-    assert state['checkin']['kind'] == 'normal'
-    state = daily.complete(Complete(problem_id=state['rolls'][1]['problem_id']))
+
+def test_exact_daily_plan_and_two_single_problem_rerolls(daily):
+    state = generate(daily)
+    assert len(state['plan']['tasks']) == 2 and state['rerolls_remaining'] == 2
+    seen = {task['id'] for task in state['plan']['tasks']}
+    for remaining in (1, 0):
+        task = state['plan']['tasks'][0]
+        state = asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=task['task_id'])))
+        replacement = state['plan']['tasks'][0]
+        assert replacement['id'] not in seen
+        seen.add(replacement['id'])
+        assert len(state['plan']['tasks']) == 2 and state['rerolls_remaining'] == remaining
+    with pytest.raises(HTTPException, match='最多使用 2 次'):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=state['plan']['tasks'][0]['task_id'])))
+
+
+def test_arbitrary_complete_and_feedback_cannot_forge_checkin(daily):
+    with pytest.raises(HTTPException, match='官方通过记录'):
+        daily.complete(Complete(problem_id='codeforces:4-A'))
+    with daily.db.connect() as db:
+        db.execute("INSERT INTO practice_feedback VALUES('codeforces','4-A','done','',?)", (int(time.time()),))
+    assert daily.state()['checkin']['kind'] is None
+
+
+def test_verified_any_platform_ac_normal_and_complete_full_plan_k(daily):
+    state = generate(daily)
+    tasks = state['plan']['tasks']
+    ac(daily, 'abc300_a', platform='atcoder')
+    assert daily.state()['checkin']['kind'] == 'normal'
+    ac(daily, tasks[0]['problem_id'])
+    assert daily.state()['checkin']['kind'] == 'normal'
+    daily.configure(Settings(daily_goal=1))
+    assert daily.state()['locked_goal'] == 2 and daily.state()['checkin']['kind'] == 'normal'
+    with pytest.raises(HTTPException, match='已完成'):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=tasks[0]['task_id'])))
+    ac(daily, tasks[1]['problem_id'])
+    state = daily.complete(Complete(problem_id=tasks[1]['id']))
     assert state['checkin']['kind'] == 'k'
-    assert state['checkin']['month_k'] == 1 and state['checkin']['month_total'] == 1
-    assert state['checkin']['all_k'] == 1 and state['checkin']['all_total'] == 1
-    state = daily.complete(Complete(problem_id='codeforces:4-A'))
-    assert state['checkin']['kind'] == 'k' and state['completed'] == 3
+    assert state['checkin']['month_k'] == state['checkin']['all_k'] == 1
+    assert state['checkin']['month_normal'] == state['checkin']['all_normal'] == 0
 
 
-def test_daily_settings_validate_and_reset_period_only_when_restarted(tmp_path):
-    app = create_app(AppSettings(data_dir=tmp_path, config_path=tmp_path/'accounts.toml', enable_codex=False))
-    daily = app.state.daily
-    before = daily.configure(Settings(daily_goal=3, duration_days=14))
-    start = before['started_at']
-    with pytest.raises(Exception):
-        Settings(daily_goal=0, duration_days=14)
-    assert daily.configure(Settings(daily_goal=1, duration_days=14))['started_at'] == start
+def test_failed_roll_refunds_quota_and_keeps_original_plan(daily):
+    before = generate(daily)
+    daily.ai.complete.side_effect = AIError('upstream unavailable')
+    with pytest.raises(AIError):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=before['plan']['tasks'][0]['task_id'])))
+    after = daily.state()
+    assert after['rerolls_remaining'] == 2 and after['plan']['tasks'] == before['plan']['tasks']
+    assert not daily.active_ai
 
 
-def test_any_problem_can_earn_normal_checkin_without_an_active_task(tmp_path):
-    app = create_app(AppSettings(data_dir=tmp_path, config_path=tmp_path/'accounts.toml', enable_codex=False))
-    daily = app.state.daily
-    state = daily.complete(Complete(problem_id='codeforces:4-A'))
-    assert state['checkin']['kind'] == 'normal'
-    assert state['checkin']['month_normal'] == 1
-    assert state['checkin']['month_total'] == 1
-    assert state['checkin']['all_normal'] == 1 and state['checkin']['all_total'] == 1
+def test_invalid_ai_id_or_count_does_not_create_plan(daily):
+    for items in ([{'id': 'codeforces:99999-A'}], [{'id': 'codeforces:1-A'}],
+                  [{'id': 'codeforces:1-A'}, {'id': 'codeforces:1-A'}]):
+        daily.ai.complete.side_effect = None
+        daily.ai.complete.return_value = AIResult({'selected_problems': items}, {})
+        with pytest.raises(AIError):
+            generate(daily)
+        assert daily.state()['plan']['status'] == 'failed'
+
+
+def test_not_enough_candidates_no_billed_ai_call(daily):
+    with daily.db.connect() as db:
+        db.execute('DELETE FROM problem_catalog')
+    with pytest.raises(AIError, match='无法生成'):
+        generate(daily)
+    daily.ai.complete.assert_not_called()
+
+
+def test_concurrent_roll_reservation_atomic_across_service_instances(daily):
+    state = generate(daily)
+    second = Daily(daily.db, daily.ai)
+    token = daily.request_roll(state['plan']['tasks'][0]['task_id'], 'api', 'mock')
+    with pytest.raises(HTTPException, match='正在进行'):
+        second.request_roll(state['plan']['tasks'][1]['task_id'], 'api', 'mock')
+    assert second.state()['rerolls_remaining'] == 1
+    with daily.db.connect() as db:
+        db.execute("UPDATE daily_roll_reservations SET created_at=? WHERE token=?", (int(time.time())-601, token['token']))
+    assert second.state()['rerolls_remaining'] == 2
+
+
+def test_upstream_cancel_refunds_roll(daily):
+    state = generate(daily)
+    daily.ai.complete.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=state['plan']['tasks'][0]['task_id'])))
+    assert daily.state()['rerolls_remaining'] == 2 and not daily.active_ai
+
+
+def test_month_stats_exclude_future_and_count_distinct_days(daily):
+    today = daily.today()
+    today_ts = daily._midnight(today.isoformat()) + 10
+    prior = today - timedelta(days=1)
+    previous_month = today.replace(day=1) - timedelta(days=1)
+    ac(daily, '1-A', ts=today_ts)
+    ac(daily, '2-A', ts=today_ts, sid='duplicate')
+    ac(daily, '3-A', ts=daily._midnight(prior.isoformat())+10)
+    ac(daily, '4-A', ts=daily._midnight(previous_month.isoformat())+10)
+    ac(daily, '5-A', ts=int(time.time())+86400)
+    state = daily.state()
+    expected_month = 2 if prior.month == today.month else 1
+    assert state['checkin']['month_total'] == expected_month
+    assert state['checkin']['all_total'] == len({today, prior, previous_month})
+    assert state['checkin']['all_k'] == 0
+
+
+def test_legacy_history_preserved_quota_migrated_but_manual_claims_untrusted(daily):
+    day = daily.today().isoformat()
+    with daily.db.connect() as db:
+        db.executescript('''CREATE TABLE daily_rolls(day TEXT,seq INT,problem_id TEXT,data TEXT,created_at INT);
+            CREATE TABLE daily_completions(day TEXT,problem_id TEXT,created_at INT);
+            CREATE TABLE daily_checkins(day TEXT,kind TEXT,completed INT,goal INT,updated_at INT);''')
+        for i in range(1, 4):
+            db.execute('INSERT INTO daily_rolls VALUES(?,?,?,?,?)', (day, i, f'codeforces:{i}-A', '{}', 1))
+        db.execute('INSERT INTO daily_completions VALUES(?,?,?)', (day, 'codeforces:1-A', 1))
+        db.execute('INSERT INTO daily_checkins VALUES(?,?,?,?,?)', (day, 'k', 1, 1, 1))
+    migrated = Daily(daily.db, daily.ai)
+    state = migrated.state()
+    assert state['rerolls_remaining'] == 0 and state['legacy_notice']
+    assert state['checkin']['kind'] is None
+    ac(daily, '1-A')
+    assert migrated.state()['checkin']['kind'] == 'k'
+    with daily.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM daily_checkins').fetchone()[0] == 1
+
+
+def test_cycle_duration_locked_and_validation_strict(daily):
+    before = daily.state()
+    after = daily.configure(Settings(daily_goal=3, duration_days=365, minutes_per_day=90))
+    assert before['ends_at'] == after['ends_at']
+    for bad in ({'daily_goal': 0}, {'daily_goal': True}, {'minutes_per_day': 0}, {'duration_days': 366}):
+        with pytest.raises(Exception):
+            Settings(**bad)
+
+
+def test_guard_rejection_roll_refunds_reservation(daily):
+    before = generate(daily)
+    daily.guard = lambda: (_ for _ in ()).throw(HTTPException(429, 'busy'))
+    with pytest.raises(HTTPException):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=before['plan']['tasks'][0]['task_id'])))
+    assert daily.state()['rerolls_remaining'] == 2 and not daily.active_ai
+
+
+def test_roll_race_original_becomes_ac_refunds_and_preserves_task(daily):
+    before = generate(daily)
+    task = before['plan']['tasks'][0]
+    choose = daily.ai.complete.side_effect
+    async def race(*args):
+        result = await choose(*args)
+        ac(daily, task['problem_id'])
+        return result
+    daily.ai.complete.side_effect = race
+    with pytest.raises(AIError, match='换题期间通过'):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=task['task_id'])))
+    after = daily.state()
+    assert after['rerolls_remaining'] == 2
+    assert after['plan']['tasks'][0]['id'] == task['id'] and after['plan']['tasks'][0]['completed']
+
+
+def test_workbench_official_judge_ac_excluded_from_candidates(daily):
+    now = int(time.time())
+    with daily.db.connect() as db:
+        db.execute('''INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,handle,submission_id,verdict,judge_data,last_synced)
+            VALUES('verified','codeforces:4-A','cpp17','','',?,'demo',1,'AC',?,?)''',
+            (now, json.dumps({'verdict': 'OK', 'creationTimeSeconds': now}), now))
+    assert 'codeforces:4-A' not in {row['id'] for row in daily._candidate_pool(2, [])}
+    assert daily.complete(Complete(problem_id='codeforces:4-A'))['checkin']['kind'] == 'normal'

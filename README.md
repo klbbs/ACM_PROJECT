@@ -14,7 +14,7 @@
 - AI 教练：API Key 或官方 Codex 设备码登录；动态模型目录；有依据的优势、薄弱点和 7 天训练计划；历史报告。
 - 智能选题：缓存 CF 官方题库，按难度、标签、比赛 ID 筛选；排除历史提交和练习反馈；AI 只能从真实候选中选择。
 - 训练偏好：目标 Rating、训练区间、新题优先、强化与避开标签；记录完成/跳过状态。
-- 每日工作流：北京时间定时采集，成功后可自动生成 AI 报告；任务进度、错误和中断状态可查。
+- 每日任务：自行设置题量、训练时间与周期，AI 生成整张题单、每天换题两次；官方 AC 核验普通签到/K 签，统计月度和累计记录。
 - 部署：Docker Compose、原生 Python、systemd/Caddy 示例、依赖锁、ZIP/TAR 部署包和 GitHub Actions。
 
 当前推荐题库覆盖 **Codeforces**；其他三个平台的数据参与统计与 AI 分析。牛客提交仅覆盖公开练习页，AtCoder Problems 可能存在延迟。
@@ -120,7 +120,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.10.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.10.1.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
@@ -152,7 +152,7 @@ cd frontend && npm run build
 ### 刷题工作台（第一阶段）
 
 侧栏新增「刷题工作台」：CF 推荐题、题面和样例、自动保存代码、提交快照、判题核验与 AI 分步提示/错因复盘。
-当前使用官方页面手动提交后关联提交号，自动代提交将在后续接入；服务器不会执行用户代码。
+当前使用官方页面手动提交后关联提交号，自动代提交将在后续接入；网站通过专用 Judge0 隔离服务提供代码自测，未配置时禁用。
 完整流程、隐私边界和后续计划见 [工作台说明](docs/WORKBENCH.md)。
 
 ### 增强代码编辑器（0.6.2）

@@ -11,6 +11,7 @@ import {
   closeCompletion,
   acceptCompletion,
   completionStatus,
+  nextSnippetField,
   moveCompletionSelection,
 } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
@@ -87,6 +88,7 @@ export default function CodeEditor(props: CodeEditorProps) {
               },
             }),
           ),
+          Prec.highest(keymap.of([{ key: 'Tab', run: acceptCompletion }])),
           basicSetup,
           oneDark,
           EditorState.tabSize.of(4),
@@ -112,7 +114,7 @@ export default function CodeEditor(props: CodeEditorProps) {
                 run: (editor) =>
                   completionStatus(editor.state)
                     ? acceptCompletion(editor)
-                    : (indentWithTab.run?.(editor) ?? false),
+                    : nextSnippetField(editor) || (indentWithTab.run?.(editor) ?? false),
               },
               {
                 key: 'Enter',

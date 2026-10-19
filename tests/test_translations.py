@@ -5,10 +5,11 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from acmweb.ai import AIResult
+from acmweb.ai import AIResult, ProviderConfig
 from acmweb.app import create_app
 from acmweb.settings import Settings
-from acmweb.translations import fingerprint
+from acmweb.translations import fingerprint, Translations, Translate
+from fastapi import HTTPException
 from acmweb.users import csrf_token
 from acmweb.workbench import parse_statement
 
@@ -33,6 +34,7 @@ def workspace(tmp_path):
 
 def test_translation_job_upload_review_and_free_reuse(workspace, monkeypatch):
     app, client, statement = workspace
+    app.state.ai.save(ProviderConfig(base_url='https://api.example.test/v1', vendor='custom', protocol='chat'))
     async def complete(task, provider, model, payload, schema):
         assert task == 'translation'
         assert provider == 'api' and model == 'mock-model'
@@ -56,6 +58,7 @@ def test_translation_job_upload_review_and_free_reuse(workspace, monkeypatch):
             break
         time.sleep(0.01)
     assert job['status'] == 'completed', job
+    assert set(job['result']) == {'translation_id', 'reused'}
     tid = job['result']['translation_id']
     listing = client.get('/api/workbench/problem/4-A/translations')
     assert listing.status_code == 200
@@ -79,10 +82,99 @@ def test_translation_job_upload_review_and_free_reuse(workspace, monkeypatch):
 
     monkeypatch.setattr(app.state.ai, 'complete', should_not_run)
     second = app.state.translations.generate('4-A', type('Payload', (), {
-        'engine': 'ai', 'provider': 'api', 'model': 'another-model', 'consent': True,
+        'engine': 'ai', 'provider': 'api', 'model': 'mock-model', 'consent': True,
     })())
     result = asyncio.run(second)
     assert result == {'translation_id': shared_id, 'reused': True}
+
+    # A second model must remain available for a distinct contribution, rather
+    # than silently returning an unrelated model's cached translation.
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    async def other_model(task, provider, model, payload, schema):
+        result = await complete(task, provider, 'mock-model', payload, schema)
+        result.provenance['model'] = model
+        return result
+    monkeypatch.setattr(app.state.ai, 'complete', other_model)
+    second = asyncio.run(app.state.translations.generate('4-A', Translate(
+        model='another-model', consent=True)))
+    assert second['reused'] is False
+    uploaded = client.post(f"/api/translations/{second['translation_id']}/upload", json={})
+    assert uploaded.status_code == 200
+
+
+def test_private_translation_ttl_limits_restart_and_legacy_cleanup(workspace):
+    app, _, statement = workspace
+    service = app.state.translations
+    service.private_limit = 2
+    for i in range(3):
+        service._remember({'id': str(i), 'problem_id': 'codeforces:4-A',
+                           'fingerprint': fingerprint(statement), 'statement': {'title': 'PRIVATE-' + str(i)}})
+    assert set(service.ephemeral) == {'1', '2'}
+    item = service.get('1')
+    item['statement']['title'] = 'tampered'
+    assert service.get('1')['statement']['title'] == 'PRIVATE-1'
+    service.ephemeral['1'] = (time.monotonic() - 1, *service.ephemeral['1'][1:])
+    with pytest.raises(HTTPException): service.get('1')
+    assert '1' not in service.ephemeral
+    with service.db.connect() as db:
+        db.execute('CREATE TABLE private_translations(data TEXT)')
+        db.execute('INSERT INTO private_translations VALUES(?)', ('LEGACY-PRIVATE-TEXT',))
+        db.execute('INSERT INTO web_jobs VALUES(?,?,?,?,?,?,?)', ('legacy-translation', 'translation', 'completed', 1, 1,
+                   json.dumps({'statement': 'LEGACY-PRIVATE-TEXT'}), None))
+    restarted = Translations(service.wb, service.ai, service.shared)
+    assert restarted.ephemeral == {}
+    with service.db.connect() as db:
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='private_translations'").fetchone()
+        assert db.execute("SELECT result FROM web_jobs WHERE id='legacy-translation'").fetchone()[0] is None
+
+
+def test_private_translation_expires_without_next_request(workspace):
+    service = workspace[0].state.translations
+    service.private_ttl = 0.01
+    async def expire():
+        service._remember({'id': 'short-lived', 'statement': {'title': 'temporary'}})
+        await asyncio.sleep(0.03)
+        assert 'short-lived' not in service.ephemeral
+        assert 'short-lived' not in service.expiry_handles
+    asyncio.run(expire())
+
+
+def test_private_cache_eviction_and_shutdown_cancel_timers(workspace, monkeypatch):
+    service = workspace[0].state.translations
+    service.private_limit = 1
+    handles = []
+    class Handle:
+        cancelled = False
+        def cancel(self): self.cancelled = True
+    class Loop:
+        def call_later(self, delay, callback, tid):
+            handle = Handle()
+            handles.append(handle)
+            return handle
+    monkeypatch.setattr('acmweb.translations.asyncio.get_running_loop', lambda: Loop())
+    for tid in ('first', 'second'):
+        service._remember({'id': tid, 'statement': {'title': tid}})
+    assert handles[0].cancelled and not handles[1].cancelled
+    assert set(service.expiry_handles) == {'second'}
+    service.close()
+    assert handles[1].cancelled
+    assert service.ephemeral == {} and service.expiry_handles == {}
+
+
+def test_user_import_translation_cannot_enter_shared_storage(workspace, monkeypatch):
+    app, client, statement = workspace
+    imported = {**statement, 'source': 'user_import'}
+    app.state.workbench.store_statement('codeforces:4-A', imported)
+    async def complete(task, provider, model, payload, schema):
+        return AIResult(data={'blocks': payload['blocks']}, provenance={'channel': 'api', 'model': model})
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    result = asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
+    item = app.state.translations.get(result['translation_id'])
+    assert item['scope'] == 'private' and not item['shareable']
+    uploaded = client.post(f"/api/translations/{result['translation_id']}/upload", json={})
+    assert uploaded.status_code == 400
+    with app.state.translation_store.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM translations').fetchone()[0] == 0
 
 
 def test_translation_fingerprint_excludes_fetch_metadata(workspace):
@@ -184,6 +276,12 @@ def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_
         uploaded = request(owner, 'POST', f'/api/translations/{tid}/upload', {})
         assert uploaded.status_code == 200, uploaded.text
         shared_id = uploaded.json()['id']
+        assert request(member, 'GET', '/api/workbench/problem/4-A').status_code == 200
+        member_child = app.state.workspaces.apps[member['user']['id']][0]
+        member_child.state.workbench.store_statement('codeforces:4-A', html_statement)
+        assert request(member, 'GET', '/api/workbench/problem/4-A/translations').json()['items'] == []
+        assert request(member, 'POST', f'/api/translations/{tid}/upload', {}).status_code == 404
+        assert request(member, 'POST', f'/api/translations/{shared_id}/review', {'decision': 'approved'}).status_code == 403
         assert request(owner, 'POST', f'/api/translations/{shared_id}/review', {'decision': 'approved'}).status_code == 200
 
         assert request(member, 'GET', '/api/workbench/problem/4-A').status_code == 200

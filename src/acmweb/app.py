@@ -78,9 +78,11 @@ def create_app(settings=None):
     @asynccontextmanager
     async def lifespan(app):
         yield
-        await jobs.close();await codex.close()
+        await jobs.close()
+        app.state.translations.close()
+        await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.10.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.10.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -118,7 +120,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.10.0"}
+    def health():return {"status":"ok","version":"0.10.1"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -240,7 +242,10 @@ def create_app(settings=None):
     app.state.workbench = Workbench(database, ai, account_config)
     register(app, app.state.workbench, jobs, app.state.daily)
 
-    # Generated translations stay in the user's private database. Moderated
+    from .selftest import register_selftest
+    register_selftest(app)
+
+    # Personal translations are short-lived memory objects. Moderated
     # translations use one central store in multi-user deployments so an
     # approved model result can be reused by every tenant.
     from .translations import SharedTranslations, Translations, register_personal, register_shared

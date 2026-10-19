@@ -66,6 +66,7 @@ def main():
         parser.error('请先启动多人服务并在网页初始化管理员')
     with instance_lock(root/'.multiuser.lock'):
         users = Users(root/'users.sqlite3')
+        users.normalize_administrator()
         with users.connect() as db:
             if args.action == 'list':
                 for row in db.execute('SELECT username,role,active FROM users ORDER BY username'):
