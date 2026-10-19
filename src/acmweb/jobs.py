@@ -62,6 +62,17 @@ class Jobs:
             elif kind.startswith("wb_"):
                 result=await self.run_workbench(kind,payload)
                 self.update(job_id,"completed",result)
+            elif kind=="translation":
+                runner=getattr(self,"run_translation",None)
+                if runner is None:
+                    raise AIError("翻译服务尚未初始化")
+                # The route validates the request before queuing it. Validate
+                # again at the async boundary so a persisted/replayed job
+                # cannot bypass the same consent and engine constraints.
+                from .translations import Translate
+                request=Translate.model_validate({key: value for key, value in payload.items() if key != "problem_id"})
+                result=await runner(payload["problem_id"],request)
+                self.update(job_id,"completed",result)
             elif kind in {"analysis","recommend"}:
                 context=await asyncio.to_thread(analytics.overview,self.db,payload.get("days",30),payload.get("platform",""))
                 if not context["stats"]["submissions"]:
@@ -73,7 +84,7 @@ class Jobs:
                     selected=candidates(self.db,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,payload.get("min_contest",0))
                     if not selected:
                         raise AIError("没有满足条件的未做题，请先同步题库或调整筛选条件")
-                report=await self.ai.generate(payload["provider"],payload["model"],context,selected,payload.get("goal",""))
+                report=await self.ai.generate(payload["provider"],payload["model"],context,selected,payload.get("goal",""),task=kind)
                 report_id=uuid.uuid4().hex
                 report["data_window"]={"days":context["days"],"platform":payload.get("platform", ""),"submissions":context["stats"]["submissions"]}
                 with self.db.connect() as db:

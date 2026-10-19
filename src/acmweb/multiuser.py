@@ -68,9 +68,15 @@ class Workspaces:
                 directory.chmod(0o700)
                 child = replace(self.settings, multi_user=False, isolated=True,
                                 data_dir=directory, config_path=directory/'account.toml',
+                                translation_database=self.settings.data_dir/'translations.sqlite3',
+                                translation_owner=uid,
                                 access_token=secrets.token_urlsafe(40), allow_env_ai_key=False)
                 app = self.factory(child)
                 app.state.internal_token = child.access_token
+                app.state.multi_child = True
+                # The owner is derived from this authenticated workspace, not
+                # from any upload payload sent by the browser.
+                app.state.translations.owner = uid
                 app.state.jobs.guard = self.budget
                 app.state.codex.process_slots = self.process_slots
                 lifecycle = app.router.lifespan_context(app)
@@ -94,6 +100,7 @@ def create_multi_app(settings, factory):
     workspaces = Workspaces(settings,factory)
     assets = factory(replace(settings,multi_user=False,access_token=secrets.token_urlsafe(40),
                              data_dir=settings.data_dir/'site-static',config_path=settings.data_dir/'site-static/missing.toml',
+                             translation_database=settings.data_dir/'translations.sqlite3', translation_owner='assets',
                              enable_codex=False,server_codex=False))
 
     async def idle_cleanup():
@@ -123,7 +130,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.7.1',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.8.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -200,7 +207,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.7.1','mode':'multi-user'}
+        return {'status':'ok','version':'0.8.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -381,11 +388,26 @@ def create_multi_app(settings, factory):
             identities.audit('entry.restored',user['id'],eid,db)
         return {'ok':True}
 
+    # Translation submissions are stored centrally, but the source statement
+    # and generated translation remain in the submitting user's workspace.
+    # Every request resolves the current session again so role changes and
+    # disabled accounts take effect immediately.
+    from .translations import SharedTranslations, register_shared
+    translation_store = SharedTranslations(settings.data_dir/'translations.sqlite3')
+    app.state.translation_store = translation_store
+
+    async def translation_context(request, admin=False):
+        user = require(request, admin)
+        child = await workspaces.get(user['id'])
+        return user['id'], child.state.translations
+
+    register_shared(app, translation_store, translation_context)
+
     @app.api_route('/{path:path}',methods=['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'])
     async def dispatch(path:str,request:Request):
         if path.startswith('api/'):
             user = require(request)
-            if path.startswith(('api/auth/','api/admin/','api/shared/')):
+            if path.startswith(('api/auth/','api/admin/','api/shared/','api/translations')):
                 raise HTTPException(404,'接口不存在')
             child = await workspaces.get(user['id'])
             headers = [(k,v) for k,v in request.scope['headers'] if k.lower() not in {b'authorization',b'cookie'}]

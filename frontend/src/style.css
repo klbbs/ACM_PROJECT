@@ -3074,3 +3074,103 @@ td small {
   margin: 14px 0;
   line-height: 1.8;
 }
+
+/* Translation stays within the statement column, leaving the editor width unchanged. */
+.translation-panel {
+  min-width: 0;
+}
+.translation-controls {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background: #f8fafc;
+}
+.translation-controls > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.translation-controls > summary svg {
+  vertical-align: middle;
+}
+.translation-controls > summary .muted {
+  font-weight: 400;
+  margin-left: 8px;
+}
+.translation-form {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.translation-form label {
+  flex: 0 1 170px;
+}
+.translation-model {
+  flex: 1 1 220px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.translation-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.translation-consent input {
+  width: auto;
+  margin-top: 4px;
+}
+.translation-actions,
+.translation-result-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.translation-selection {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+}
+.translation-selection select {
+  min-width: 0;
+  flex: 1;
+}
+.translation-review {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+.translation-review summary {
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.translation-review-item {
+  border-top: 1px solid #e2e8f0;
+  padding: 12px 0;
+}
+.translation-review-item textarea {
+  min-height: 70px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.translation-result-meta {
+  font-size: 12px;
+  color: #64748b;
+  margin: 10px 0;
+}
+.translation-result-meta span {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+  .translation-selection {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .translation-controls {
+    padding: 10px;
+  }
+}

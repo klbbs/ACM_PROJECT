@@ -28,6 +28,10 @@ class Settings:
     allowed_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv('ACM_ALLOWED_HOSTS','localhost,127.0.0.1,[::1],testserver').split(',') if x.strip()))
     max_users: int = 100
     public_origin: str = field(default_factory=lambda: os.getenv('ACM_PUBLIC_ORIGIN','').rstrip('/'))
+    # In multi-user mode this points every isolated workspace at the central
+    # moderated translation store while keeping generated translations local.
+    translation_database: Path | None = field(default=None, repr=False)
+    translation_owner: str = field(default='local', repr=False)
 
     @property
     def database(self):

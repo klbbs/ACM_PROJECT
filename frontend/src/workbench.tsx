@@ -5,6 +5,7 @@ const StatementView = React.lazy(() =>
 )
 import { EditorShell } from './editor-shell'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
+import { TranslationPanel } from './translation-panel'
 import { Code2, Lightbulb, RefreshCw, Save, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
@@ -382,27 +383,38 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                     题面尚未获取。任务状态见页面底部；平台要求浏览器验证时，可先打开原题阅读并继续写代码。
                   </p>
                 ) : (
-                  <>
-                    <p className="muted">
-                      {statement.time_limit} · {statement.memory_limit} · 抓取于{' '}
-                      {date(data?.fetched_at)}
-                    </p>
-                    <React.Suspense fallback={<p>正在排版题面…</p>}>
-                      <StatementView statement={statement} />
-                    </React.Suspense>
-                    {statement.samples.map((s: Row, i: number) => (
-                      <div key={i} className="wb-samples">
-                        <div>
-                          <h4>样例输入 {i + 1}</h4>
-                          <pre>{s.input}</pre>
+                  <TranslationPanel
+                    problemId={pid}
+                    statement={statement}
+                    provider={provider}
+                    model={model}
+                    revision={revision}
+                    jobs={jobs}
+                    run={run}
+                    onError={onError}
+                  >
+                    <>
+                      <p className="muted">
+                        {statement.time_limit} · {statement.memory_limit} · 抓取于{' '}
+                        {date(data?.fetched_at)}
+                      </p>
+                      <React.Suspense fallback={<p>正在排版题面…</p>}>
+                        <StatementView statement={statement} />
+                      </React.Suspense>
+                      {statement.samples.map((s: Row, i: number) => (
+                        <div key={i} className="wb-samples">
+                          <div>
+                            <h4>样例输入 {i + 1}</h4>
+                            <pre>{s.input}</pre>
+                          </div>
+                          <div>
+                            <h4>样例输出 {i + 1}</h4>
+                            <pre>{s.output}</pre>
+                          </div>
                         </div>
-                        <div>
-                          <h4>样例输出 {i + 1}</h4>
-                          <pre>{s.output}</pre>
-                        </div>
-                      </div>
-                    ))}
-                  </>
+                      ))}
+                    </>
+                  </TranslationPanel>
                 )}
               </section>
               <section

@@ -45,9 +45,20 @@ python3 scripts/bootstrap.py
 | `ACM_ACCOUNTS_CONFIG` | 默认 account.toml |
 | `ACM_STATIC_DIR` | 默认 frontend/dist |
 | `OPENAI_API_KEY` | 仅个人模式使用；多人模式禁止继承服务端共用 Key |
+| `ACM_GOOGLE_TRANSLATE_KEY` | 可选，Google Cloud Translation Basic v2 服务端密钥；仅管理员配置，可能计费 |
+| `ACM_BING_TRANSLATE_KEY` | 可选，Microsoft Translator 服务端密钥；仅管理员配置，可能计费 |
+| `ACM_BING_TRANSLATE_REGION` | 可选，Azure Translator 多服务资源对应区域 |
 | `ACM_UID` / `ACM_GID` | Compose 的宿主机运行用户 |
 
 本机 CLI 不自动读取 `.env`；Compose/systemd 示例会加载它。
+
+## 题面翻译与共享译文
+
+工作台的「题面翻译」统一支持 AI、Google Cloud Translation 和 Microsoft Translator。服务器未配置普通翻译密钥时，页面会提供官方网页翻译链接并允许复制题面；不会伪造一次“已完成”的站内翻译。普通翻译不进入共享审核。
+
+AI 翻译先检查已审核的共享译文，命中时直接免费复用，不调用模型。用户明确勾选同意后才发送题面；代码、Cookie、提交记录和个人提示历史不会随翻译请求发送。生成的 AI 译文默认只在个人空间可见，用户点击「上传翻译供审核」后才进入管理员队列。管理员审核通过后，其他用户可以免费使用同一题面版本的共享译文；同一服务端模型身份对一个题面版本只接受一份待审或已通过译文。题面更新、手动导入或图片/公式占位符校验失败都会使旧译文失效。
+
+Google Cloud Translation Basic v2 使用官方 `translation.googleapis.com/language/translate/v2`，Microsoft 使用官方 `api.cognitive.microsofttranslator.com/translate`。密钥只从服务端环境变量读取，不返回前端，不跟随重定向；请按各平台官方配额、区域和计费规则配置。
 
 ## 迁移与备份
 

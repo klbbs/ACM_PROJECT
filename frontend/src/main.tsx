@@ -82,6 +82,7 @@ const jobNames: Record<string, string> = {
   wb_hint: '生成小提示',
   wb_sync: '核验判题',
   wb_review: '分析错因',
+  translation: '翻译题面',
 }
 const emptyOverview: Row = {
   stats: {},
@@ -1003,7 +1004,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.7.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.8.0</span>
             </span>
           </footer>
         </div>

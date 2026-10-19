@@ -115,7 +115,7 @@ def create_app(settings=None):
         scheduler.shutdown(wait=False)
         await jobs.close();await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.7.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.8.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -153,7 +153,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.7.1"}
+    def health():return {"status":"ok","version":"0.8.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -282,6 +282,32 @@ def create_app(settings=None):
     from .workbench import Workbench, register
     app.state.workbench = Workbench(database, ai, account_config)
     register(app, app.state.workbench, jobs)
+
+    # Generated translations stay in the user's private database. Moderated
+    # translations use one central store in multi-user deployments so an
+    # approved model result can be reused by every tenant.
+    from .translations import SharedTranslations, Translations, register_personal, register_shared
+    shared_path = settings.translation_database or (settings.data_dir / "translations.sqlite3")
+    shared_translations = SharedTranslations(shared_path)
+    app.state.translation_store = shared_translations
+    # Isolated child apps are served through the authenticated multi-user
+    # parent; only that parent may expose moderation endpoints.
+    app.state.multi_child = bool(settings.isolated)
+    app.state.translations = Translations(app.state.workbench, ai, shared_translations, settings.translation_owner)
+    register_personal(app, app.state.translations, jobs)
+
+    async def run_translation(problem_id, payload):
+        return await app.state.translations.generate(problem_id, payload)
+
+    jobs.run_translation = run_translation
+
+    async def local_translation_context(request, admin=False):
+        # Single-user mode has one trusted owner; the regular app middleware
+        # already authenticated the request before this route is reached.
+        return app.state.translations.owner, app.state.translations
+
+    if not settings.isolated:
+        register_shared(app, shared_translations, local_translation_context)
 
     if (settings.static_dir/"assets").exists():
         app.mount("/assets",StaticFiles(directory=settings.static_dir/"assets"),name="assets")
