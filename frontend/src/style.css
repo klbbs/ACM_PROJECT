@@ -1282,6 +1282,10 @@ td small {
   min-width: 170px;
   max-width: 290px;
 }
+.ai-picker input {
+  width: 190px;
+  min-width: 0;
+}
 .ai-picker .icon-btn {
   border: 1px solid #e6e8ef;
   height: 37px;
@@ -1637,8 +1641,9 @@ td small {
 }
 .settings-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 20px;
+  align-items: start;
   margin-bottom: 20px;
 }
 .settings-card {
@@ -1647,6 +1652,15 @@ td small {
 }
 .settings-grid .settings-card {
   margin-bottom: 0;
+}
+.settings-card > details {
+  margin: 16px 0;
+}
+.settings-card > details > label {
+  margin-top: 16px;
+}
+.settings-card > details summary {
+  cursor: pointer;
 }
 .settings-card > label {
   margin-bottom: 20px;
@@ -2357,6 +2371,11 @@ td small {
     width: 100%;
     font-size: 10px;
     padding: 9px 7px;
+  }
+  .ai-picker input {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
   }
   .ai-picker .icon-btn {
     width: 35px;

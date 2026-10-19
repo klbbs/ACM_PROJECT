@@ -33,7 +33,7 @@ python3 scripts/bootstrap.py
 | `ACM_MULTI_USER` | Compose 默认 true，启用邀请注册与独立用户空间 |
 | `ACM_ALLOWED_HOSTS` | 允许的网站域名，逗号分隔 |
 | `ACM_PUBLIC_ORIGIN` | 浏览器访问的完整 HTTPS 站点来源，不含路径 |
-| `ACM_AI_ALLOWED_HOSTS` | 成员允许连接的 AI API 域名，默认 api.openai.com |
+| `ACM_AI_ALLOWED_HOSTS` | 成员允许连接的 AI API 域名；默认预设官方域名，显式配置优先，见 [AI 接入](AI_PROVIDERS.md#密钥与服务器) |
 | `ACM_ENV` | 默认 `local`，服务器设 `production` |
 | `ACM_ACCESS_TOKEN` | 工作台访问令牌，生产必填 |
 | `ACM_ENABLE_CODEX` | 本机默认 true；生产使用下面的独立开关 |

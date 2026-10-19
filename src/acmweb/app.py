@@ -115,7 +115,7 @@ def create_app(settings=None):
         scheduler.shutdown(wait=False)
         await jobs.close();await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.6.2",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.7.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -153,7 +153,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.6.2"}
+    def health():return {"status":"ok","version":"0.7.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -198,6 +198,12 @@ def create_app(settings=None):
     async def start_crawl():
         if not account_config.public()['configured']:raise HTTPException(400,"请先在连接与设置中添加平台账号")
         return jobs.start("crawl")
+
+    @app.get("/api/ai/presets")
+    def ai_presets():return ai.presets()
+
+    @app.post("/api/ai/test")
+    async def test_ai():return jobs.start("ai_test")
 
     @app.get("/api/ai/settings")
     def get_ai():return ai.public_config()

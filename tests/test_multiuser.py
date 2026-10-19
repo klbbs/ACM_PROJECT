@@ -255,3 +255,24 @@ def test_editor_preferences_isolated_csrf_and_not_charged_as_ai(site):
     assert request(member,'GET',path).json()['keymap'] == 'standard'
     assert request(member,'PUT',path,settings,{'X-CSRF-Token':'wrong'}).status_code == 403
     assert request(None,'GET',path).status_code == 401
+
+
+def test_ai_connection_test_is_private_csrf_protected_and_does_not_create_report(site,monkeypatch):
+    request,admin,member,app,*_ = site
+    async def synthetic(self):
+        return {'ok':True,'model':'synthetic','vendor':'deepseek','latency_ms':1,'note':'simulated'}
+    monkeypatch.setattr('acmweb.ai.AIProvider.test_connection',synthetic)
+    assert request(None,'POST','/api/ai/test',{}).status_code==401
+    assert request(admin,'POST','/api/ai/test',{},extra={'X-CSRF-Token':'wrong'}).status_code==403
+    assert request(admin,'GET','/api/ai/presets').status_code==200
+    response=request(admin,'POST','/api/ai/test',{})
+    assert response.status_code==200,response.text
+    job_id=response.json()['id']
+    for _ in range(100):
+        jobs=request(admin,'GET','/api/jobs').json()['items']
+        job=next(j for j in jobs if j['id']==job_id)
+        if job['status'] in {'completed','failed'}:break
+        time.sleep(0.01)
+    assert job['status']=='completed' and job['result']['model']=='synthetic'
+    assert request(admin,'GET','/api/reports').json()['items']==[]
+    assert request(member,'GET','/api/jobs').json()['items']==[]

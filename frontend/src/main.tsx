@@ -77,6 +77,7 @@ const jobNames: Record<string, string> = {
   analysis: '能力分析',
   recommend: '智能选题',
   catalog: '同步题库',
+  ai_test: 'AI 连接测试',
   wb_statement: '获取题面',
   wb_hint: '生成小提示',
   wb_sync: '核验判题',
@@ -302,19 +303,30 @@ function App() {
       const data = await api(`/ai/models?provider=${provider}`)
       setModels(data.items)
       setModelNote(data.note)
-      if (!data.items.some((m: Row) => m.id === model)) setModel(data.items[0]?.id || '')
+      if (!data.items.some((m: Row) => m.id === model))
+        setModel(data.default_model || data.items[0]?.id || '')
     } catch (e: any) {
       setError(e.message)
     } finally {
       setModelBusy(false)
     }
   }
-  const chooseProvider = (p: string) => {
+  const chooseProvider = (p: string, defaultModel = '') => {
     setProvider(p)
-    setModel('')
+    setModel(defaultModel)
     setModels([])
     setModelNote('')
   }
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if (provider !== 'api') return
+      setModels([])
+      setModel((event as CustomEvent).detail?.model || '')
+      setModelNote('AI 配置已更新，可使用默认模型或重新读取模型列表')
+    }
+    window.addEventListener('acm:ai-config-changed', changed)
+    return () => window.removeEventListener('acm:ai-config-changed', changed)
+  }, [provider])
   const startAnalysis = (recommend = false, extra: Row = {}) =>
     run(recommend ? '/recommend' : '/analysis', { provider, model, days, platform, goal, ...extra })
   const aiPicker = (
@@ -327,8 +339,20 @@ function App() {
         <option value="codex">ChatGPT 官方账号</option>
         <option value="api">API Key 通道</option>
       </select>
+      {provider === 'api' && (
+        <input
+          aria-label="手动模型 ID"
+          placeholder="可直接填写模型 ID"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          maxLength={150}
+        />
+      )}
       <select aria-label="选择模型" value={model} onChange={(e) => setModel(e.target.value)}>
         <option value="">选择模型</option>
+        {model && !models.some((m) => m.id === model) && (
+          <option value={model}>{model}（手动输入）</option>
+        )}
         {models.map((m) => (
           <option key={m.id} value={m.id}>
             {m.name || m.id}
@@ -979,7 +1003,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.6.2</span>
+              数据有边界，进步有方向。 <span className="version">v0.7.0</span>
             </span>
           </footer>
         </div>
@@ -1624,6 +1648,15 @@ function SettingsPage({
     }),
     [key, setKey] = useState(''),
     [saving, setSaving] = useState(false)
+  const [presets, setPresets] = useState<Row[]>([])
+  const [apiModels, setApiModels] = useState<Row[]>([])
+  const [apiModelNote, setApiModelNote] = useState('')
+  const [readingModels, setReadingModels] = useState(false)
+  useEffect(() => {
+    api('/ai/presets')
+      .then((d) => setPresets(d.items))
+      .catch((e: Error) => onError(e.message))
+  }, [])
   const [account, setAccount] = useState<Row | null>(null),
     [login, setLogin] = useState<Row | null>(null),
     [connecting, setConnecting] = useState(false)
@@ -1742,20 +1775,34 @@ function SettingsPage({
     )
     return () => clearInterval(timer)
   }, [login])
-  const save = async () => {
+  const save = async (clearKey = false) => {
     setSaving(true)
     try {
       const payload: Row = {
         base_url: config.base_url,
         protocol: config.protocol,
         model: config.model || '',
+        vendor: config.vendor || 'custom',
+        output_mode: config.output_mode || 'auto',
+        thinking: config.thinking || 'auto',
+        reasoning_effort: config.reasoning_effort || 'auto',
+        max_output_tokens: config.max_output_tokens || 8192,
+        timeout: config.timeout || 180,
+        temperature: config.temperature ?? null,
       }
-      if (key) payload.api_key = key
-      setConfig(await api('/ai/settings', 'PUT', payload))
+      if (clearKey) payload.api_key = ''
+      else if (key) payload.api_key = key
+      const saved = await api('/ai/settings', 'PUT', payload)
+      setConfig(saved)
       setKey('')
-      onNotice('AI API 配置已保存，密钥仅保存在服务端')
+      window.dispatchEvent(
+        new CustomEvent('acm:ai-config-changed', { detail: { model: saved.model } }),
+      )
+      onNotice(clearKey ? '当前 API 地址的密钥已清除' : 'AI API 配置已保存，密钥仅保存在服务端')
+      return true
     } catch (e: any) {
       onError(e.message)
+      return false
     } finally {
       setSaving(false)
     }
@@ -1772,17 +1819,70 @@ function SettingsPage({
                   AI API 接入
                 </span>
               </h2>
-              <p>支持 OpenAI Responses 与兼容 Chat Completions 的提供方。</p>
+              <p>
+                选择提供方，填写自己的 Key 和模型
+                ID，再保存并测试。连接测试会实际调用模型并按提供方规则计费。
+              </p>
             </div>
             <span className={`badge ${config.has_key ? 'success' : 'neutral'}`}>
               {config.has_key ? '已配置' : '未配置'}
             </span>
           </div>
           <label>
+            模型提供方
+            <select
+              aria-label="模型提供方"
+              value={config.vendor || 'custom'}
+              onChange={(e) => {
+                const preset = presets.find((p) => p.id === e.target.value)
+                if (!preset) return
+                setKey('')
+                setApiModels([])
+                setApiModelNote('')
+                setConfig({
+                  ...config,
+                  vendor: preset.id,
+                  base_url: preset.base_url,
+                  protocol: preset.protocol,
+                  model: '',
+                  has_key: false,
+                  thinking: 'auto',
+                  reasoning_effort: 'auto',
+                  output_mode: 'auto',
+                  temperature: null,
+                })
+              }}
+            >
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.allowed ? '' : '（需管理员批准域名）'}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="help">
+            密钥按 API 地址分别保存；切换提供方不会把旧密钥发送给新地址。区域和 Key 必须匹配。Gemini
+            使用官方兼容接口；智谱按量 API 与 Coding Plan 地址不同。
+          </p>
+          {presets.find((p) => p.id === config.vendor)?.docs && (
+            <a
+              href={presets.find((p) => p.id === config.vendor)?.docs}
+              target="_blank"
+              rel="noreferrer"
+            >
+              提供方官方接入文档 ↗
+            </a>
+          )}
+          <label>
             API 地址
             <input
               value={config.base_url}
-              onChange={(e) => setConfig({ ...config, base_url: e.target.value })}
+              onChange={(e) => {
+                setConfig({ ...config, base_url: e.target.value, has_key: false })
+                setApiModels([])
+                setApiModelNote('')
+              }}
               placeholder="https://api.openai.com/v1"
               type="url"
             />
@@ -1791,12 +1891,156 @@ function SettingsPage({
             接入协议
             <select
               value={config.protocol}
-              onChange={(e) => setConfig({ ...config, protocol: e.target.value })}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  protocol: e.target.value,
+                  thinking: 'auto',
+                  reasoning_effort: 'auto',
+                  output_mode: 'auto',
+                })
+              }
             >
               <option value="responses">Responses API · OpenAI 官方</option>
               <option value="chat">Chat Completions · 兼容提供方</option>
+              <option value="anthropic">Claude 原生 Messages</option>
             </select>
           </label>
+          <label>
+            默认模型 ID
+            <input
+              aria-label="默认模型 ID"
+              list="provider-models"
+              value={config.model || ''}
+              onChange={(e) => setConfig({ ...config, model: e.target.value })}
+              placeholder="填写账号可用的模型 ID；也可保存 Key 后读取模型列表"
+              maxLength={150}
+            />
+          </label>
+          <datalist id="provider-models">
+            {apiModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.id}
+              </option>
+            ))}
+          </datalist>
+          <Button
+            className="text-button"
+            loading={readingModels}
+            disabled={saving}
+            onClick={async () => {
+              setReadingModels(true)
+              try {
+                if (!(await save())) return
+                const data = await api('/ai/models?provider=api')
+                setApiModels(data.items)
+                setApiModelNote(data.note)
+              } catch (e: any) {
+                onError(e.message)
+              } finally {
+                setReadingModels(false)
+              }
+            }}
+          >
+            保存并读取模型列表
+          </Button>
+          {apiModelNote && (
+            <p className="help" role="status">
+              {apiModels.length} 个模型；{apiModelNote}
+            </p>
+          )}
+          <label>
+            结构化输出
+            <select
+              aria-label="结构化输出"
+              value={config.output_mode || 'auto'}
+              onChange={(e) => setConfig({ ...config, output_mode: e.target.value })}
+            >
+              <option value="auto">按协议默认</option>
+              <option value="schema">JSON Schema（须模型支持）</option>
+              <option value="json" disabled={config.protocol === 'anthropic'}>
+                JSON 对象
+              </option>
+              <option value="prompt">仅提示约束（仍严格校验结果）</option>
+            </select>
+          </label>
+          {config.protocol === 'chat' &&
+            ['deepseek', 'qwen', 'qwen_global'].includes(config.vendor) && (
+              <label>
+                思考模式
+                <select
+                  aria-label="思考模式"
+                  value={config.thinking || 'auto'}
+                  onChange={(e) => setConfig({ ...config, thinking: e.target.value })}
+                >
+                  <option value="auto">使用模型默认</option>
+                  <option value="enabled">启用（须模型支持）</option>
+                  <option value="disabled">关闭（须模型支持）</option>
+                </select>
+              </label>
+            )}
+          {config.protocol !== 'anthropic' &&
+            ['openai', 'deepseek', 'moonshot', 'gemini'].includes(config.vendor) && (
+              <label>
+                推理强度
+                <select
+                  value={config.reasoning_effort || 'auto'}
+                  onChange={(e) => setConfig({ ...config, reasoning_effort: e.target.value })}
+                >
+                  {(config.vendor === 'deepseek' || config.vendor === 'moonshot'
+                    ? ['auto', 'low', 'high', 'max']
+                    : ['auto', 'low', 'medium', 'high']
+                  ).map((v) => (
+                    <option key={v}>{v}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          <details>
+            <summary>输出与超时参数</summary>
+            <label>
+              最大输出 token
+              <input
+                type="number"
+                min={256}
+                max={32768}
+                value={config.max_output_tokens || 8192}
+                onChange={(e) =>
+                  setConfig({ ...config, max_output_tokens: Number(e.target.value) })
+                }
+              />
+            </label>
+            <label>
+              超时（秒）
+              <input
+                type="number"
+                min={30}
+                max={240}
+                value={config.timeout || 180}
+                onChange={(e) => setConfig({ ...config, timeout: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              Temperature（空白为不发送）
+              <input
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={config.temperature ?? ''}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    temperature: e.target.value === '' ? null : Number(e.target.value),
+                  })
+                }
+              />
+            </label>
+            <p>
+              思考模型可能不支持 temperature，默认不发送。推理 token
+              会占输出额度，截断时需提高上限。
+            </p>
+          </details>
           <label>
             API Key
             <input
@@ -1812,19 +2056,44 @@ function SettingsPage({
             密钥不会返回浏览器，不会进入 Git 或 AI 提示词。
           </p>
           <div className="settings-actions">
-            <Button className="primary" loading={saving} onClick={save}>
+            <Button className="primary" loading={saving} onClick={() => save()}>
               保存 API 配置 <Check size={16} />
             </Button>
             <button
+              disabled={jobs.some(
+                (j: Row) => j.kind === 'ai_test' && ['queued', 'running'].includes(j.status),
+              )}
+              onClick={() => run('/ai/test')}
+            >
+              测试已保存配置（会计费）
+            </button>
+            <button
               className="text-button"
               onClick={() => {
-                setProvider('api')
-                onNotice('已切换到 API Key 通道，请前往分析页读取模型')
+                setProvider('api', config.model || '')
+                onNotice('已切换到 API Key 通道，可使用默认模型或读取模型列表')
               }}
             >
               使用此通道 <ArrowRight size={14} />
             </button>
           </div>
+          <button
+            className="text-button"
+            disabled={saving || !config.has_key}
+            onClick={() => save(true)}
+          >
+            清除当前地址密钥
+          </button>
+          {jobs
+            .filter((j: Row) => j.kind === 'ai_test')
+            .slice(0, 1)
+            .map((j: Row) => (
+              <p key={j.id} role="status">
+                最近连接测试：{statusNames[j.status]} {j.result?.model}{' '}
+                {j.result?.latency_ms ? `${j.result.latency_ms} ms` : ''}{' '}
+                {j.error || j.result?.note}
+              </p>
+            ))}
         </section>
         <section className="card settings-card chatgpt-settings">
           <div className="card-heading">

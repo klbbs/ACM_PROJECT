@@ -250,3 +250,25 @@ test('statement renders readable math and images with usable links on failure', 
   await expect(page.getByText('图片加载失败，可能被平台限制。')).toBeVisible()
   await expect(page.locator('.statement-check summary')).toContainText('1 张图片')
 })
+
+test('AI presets expose dedicated fields and preserve secrets per endpoint', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByLabel('模型提供方').selectOption('deepseek')
+  await expect(page.getByLabel('API 地址', { exact: true })).toHaveValue('https://api.deepseek.com')
+  await expect(page.getByLabel('思考模式')).toBeVisible()
+  await page.getByLabel('默认模型 ID', { exact: true }).fill('test-model')
+  await page.getByLabel('API Key', { exact: true }).fill('synthetic-deepseek-key')
+  await page.getByRole('button', { name: '保存 API 配置' }).click()
+  await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
+  await expect(page.getByText('AI API 配置已保存，密钥仅保存在服务端')).toBeVisible()
+  await page.getByLabel('模型提供方').selectOption('anthropic')
+  await expect(page.getByLabel('接入协议')).toHaveValue('anthropic')
+  await page.getByRole('button', { name: '保存 API 配置' }).click()
+  await expect(page.getByLabel('API Key', { exact: true })).toHaveAttribute(
+    'placeholder',
+    '输入提供方的 API Key',
+  )
+  await expect(page.getByRole('button', { name: '测试已保存配置（会计费）' })).toBeVisible()
+  // Deliberately do not trigger a billable request: no actual provider key is used.
+})

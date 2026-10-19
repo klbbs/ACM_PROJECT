@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from .providers import DEFAULT_HOSTS
 
 
 def default_data_dir():
@@ -23,7 +24,7 @@ class Settings:
     multi_user: bool = field(default_factory=lambda: os.getenv("ACM_MULTI_USER", "false").lower() == "true")
     isolated: bool = False
     allow_env_ai_key: bool = True
-    ai_allowed_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv('ACM_AI_ALLOWED_HOSTS','api.openai.com').split(',') if x.strip()))
+    ai_allowed_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv('ACM_AI_ALLOWED_HOSTS',DEFAULT_HOSTS).split(',') if x.strip()))
     allowed_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv('ACM_ALLOWED_HOSTS','localhost,127.0.0.1,[::1],testserver').split(',') if x.strip()))
     max_users: int = 100
     public_origin: str = field(default_factory=lambda: os.getenv('ACM_PUBLIC_ORIGIN','').rstrip('/'))

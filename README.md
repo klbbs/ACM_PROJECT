@@ -59,11 +59,12 @@ cd ..
 
 在「连接与设置 → AI API 接入」配置：
 
-- OpenAI 官方地址 `https://api.openai.com/v1`，协议选择 **Responses API**。
-- 兼容提供方填写其 HTTPS API 地址，协议选择 **Chat Completions**。
-- 保存 Key 后，在分析或选题页选择 **API Key 通道**，刷新模型目录，再选择支持文本及 JSON 输出的模型。
+- 选择 OpenAI、DeepSeek、Claude、Gemini、Qwen（中国/新加坡）、Kimi、硅基流动、智谱或自定义网关预设。
+- 填入自己的 Key 和默认模型 ID，可「保存并读取模型列表」；不提供目录的服务可手动填写 ID。
+- 按模型支持情况调整结构化输出、思考/推理强度、输出上限与超时，默认不发送 temperature。
+- 保存后可主动执行会计费的连接测试，在分析/选题/工作台使用 API Key 通道。
 
-旧版个人模式也可通过 `OPENAI_API_KEY` 环境变量提供 Key；多人模式不继承此变量，每位成员须在自己的设置页保存 Key。模型调用失败、额度不足、输出被截断或格式不符时，任务明确报错，不生成假报告。API Key 通道没有使用开发机上的真实收费 Key 测试；协议、异常和结果校验有模拟测试。
+密钥按用户及 API 地址隔离，换地址不会发送上一家的 Key。旧版个人模式的 `OPENAI_API_KEY` 仅用于官方 OpenAI 默认地址；多人模式不继承此变量。失败不自动重试或换模型，不生成假报告。适配器用模拟响应验证，真实模型权限需用户接入后测试。详细填写步骤、各家地址、参数和排错见 [AI 提供方配置](docs/AI_PROVIDERS.md)。
 
 ### 官方 ChatGPT 登录（支持无桌面服务器）
 
@@ -119,7 +120,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.6.2.zip
+python3 scripts/verify_release.py releases/acm-lab-0.7.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
