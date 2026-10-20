@@ -174,6 +174,19 @@ function App() {
     if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true })))
       setPageRaw(next)
   }
+  const [workbenchSelection, setWorkbenchSelection] = useState<Row | null>(null)
+  const openSubmission = (row: Row) => {
+    if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
+      setWorkbenchSelection({
+        ...row,
+        problem_id: row.problem_id.startsWith(row.platform + ':')
+          ? row.problem_id
+          : row.platform + ':' + row.problem_id,
+        submission_id: row.id,
+      })
+      setPageRaw('workbench')
+    }
+  }
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [overview, setOverview] = useState<Row>(emptyOverview),
     [loading, setLoading] = useState(true),
@@ -831,7 +844,9 @@ function App() {
                       <div key={i}>
                         <Platform platform={r.platform} small />
                         <div>
-                          <strong>{r.problem?.title || r.problem_id}</strong>
+                          <button className="text-button" onClick={() => openSubmission(r)}>
+                            {r.problem?.title || r.problem_id}
+                          </button>
                           <span>
                             {names[r.platform]} · {r.problem_id}
                           </span>
@@ -849,6 +864,7 @@ function App() {
           )}
           {page === 'submissions' && (
             <SubmissionPage
+              onOpen={openSubmission}
               days={days}
               platform={platform}
               search={search}
@@ -979,6 +995,7 @@ function App() {
           {page === 'guide' && <PlatformGuide />}
           {page === 'workbench' && (
             <WorkbenchPage
+              initialSelection={workbenchSelection}
               revision={revision}
               provider={provider}
               model={model}
@@ -1034,7 +1051,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.11.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.12.0</span>
             </span>
           </footer>
         </div>
@@ -1186,7 +1203,7 @@ function PlatformCard({ data: p }: { data: Row }) {
   )
 }
 
-function SubmissionPage({ days, platform, search, setSearch, revision, onError }: any) {
+function SubmissionPage({ days, platform, search, setSearch, revision, onError, onOpen }: any) {
   const [rows, setRows] = useState<Row>({ items: [], total: 0 }),
     [offset, setOffset] = useState(0),
     [verdict, setVerdict] = useState(''),
@@ -1257,7 +1274,9 @@ function SubmissionPage({ days, platform, search, setSearch, revision, onError }
             {rows.items.map((r: Row) => (
               <tr key={r.platform + r.account + r.id}>
                 <td>
-                  <strong>{r.problem?.title || r.problem_id}</strong>
+                  <button className="text-button" onClick={() => onOpen(r)}>
+                    {r.problem?.title || r.problem_id}
+                  </button>
                   <small>
                     {r.problem_id} · #{r.id}
                   </small>
@@ -1275,6 +1294,9 @@ function SubmissionPage({ days, platform, search, setSearch, revision, onError }
                 <td className="language-cell">{r.language || '—'}</td>
                 <td className="date-cell">{date(r.submitted_at)}</td>
                 <td>
+                  <button className="secondary" onClick={() => onOpen(r)}>
+                    在工作台查看
+                  </button>
                   {r.url &&
                     /^https:\/\/(codeforces\.com|atcoder\.jp|www\.luogu\.com\.cn|ac\.nowcoder\.com)\//.test(
                       r.url,
@@ -1744,6 +1766,7 @@ function SettingsPage({
     prefer_recent: true,
   })
   const [accounts, setAccounts] = useState<Row[]>([])
+  const [accountRevision, setAccountRevision] = useState(0)
   useEffect(() => {
     api('/training')
       .then(setTraining)
@@ -1767,6 +1790,7 @@ function SettingsPage({
     try {
       const result = await api('/accounts', 'PUT', { items })
       setAccounts(result.items)
+      setAccountRevision((value) => value + 1)
       setEditingAccount({ platform: 'codeforces', handle: '', cookie: '', enrich: false })
       onNotice('平台账号已保存，可立即同步；Cookie 不会返回浏览器')
     } catch (e: any) {
@@ -2286,7 +2310,11 @@ function SettingsPage({
           </p>
         </section>
       </div>
-      <PlatformConnections revision={revision} run={run} onError={onError} />
+      <PlatformConnections
+        revision={`${revision}:${accountRevision}`}
+        run={run}
+        onError={onError}
+      />
       <section className="card settings-card">
         <div className="card-heading">
           <div>

@@ -73,6 +73,7 @@ def create_app(settings=None):
                       home=settings.data_dir/'codex' if settings.production or settings.isolated else None,
                       device_only=settings.production or settings.isolated)
     account_config=Accounts(settings)
+    from .credential_check import register as register_credential_checks
     ai=AIProvider(database,settings,codex)
     jobs=Jobs(database,settings,ai,account_config)
     @asynccontextmanager
@@ -82,7 +83,8 @@ def create_app(settings=None):
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.11.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.12.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    register_credential_checks(app,account_config)
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
@@ -120,7 +122,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.11.0"}
+    def health():return {"status":"ok","version":"0.12.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):

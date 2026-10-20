@@ -28,7 +28,7 @@ test('overview replaces standalone analysis and authenticated users can inspect 
     'fixture-user（我）',
   )
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '平台信息与交题入口' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '平台信息、登录检测与交题' })).toBeVisible()
   await expect(page.getByRole('button', { name: '同步此平台信息', exact: true })).toHaveCount(4)
 })
 test('AtCoder statement and submission links use platform-specific judge controls', async ({
@@ -47,15 +47,34 @@ test('AtCoder statement and submission links use platform-specific judge control
   await expect(page.getByText('Read two numbers.', { exact: true })).toBeVisible()
   await page.getByLabel('源代码', { exact: true }).fill('int main(){return 0;}')
   await page.locator('.cm-content').press('Control+s')
-  await page.getByRole('button', { name: '保存提交快照', exact: true }).click()
+  await expect(page.getByRole('button', { name: '保存提交快照', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '前往官方提交页 ↗', exact: true })).toHaveAttribute(
     'href',
     'https://atcoder.jp/contests/abc001/submit?taskScreenName=abc001_1',
   )
-  await expect(page.getByLabel('平台提交号')).toHaveAttribute('placeholder', 'AtCoder 提交号')
-  await expect(page.getByRole('link', { name: '先登录 AtCoder ↗', exact: true })).toHaveAttribute(
+  await expect(page.getByLabel('本次平台提交号')).toHaveAttribute(
+    'placeholder',
+    '官方平台返回的数字提交号',
+  )
+  await expect(page.getByRole('link', { name: '前往官方提交页 ↗', exact: true })).toHaveAttribute(
     'href',
-    'https://atcoder.jp/login',
+    'https://atcoder.jp/contests/abc001/submit?taskScreenName=abc001_1',
   )
   await expect(page.getByRole('button', { name: '保存草稿', exact: true })).toHaveCount(0)
+})
+
+test('newly saved platform account immediately exposes login detection without reloading', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.request.put('/api/accounts', { data: { items: [] } })
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByLabel('用户名 / UID / 主页链接', { exact: true }).fill('cookie-test-user')
+  await page.getByRole('button', { name: '保存平台账号', exact: true }).click()
+  await page.getByRole('button', { name: '检测登录状态', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: '未保存 Cookie' })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: '未保存 Cookie' })).not.toContainText(
+    '已验证登录',
+  )
+  await page.request.put('/api/accounts', { data: { items: [] } })
 })

@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,f
 CREATE TABLE IF NOT EXISTS wb_drafts (problem_id TEXT PRIMARY KEY,language TEXT NOT NULL,code TEXT NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_hints (problem_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(problem_id,seq));
 CREATE TABLE IF NOT EXISTS wb_attempts (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,language TEXT NOT NULL,code TEXT NOT NULL,code_hash TEXT NOT NULL,created_at INTEGER NOT NULL,handle TEXT,submission_id INTEGER,verdict TEXT NOT NULL DEFAULT 'UNLINKED',judge_data TEXT,review TEXT,last_synced INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX IF NOT EXISTS wb_remote_platform_case ON wb_attempts(substr(problem_id,1,instr(problem_id,':')-1),CASE WHEN problem_id LIKE 'codeforces:%' THEN lower(handle) ELSE handle END,submission_id) WHERE submission_id IS NOT NULL;
 DROP INDEX IF EXISTS wb_remote;
-CREATE UNIQUE INDEX IF NOT EXISTS wb_remote_platform ON wb_attempts(substr(problem_id,1,instr(problem_id,':')-1),handle COLLATE NOCASE,submission_id) WHERE submission_id IS NOT NULL;
+DROP INDEX IF EXISTS wb_remote_platform;
 '''
 
 
@@ -131,6 +132,11 @@ class Link(Strict):
     review: Coach | None = None
 
 
+class SubmissionLink(Link):
+    revision: int = Field(ge=1, strict=True)
+    code_matches_submission: Literal[True]
+
+
 class Hint(Strict):
     focus: str = Field(max_length=50)
     hint: str = Field(min_length=1, max_length=220)
@@ -211,7 +217,13 @@ class Workbench:
             draft = conn.execute('SELECT * FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
             hints = conn.execute('SELECT data FROM wb_hints WHERE problem_id=? ORDER BY seq', (pid,)).fetchall()
             attempts = conn.execute('SELECT * FROM wb_attempts WHERE problem_id=? ORDER BY created_at DESC,id DESC LIMIT 30', (pid,)).fetchall()
-        return {'id': pid, 'capabilities': capabilities(pid, self.accounts.document().get('accounts', [])), 'url': source_url(pid), 'statement': json.loads(statement['data']) if statement else None,
+        caps = capabilities(pid, self.accounts.document().get('accounts', []))
+        checker = getattr(self.accounts, 'credential_checks', None)
+        checks = [r for r in checker.statuses()['items'] if r['platform'] == caps['platform']] if checker else []
+        caps['credential_checks'] = checks
+        caps['credential_check'] = max(checks, key=lambda r: r['checked_at']) if checks else None
+        caps['login_verified'] = bool(len([a for a in self.accounts.document().get('accounts', []) if a.get('platform') == caps['platform']]) == 1 and caps['credential_check'] and caps['credential_check']['login_verified'])
+        return {'id': pid, 'capabilities': caps, 'url': source_url(pid), 'statement': json.loads(statement['data']) if statement else None,
                 'fetched_at': statement['fetched_at'] if statement else None,
                 'fetch_status': self.db.get('statement_status:'+pid, {}),
                 'draft': dict(draft) if draft else {'language': 'cpp17', 'code': '', 'revision': 0},
@@ -229,7 +241,7 @@ class Workbench:
             conn.execute('BEGIN IMMEDIATE')
             old = conn.execute('SELECT revision FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
             if (old['revision'] if old else 0) != data.revision:
-                raise HTTPException(409, '草稿已在另一页面更新，请先下载本页代码，再重新载入')
+                raise HTTPException(409, '草稿已在另一页面更新，请保留本页代码并复制备份，再重新载入')
             if not old and conn.execute('SELECT COUNT(*) FROM wb_drafts').fetchone()[0] >= 200:
                 raise AIError('草稿数量已达到 200 上限')
             conn.execute('INSERT INTO wb_drafts VALUES(?,?,?,?,?) ON CONFLICT(problem_id) DO UPDATE SET language=excluded.language,code=excluded.code,revision=excluded.revision,updated_at=excluded.updated_at',
@@ -246,11 +258,70 @@ class Workbench:
             if not draft['code'].strip():
                 raise AIError('代码不能为空')
             if conn.execute('SELECT COUNT(*) FROM wb_attempts').fetchone()[0] >= 2000:
-                raise AIError('代码快照已达到 2000 上限，请联系管理员归档')
+                raise AIError('提交代码记录已达到 2000 上限，请联系管理员归档')
             aid = uuid.uuid4().hex
             conn.execute('INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at) VALUES(?,?,?,?,?,?)',
                          (aid, pid, draft['language'], draft['code'], hashlib.sha256(draft['code'].encode()).hexdigest(), int(time.time())))
         return {'id': aid}
+
+    def prepare_submission(self, pid, data):
+        """Record only the saved version explicitly claimed by the user for this submission."""
+        pid = normalize(pid)
+        platform = pid.split(':', 1)[0]
+        handles = [a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform') == platform]
+        handle = next((h for h in handles if (h.lower() == data.handle.lower() if platform == 'codeforces' else h == data.handle)), None)
+        if not handle:
+            raise HTTPException(400, '请先绑定此平台账号，账号名需与配置一致')
+        with self.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            draft = conn.execute('SELECT * FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
+            if not draft or draft['revision'] != data.revision:
+                raise HTTPException(409, '代码版本已变化，请先等待自动保存完成后重试')
+            if not draft['code'].strip():
+                raise HTTPException(400, '请输入本次提交的代码')
+            digest = hashlib.sha256(draft['code'].encode()).hexdigest()
+            collation = ' COLLATE NOCASE' if platform == 'codeforces' else ''
+            old = conn.execute("SELECT * FROM wb_attempts WHERE substr(problem_id,1,instr(problem_id,':')-1)=? AND handle=?" + collation + " AND submission_id=?",
+                               (platform, handle, data.submission_id)).fetchone()
+            if old:
+                if old['problem_id'] != pid or old['code_hash'] != digest or old['language'] != draft['language']:
+                    raise HTTPException(409, '此平台提交已有代码记录，不能用当前代码覆盖；请查看原记录')
+                return old['id'], False, handle
+            if conn.execute('SELECT COUNT(*) FROM wb_attempts').fetchone()[0] >= 2000:
+                raise HTTPException(409, '提交代码记录达到 2000 上限，请联系管理员归档')
+            aid = uuid.uuid4().hex
+            conn.execute('INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,handle,submission_id) VALUES(?,?,?,?,?,?,?,?)',
+                         (aid, pid, draft['language'], draft['code'], digest, int(time.time()), handle, data.submission_id))
+        return aid, True, handle
+
+    def history(self, pid):
+        pid = normalize(pid)
+        platform, raw = pid.split(':', 1)
+        with self.db.connect() as conn:
+            official = conn.execute('SELECT * FROM submissions WHERE platform=? AND problem_id IN (?,?) ORDER BY submitted_at DESC LIMIT 200', (platform, raw, pid)).fetchall()
+            attempts = conn.execute('SELECT * FROM wb_attempts WHERE problem_id=? ORDER BY created_at DESC LIMIT 200', (pid,)).fetchall()
+        merged = {}
+        for row in official:
+            data = json.loads(row['data'])
+            key = (row['account'].casefold() if platform == 'codeforces' else row['account'], str(row['id']))
+            merged[key] = {'id': str(row['id']), 'submission_id': str(row['id']), 'platform': platform,
+                'account': row['account'], 'verdict': row['verdict'], 'submitted_at': row['submitted_at'],
+                'language': data.get('language'), 'url': data.get('url') or source_url(pid),
+                'attempt_id': None, 'has_local_code': False, 'code_verified': False, 'review': None}
+        for row in attempts:
+            if row['submission_id'] is None:
+                key = ('local', row['id'])
+            else:
+                key = ((row['handle'] or '').casefold() if platform == 'codeforces' else (row['handle'] or ''), str(row['submission_id']))
+            item = merged.get(key) or {'id': str(row['submission_id'] or row['id']),
+                'submission_id': str(row['submission_id']) if row['submission_id'] else None,
+                'platform': platform, 'account': row['handle'], 'verdict': row['verdict'],
+                'submitted_at': row['created_at'], 'url': source_url(pid)}
+            item.update(attempt_id=row['id'], has_local_code=True, code_verified=False,
+                        code_provenance='local_unverified', language=row['language'],
+                        review=json.loads(row['review']) if row['review'] and item['verdict'] == row['verdict'] else None)
+            merged[key] = item
+        return {'problem_id': pid, 'items': sorted(merged.values(), key=lambda row: row['submitted_at'], reverse=True)[:200]}
 
     @staticmethod
     def decode(row):
@@ -264,7 +335,7 @@ class Workbench:
         with self.db.connect() as conn:
             row = conn.execute('SELECT * FROM wb_attempts WHERE id=?', (aid,)).fetchone()
         if not row:
-            raise HTTPException(404, '代码快照不存在')
+            raise HTTPException(404, '提交代码记录不存在')
         return self.decode(row)
 
     def statement(self, pid):
@@ -312,7 +383,7 @@ class Workbench:
         if not handle:
             raise AIError('请先在账号设置中添加该 Codeforces 账号')
         if attempt['submission_id'] and (attempt['submission_id'] != data.submission_id or attempt['handle'].lower() != handle.lower()):
-            raise AIError('快照已关联提交号，不可更换')
+            raise AIError('代码记录已关联提交号，不可更换')
         if int(time.time()) - attempt['last_synced'] < 20:
             raise AIError('请等待 20 秒后再次同步')
         contest, index = attempt['problem_id'].split(':')[1].split('-')
@@ -338,7 +409,7 @@ class Workbench:
         if str(problem.get('contestId')) != contest or problem.get('index') != index or len(members) != 1 or members[0].get('handle', '').lower() != handle.lower():
             raise AIError('提交账号或题号不匹配（暂不支持团队提交）')
         if found.get('creationTimeSeconds', 0) < attempt['created_at'] - 300:
-            raise AIError('此提交早于代码快照，请关联本次练习提交')
+            raise AIError('此提交早于代码记录，请关联本次练习提交')
         status = codeforces_judge_verdict(found.get('verdict'))
         now = int(time.time())
         judge = {k: found.get(k) for k in ('verdict', 'passedTestCount', 'timeConsumedMillis', 'memoryConsumedBytes', 'creationTimeSeconds', 'programmingLanguage')}
@@ -355,14 +426,14 @@ class Workbench:
                 if current['submission_id'] and (current['submission_id'] != data.submission_id or current['handle'].lower() != handle.lower()):
                     raise AIError('另一请求已关联提交，请刷新页面')
                 if conn.execute('SELECT 1 FROM wb_attempts WHERE substr(problem_id,1,instr(problem_id,":")-1)=? AND handle=? COLLATE NOCASE AND submission_id=? AND id!=?', ('codeforces', handle, data.submission_id, aid)).fetchone():
-                    raise AIError('此平台提交已关联另一份代码快照')
+                    raise AIError('此平台提交已关联另一份代码记录')
                 conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?',
                              (handle, data.submission_id, status, json.dumps(judge), now, status, json.dumps(judge), aid))
                 existing = conn.execute("SELECT account FROM submissions WHERE platform='codeforces' AND account=? COLLATE NOCASE AND id=?", (handle, str(data.submission_id))).fetchone()
                 conn.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(platform,account,id) DO UPDATE SET verdict=excluded.verdict,data=excluded.data,updated_at=excluded.updated_at',
                              ('codeforces', existing['account'] if existing else handle, str(data.submission_id), pid, found['creationTimeSeconds'], status, json.dumps(standard), now))
         except sqlite3.IntegrityError:
-            raise AIError('此平台提交已关联另一份代码快照') from None
+            raise AIError('此平台提交已关联另一份代码记录') from None
         return {'attempt_id': aid, 'verdict': status, 'code_verified': False}
 
     def sync_collected(self, attempt, data):
@@ -371,7 +442,7 @@ class Workbench:
         if data.handle not in handles:
             raise AIError('请先绑定此平台账号，账号名需与配置一致')
         if attempt['submission_id'] and (attempt['submission_id']!=data.submission_id or attempt['handle']!=data.handle):
-            raise AIError('快照已关联提交号，不可更换')
+            raise AIError('代码记录已关联提交号，不可更换')
         now=int(time.time())
         try:
             with self.db.connect() as conn:
@@ -381,7 +452,7 @@ class Workbench:
                 if normalize(platform+':'+row['problem_id']) != attempt['problem_id']:
                     raise AIError('提交题号不匹配，请选择本题的提交记录')
                 if row['submitted_at'] < attempt['created_at']-300 or row['submitted_at']>now+300:
-                    raise AIError('提交时间与本次快照不符，请关联本次练习提交')
+                    raise AIError('提交时间与本次代码记录不符，请关联本次练习提交')
                 raw=json.loads(row['data'])
                 judge={k:raw.get(k) for k in ('language','submitted_at','time_ms','memory_bytes','score','url')}
                 judge.update(verdict=row['verdict'],source='collected_official_record',platform=platform,collected_at=row['updated_at'])
@@ -392,7 +463,7 @@ class Workbench:
                     raise AIError('另一请求已关联提交，请刷新页面')
                 conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?',(data.handle,data.submission_id,status,serialized,now,status,serialized,attempt['id']))
         except sqlite3.IntegrityError:
-            raise AIError('此平台提交已关联另一份代码快照') from None
+            raise AIError('此平台提交已关联另一份代码记录') from None
         return {'attempt_id':attempt['id'],'verdict':status,'code_verified':False,'source':'collected_official_record','collected_at':row['updated_at']}
 
     async def coach(self, pid, config, aid=None):
@@ -475,13 +546,28 @@ def register(app, service, jobs, daily=None):
     async def open_problem(data: Open):
         return jobs.start('wb_statement', {'pid': normalize(data.problem)})
 
-    @app.post('/api/workbench/problem/{pid}/snapshot')
-    def snapshot(pid: str, data: Draft):
-        # Snapshot only an already saved revision; code/language fields must match it.
-        state = service.state(pid)['draft']
-        if data.code != state['code'] or data.language != state['language']:
-            raise HTTPException(409, '代码和已保存草稿不一致')
-        return service.snapshot(pid, data.revision)
+    @app.get('/api/workbench/problem/{pid}/history')
+    def history(pid: str):
+        return service.history(pid)
+
+    @app.get('/api/workbench/attempt/{aid}')
+    def attempt(aid: str):
+        return service.attempt(aid)
+
+    @app.post('/api/workbench/problem/{pid}/submission')
+    async def submission(pid: str, data: SubmissionLink):
+        aid, created, handle = service.prepare_submission(pid, data)
+        try:
+            job = jobs.start('wb_sync', {'aid': aid, 'handle': handle, 'new_attempt': created,
+                'submission_id': data.submission_id,
+                'review': data.review.model_dump() if data.review else None})
+        except Exception:
+            # Queue rejection must not leave a newly claimed association behind.
+            if created:
+                with service.db.connect() as conn:
+                    conn.execute("DELETE FROM wb_attempts WHERE id=? AND last_synced=0", (aid,))
+            raise
+        return {**job, 'attempt_id': aid}
 
     @app.post('/api/workbench/problem/{pid}/hint')
     async def hint(pid: str, data: Coach):
@@ -500,7 +586,14 @@ def register(app, service, jobs, daily=None):
     async def run(kind, payload):
         if kind == 'wb_statement': return await asyncio.to_thread(service.statement, payload['pid'])
         if kind == 'wb_sync':
-            result = await asyncio.to_thread(service.sync, payload['aid'], Link.model_validate({k: payload[k] for k in ('handle', 'submission_id')}))
+            try:
+                result = await asyncio.to_thread(service.sync, payload['aid'], Link.model_validate({k: payload[k] for k in ('handle', 'submission_id')}))
+            except Exception:
+                if payload.get('new_attempt'):
+                    # An incorrect ID must not permanently claim this code or block retry.
+                    with service.db.connect() as conn:
+                        conn.execute("DELETE FROM wb_attempts WHERE id=? AND last_synced=0 AND verdict='UNLINKED'", (payload['aid'],))
+                raise
             if result['verdict'] == 'AC' and daily:
                 attempt = service.attempt(payload['aid'])
                 try:

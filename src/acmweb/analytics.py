@@ -77,4 +77,4 @@ def overview(database, days=30, platform="", now=None):
         "trend":[{"date":d,**trend[d]} for d in dates],"topics":topic_rows[:30],"verdicts":dict(verdicts),"platforms":platforms,
         "suggested_cf_difficulty":int(sorted(cf_ratings)[len(cf_ratings)//2]) if cf_ratings else 1000,
         "coverage":["牛客仅包含公开练习页", "题目标签按来源记录，提交通过率不等于能力评分", "AtCoder Problems 可能存在同步延迟"],
-        "recent":[{k:r.get(k) for k in ("platform","problem_id","submitted_at","verdict","language","problem")} for r in sorted(rows,key=lambda r:r["submitted_at"],reverse=True)[:30]]}
+        "recent":[{k:r.get(k) for k in ("id","account","platform","problem_id","submitted_at","verdict","language","problem")} for r in sorted(rows,key=lambda r:r["submitted_at"],reverse=True)[:30]]}

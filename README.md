@@ -114,13 +114,13 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 默认重抓检查点之前 7 天以更新近期判题结果。达到分页上限或账号失败时，不推进其检查点，其他账号继续；更早的重新判题需要 `--full`。Web 采集统一写入 `ACM_DATA_DIR` 指向的数据库。
 
-每日工作流默认关闭，可在设置页启用。服务必须持续运行；关闭网页不影响后台任务。同一数据库只启动一个服务进程，避免与已有的外部 cron/聊天自动化重复执行。
+每日任务由用户在“今日练习”中选择每日题量和周期，每日有两次单题换题机会。通过官方 AC 核验后记录签到，完成当日题单记录 K 签；已移除定时抓取任务。同一数据库只启动一个服务进程。
 
 ## 打包与版本控制
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.11.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.12.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

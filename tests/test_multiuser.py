@@ -238,7 +238,10 @@ def test_workbench_user_isolation_and_csrf(site):
     assert request(member,'GET','/api/workbench/problem/4-A').json()['draft']['code'] == ''
     assert request(member,'PUT',path,draft,{'X-CSRF-Token':'wrong'}).status_code == 403
     saved = {**draft,'revision':1}
-    aid = request(admin,'POST','/api/workbench/problem/4-A/snapshot',saved).json()['id']
+    service = app.state.workspaces.apps[admin['user']['id']][0].state.workbench
+    aid = service.snapshot('4-A', 1)['id']
+    assert request(member,'GET',f'/api/workbench/attempt/{aid}').status_code == 404
+    assert request(member,'GET','/api/workbench/problem/4-A/history').json()['items'] == []
     assert request(member,'POST',f'/api/workbench/attempt/{aid}/sync',{'handle':'demo','submission_id':1}).status_code == 404
     assert request(member,'POST',f'/api/workbench/attempt/{aid}/review',{'provider':'api','model':'mock'}).status_code == 404
     assert request(member,'GET','/api/workbench').json()['profile']['local_snapshots'] == 0

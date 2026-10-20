@@ -4,6 +4,7 @@ const StatementView = React.lazy(() =>
   import('./statement-view').then((m) => ({ default: m.StatementView })),
 )
 import { EditorShell } from './editor-shell'
+import { SubmissionHistory, SubmissionForm } from './submission-history'
 import { SelfTestPanel } from './self-test-panel'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
@@ -11,6 +12,7 @@ import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
   revision: number
+  initialSelection?: Row | null
   provider: string
   model: string
   aiPicker: React.ReactNode
@@ -28,7 +30,16 @@ function download(code: string, name: string) {
   URL.revokeObjectURL(url)
 }
 
-export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, onError }: Props) {
+export function WorkbenchPage({
+  revision,
+  provider,
+  model,
+  aiPicker,
+  jobs,
+  run,
+  onError,
+  initialSelection,
+}: Props) {
   const [listCollapsed, setListCollapsed] = useState(false),
     [importHtml, setImportHtml] = useState('')
   const [choices, setChoices] = useState<Row>({ items: [], recent: [], handles: [], profile: {} })
@@ -194,26 +205,19 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
       setBusy(false)
     }
   }
-  const snapshot = async () => {
-    if (!(await save())) return
-    setBusy(true)
-    try {
-      await api(`/workbench/problem/${encodeURIComponent(pid)}/snapshot`, 'POST', {
-        code,
-        language,
+  useEffect(() => {
+    if (initialSelection?.problem_id) void choose(initialSelection.problem_id)
+  }, [initialSelection])
+  const submit = async (values: Row) => {
+    if (await save())
+      await run(`/workbench/problem/${encodeURIComponent(pid)}/submission`, {
+        ...values,
         revision: draftRevision.current,
       })
-      await refresh()
-      loadChoices()
-    } catch (e) {
-      fail(e)
-    } finally {
-      setBusy(false)
-    }
   }
   const coach = (path: string) => {
     if (!consent || !model) {
-      onError('请先选择模型，并同意将题面或所选代码快照交给 AI 分析')
+      onError('请先选择模型，并同意将题面或所选提交代码交给 AI 分析')
       return
     }
     return run(path, { provider, model })
@@ -238,7 +242,7 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
             练习题数 <b>{profile.distinct_problems || 0}</b>
           </span>
           <span>
-            代码快照 <b>{profile.local_snapshots || 0}</b>
+            关联提交 <b>{profile.local_snapshots || 0}</b>
           </span>
           <span>
             提示次数 <b>{profile.hints_requested || 0}</b>
@@ -541,12 +545,17 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                   >
                     复制待交代码
                   </button>
-                  <button disabled={busy || !code.trim()} onClick={snapshot}>
-                    保存提交快照
-                  </button>
+                  <a
+                    className="button"
+                    href={data?.capabilities?.official_submit_url || data?.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    前往官方提交页 ↗
+                  </a>
                 </div>
                 <p className="muted">
-                  最多 64 KiB；代码自动保存，自测由专用隔离服务执行。保存快照后，请在题目所属平台
+                  最多 64 KiB；代码自动保存，自测由专用隔离服务执行。请在题目所属平台
                   选择相应语言提交同一份代码。
                 </p>
               </section>
@@ -570,7 +579,7 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                     onChange={(e) => setConsent(e.target.checked)}
                   />{' '}
                   我同意将本题题面和提示历史发送给所选
-                  AI；点击错因复盘时，另发送该次代码快照及判题信息。
+                  AI；点击错因复盘时，另发送该次提交代码及判题信息。
                 </label>
                 <p className="muted">
                   每次只给一个切入点，最多 8 次；先分析题目，再结合已有提示逐步引导。AI
@@ -593,13 +602,26 @@ export function WorkbenchPage({ revision, provider, model, aiPicker, jobs, run, 
                 </button>
               </section>
               <section className="card">
-                <h3>提交快照与错因复盘</h3>
+                <h3>本次提交与错因复盘</h3>
                 <p className="muted">
-                  平台账号、题号和时间可核验；当前无法核验平台实际源码是否与快照一致，复盘仅针对保存的代码。
+                  平台账号、题号和时间可核验；当次代码仅在你明确确认并关联结果时保存，用于错因复盘，无法核验与平台实际源码相同。
                 </p>
-                {!data?.attempts.length && (
-                  <p>尚无提交快照。完成代码后点击上方「保存提交快照」。</p>
-                )}
+                <SubmissionForm
+                  handles={
+                    choices.handles_by_platform?.[pid.split(':')[0]] ||
+                    (pid.startsWith('codeforces:') ? choices.handles : [])
+                  }
+                  code={code}
+                  language={language}
+                  active={active || busy}
+                  onSubmit={submit}
+                />
+                <SubmissionHistory
+                  problemId={pid}
+                  revision={revision}
+                  selected={initialSelection}
+                  onError={onError}
+                />
                 {data?.attempts.map((attempt: Row) => (
                   <Attempt
                     key={attempt.id}
@@ -658,7 +680,7 @@ function Attempt({
       <div className="wb-warning">
         <strong>当前为官方页面手动提交</strong>
         <p>
-          请先登录 {platformName}，确认使用正确的账号，再提交本次快照。保存快照不会远程提交代码。
+          请先登录 {platformName}，确认使用正确的账号，再提交本次代码。关联记录不会远程提交代码。
         </p>
         <a
           href={
@@ -692,7 +714,6 @@ function Attempt({
         <span>
           {date(a.created_at)} · {a.language}
         </span>
-        <code title={a.code_hash}>SHA256 {a.code_hash.slice(0, 12)}</code>
       </div>
       <div className="wb-heading">
         <button className="secondary" onClick={() => download(a.code, `attempt-${a.id}.txt`)}>
@@ -711,7 +732,10 @@ function Attempt({
         </a>
       </div>
       <details>
-        <summary>查看不可变代码快照</summary>
+        <summary>查看当次代码（只读）</summary>
+        <p className="muted">
+          用户关联时提供的代码，未与官方平台源码核对；编辑器修改不会改变这份记录。
+        </p>
         <pre className="wb-snapshot">{a.code}</pre>
       </details>
       {canSync && (
@@ -772,7 +796,7 @@ function Attempt({
           checked={autoReview}
           onChange={(e) => setAutoReview(e.target.checked)}
         />{' '}
-        本次同步得到未通过结果时，自动发送此快照进行 AI 复盘
+        本次同步得到未通过结果时，自动发送本次代码进行 AI 复盘
       </label>
       {a.judge_data && (
         <p className="muted">

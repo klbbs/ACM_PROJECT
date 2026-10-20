@@ -38,6 +38,7 @@ def test_overview_real_window_deduplication_and_query_coercion(client):
     data=response.json()
     assert data['stats']['submissions']==2 and data['stats']['solved']==1
     assert data['stats']['acceptance']==50
+    assert data['recent'][0]['id']=='2' and data['recent'][0]['account']=='demo'
     assert client.get('/api/overview?days=0').json()['stats']['submissions']==3
     assert client.get('/api/overview?days=-1').status_code==422
     assert data['topics'][0]['problems']==1

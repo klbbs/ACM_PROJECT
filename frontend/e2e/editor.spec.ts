@@ -25,7 +25,7 @@ async function reset(page: Page) {
 }
 test.beforeEach(async ({ page }) => reset(page))
 
-test('local completions, snapshot save, undo and preference updates preserve the editor', async ({
+test('local completions, automatic save, undo and preference updates preserve the editor', async ({
   page,
 }) => {
   const outbound: string[] = []
@@ -51,8 +51,8 @@ test('local completions, snapshot save, undo and preference updates preserve the
   await expect(editor).toHaveText('vector')
   await editor.press('Control+s')
   await expect(page.getByRole('status').filter({ hasText: '已保存到个人数据库' })).toBeVisible()
-  await page.getByRole('button', { name: '保存提交快照', exact: true }).click()
-  await expect(page.locator('.wb-attempt')).toContainText('UNLINKED')
+  await expect(page.getByRole('button', { name: '保存提交快照', exact: true })).toHaveCount(0)
+  await expect(page.locator('.wb-attempt')).toHaveCount(0)
   await page.getByRole('button', { name: '编辑器全屏', exact: true }).click()
   await expect(page.locator('.wb-editor-fullscreen')).toBeVisible()
   await page.getByRole('button', { name: '退出全屏', exact: true }).click()
@@ -227,8 +227,8 @@ test('collapsible sidebars, platform tutorial and imported statement are usable'
   await page.getByRole('button', { name: '导入本题文本与样例' }).click()
   await expect(page.locator('.wb-statement')).toContainText('手动导入题面')
   await page.getByRole('button', { name: '平台绑定教程', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'F12 到底复制哪一部分？' })).toBeVisible()
-  await expect(page.locator('.platform-guide')).toContainText('尚未实现自动代提交')
+  await expect(page.getByRole('heading', { name: '平台绑定与提交教程', exact: true })).toBeVisible()
+  await expect(page.locator('.platform-guide')).toContainText('本站目前不会自动代交')
 })
 
 test('statement renders readable math and images with usable links on failure', async ({
@@ -299,7 +299,7 @@ test('AI presets expose dedicated fields and preserve secrets per endpoint', asy
   // Deliberately do not trigger a billable request: no actual provider key is used.
 })
 
-test('practice loop keeps hints, immutable snapshots, WA reviews and AC submission records', async ({
+test('practice loop keeps hints, submitted code, WA reviews and navigable AC submission records', async ({
   page,
 }) => {
   // All upstream judge/AI responses are synthetic in the isolated test server.
@@ -331,25 +331,43 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible({
     timeout: 15000,
   })
-  const beforeSnapshots = await page.locator('.wb-attempt').count()
-  await page.getByRole('button', { name: '保存提交快照', exact: true }).click()
-  await expect(page.locator('.wb-attempt')).toHaveCount(beforeSnapshots + 1)
-  const wa = page.locator('.wb-attempt').first()
-  await wa.getByLabel('平台提交号').fill('920001')
-  await wa.getByRole('checkbox', { name: /本次同步得到未通过结果/ }).check()
-  await wa.getByRole('button', { name: '关联并核验判题', exact: true }).click()
+  const form = page.locator('.wb-submission-form')
+  // A mistyped official ID should fail visibly and remain correctable.
+  await form.getByLabel('本次平台提交号').fill('999999')
+  await form.getByRole('checkbox').check()
+  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  await expect(page.getByText(/未在该账号最近 600 条本场比赛记录中找到提交号/).first()).toBeVisible(
+    { timeout: 15000 },
+  )
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get('/api/workbench/problem/4-A')).json()).attempts.length,
+    )
+    .toBe(0)
+  await expect(editor).toHaveText('print("deliberately wrong")')
+  await form.getByLabel('本次平台提交号').fill('920001')
+  await form.getByRole('checkbox').check()
+  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  const wa = page
+    .locator('article.wb-attempt')
+    .filter({ has: page.getByText('WA', { exact: true }) })
+    .last()
   await expect(wa.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
+  await wa.getByRole('button', { name: '分析本次错因（不提供答案）' }).click()
   await expect(wa.getByText(/仅针对本地快照检查边界/)).toBeVisible()
   await editor.fill('print("corrected practice version")')
   await editor.press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
-  await wa.getByText('查看不可变代码快照', { exact: true }).click()
+  await wa.getByText('查看当次代码（只读）', { exact: true }).click()
   await expect(wa.locator('.wb-snapshot')).toHaveText('print("deliberately wrong")')
-  await page.getByRole('button', { name: '保存提交快照', exact: true }).click()
-  await expect(page.locator('.wb-attempt')).toHaveCount(beforeSnapshots + 2)
-  const ac = page.locator('.wb-attempt').first()
-  await ac.getByLabel('平台提交号').fill('920002')
-  await ac.getByRole('button', { name: '关联并核验判题', exact: true }).click()
+  await form.getByLabel('本次平台提交号').fill('920002')
+  await form.getByRole('checkbox').check()
+  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  const ac = page
+    .locator('article.wb-attempt')
+    .filter({ has: page.getByText('AC', { exact: true }) })
+    .last()
   await expect(ac.getByText('AC', { exact: true })).toBeVisible({ timeout: 15000 })
   await expect(ac.getByRole('button', { name: '分析本次错因（不提供答案）' })).toHaveCount(0)
   await page.getByRole('button', { name: '提交记录', exact: true }).click()
@@ -358,15 +376,18 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await page.getByLabel('筛选判题结果').selectOption('WA')
   await expect(page.getByText('4-A · #920001', { exact: true })).toBeVisible()
   await expect(page.getByText('4-A · #920002', { exact: true })).toHaveCount(0)
-  await page.reload()
-  await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
-  await page.getByRole('button', { name: /^codeforces:4-A / }).click()
+  await page
+    .getByRole('row')
+    .filter({ hasText: '#920001' })
+    .getByRole('button', { name: '在工作台查看' })
+    .click()
+  await expect(page.getByRole('heading', { name: '本题历史提交' })).toBeVisible()
   await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible()
   await expect(page.getByLabel('源代码', { exact: true })).toHaveText(
     'print("corrected practice version")',
   )
-  await expect(page.locator('.wb-attempt').getByText('AC', { exact: true })).toBeVisible()
-  await expect(page.locator('.wb-attempt').getByText('WA', { exact: true })).toBeVisible()
+  await expect(page.locator('article.wb-attempt').getByText('AC', { exact: true })).toBeVisible()
+  await expect(page.locator('article.wb-attempt').getByText('WA', { exact: true })).toBeVisible()
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'FIXTURE_USER', enrich: false }] },
   })
@@ -374,7 +395,7 @@ test('practice loop keeps hints, immutable snapshots, WA reviews and AC submissi
   await expect(page.getByLabel('优先知识点（英文标签，逗号分隔）')).toBeVisible()
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await page.getByRole('button', { name: /^codeforces:4-A / }).click()
-  await expect(page.getByLabel('提交账号').first()).toHaveValue('FIXTURE_USER')
+  await expect(page.getByLabel('本次提交账号')).toHaveValue('FIXTURE_USER')
 })
 
 test('self-test clearly reports disabled service and never sends code', async ({ page }) => {

@@ -6,14 +6,15 @@ const platforms = [
     profile: 'https://codeforces.com/profile/你的用户名',
     identity: 'handle 用户名，不是昵称或数字题号',
     detail:
-      '公开提交和题库通常不需要 Cookie。题面可能遇到平台反爬；登录 Cookie 不能保证服务器 IP 通过验证。',
+      '在 codeforces.com 登录后进入个人主页或 My submissions，再复制同站请求。公开题面、公开提交或 HTTP 200 均不能证明 Cookie 已登录。',
   },
   {
     name: '洛谷',
     url: 'https://www.luogu.com.cn/auth/login',
     profile: 'https://www.luogu.com.cn/user/数字UID',
     identity: '个人主页地址里的数字 UID，不是昵称',
-    detail: '部分资料、提交或题目内容需要登录态。请复制 www.luogu.com.cn 同域请求的 Cookie。',
+    detail:
+      '复制 www.luogu.com.cn 已登录页面的请求 Cookie。实际 UID 必须与配置一致；418 表示访问受限，不能当作 Cookie 过期。',
   },
   {
     name: '牛客',
@@ -21,7 +22,7 @@ const platforms = [
     profile: 'https://ac.nowcoder.com/acm/contest/profile/数字UID',
     identity: '个人主页的数字 UID',
     detail:
-      '算法页面常使用 ac.nowcoder.com；登录后请在实际访问算法资料的页面复制该请求发送的 Cookie。',
+      '登录后打开 ac.nowcoder.com 算法页面；复制该域实际发送的 Cookie。目前没有可靠的只读身份接口，检测可能显示“无法确认登录”，不能当作已验证。',
   },
   {
     name: 'AtCoder',
@@ -29,7 +30,7 @@ const platforms = [
     profile: 'https://atcoder.jp/users/你的用户名',
     identity: 'users 后面的用户名',
     detail:
-      '公开比赛成绩通常不需要 Cookie；受限页面和官方提交页面需要有效登录。请复制 atcoder.jp 同域请求。',
+      '复制 atcoder.jp 已登录页面的同站请求。公开比赛成绩可匿名读取，与可提交代码的登录状态是两回事。',
   },
 ]
 export function PlatformGuide() {
@@ -38,54 +39,95 @@ export function PlatformGuide() {
       <section className="card">
         <h2>平台绑定与提交教程</h2>
         <p>
-          网站账号与算法平台账号是两套登录。添加 handle / UID
-          表示配置采集目标，不代表已经登录平台，也不能证明你拥有该账号。
+          本站账号与算法平台账号分别登录。添加 handle / UID
+          只是选择采集目标，不能证明你拥有该账号。请依次完成以下四步。
         </p>
-        <p>
-          首次使用：登录算法平台 → 找到主页标识 → 在「连接与设置」添加账号 → 按需填写 Cookie → 保存
-          → 同步账号。
-        </p>
-      </section>
-      <section className="card">
-        <h3>F12 到底复制哪一部分？</h3>
         <ol>
-          <li>在你自己的浏览器登录目标平台，确认可以看到个人主页或提交列表。</li>
           <li>
-            按 F12，选择「网络 / Network」，然后刷新网页。Chrome / Edge 也可用 Ctrl+Shift+I；Firefox
-            可用 Ctrl+Shift+E。
+            <strong>同步信息：</strong>在「连接与设置」添加平台与 handle /
+            UID，保存后同步公开提交和资料；公开采集成功不等于登录成功。
           </li>
           <li>
-            选择发往目标平台的成功请求：优先选择文档（Document）或已成功返回个人资料的
-            Fetch/XHR。不要选择图片、广告或其他域名。
+            <strong>登录检测：</strong>需要会话时按下方步骤保存
+            Cookie，再点击对应账号的登录检测。核对检测返回的真实账号是否与你填写的一致；未确认身份时不要当作已登录。
+          </li>
+          <li>
+            <strong>官方交题：</strong>
+            在当前浏览器单独登录官方平台，确认账号，前往官方提交页选择题目和语言，粘贴代码后亲自提交。本站目前不会自动代交。
+          </li>
+          <li>
+            <strong>提交结果关联：</strong>
+            按工作台提示填写官方提交号并核验结果。当前实时判题关联以界面列出的支持范围为准；其他平台请先在官方查看判题，再同步账号更新训练记录。代码自测不等于官方
+            AC。
+          </li>
+        </ol>
+      </section>
+      <section className="card">
+        <h3>Codeforces：F12 详细复制步骤</h3>
+        <ol>
+          <li>
+            在自己的浏览器打开 Codeforces 官方登录页，正常完成登录与验证，确认右上角显示你的
+            handle，再进入个人主页或 My submissions。
+          </li>
+          <li>
+            按 F12 打开开发者工具，选择「网络 / Network」。Firefox 可按 Ctrl+Shift+E；Chrome / Edge
+            可按 Ctrl+Shift+I 后选择 Network。保持工具打开并刷新平台页面。
+          </li>
+          <li>
+            选择发往 <code>codeforces.com</code>{' '}
+            的页面请求（Document）或个人资料请求（Fetch/XHR）。确认域名正确，不选图片、广告、第三方统计或登录失败的请求。
           </li>
           <li>
             打开「标头 / Headers」→「请求标头 / Request Headers」，找到 <code>Cookie</code>
-            ，只复制它右侧完整的值。Firefox 也可在 Cookies 页查看请求 Cookie，但不要把响应 Cookie
-            的属性一起粘贴。
+            ，复制右侧<strong>完整的值</strong>。Firefox 若折叠了
+            Cookie，请展开或切换原始标头查看。不要复制「响应标头 / Response Headers」中的
+            Set-Cookie。
           </li>
           <li>
-            在本网站「连接与设置」添加对应平台，填写主页链接或 handle / UID，将上一步的值粘贴到
-            Cookie 输入框并保存。
+            返回本站「连接与设置」，选择 Codeforces，填写同一个 handle，把完整值粘贴到 Cookie
+            输入框，保存账号配置。
+          </li>
+          <li>
+            保存成功后点击该账号的「检测登录状态」。只有检测确实识别出真实登录账号、且与配置 handle
+            匹配时，才说明服务器此次验证了该会话。检测失败或无法确定时，按下方排查。
           </li>
         </ol>
         <pre className="guide-example">
-          正确格式（示意，不是真实凭据）：session=你的值; other_name=另一个值
+          {'示意格式（不是实际凭据）：JSESSIONID=你的值; RCPC=你的值; other_cookie=其他值'}
         </pre>
         <p>
-          只需要 handle / UID 与 Cookie 值。不需要密码、验证码、整段请求头、Copy as cURL、HAR
-          文件、Authorization、响应里的 Set-Cookie 或平台 CSRF token。不要添加 Cookie: 前缀或 Path /
-          Domain / Expires 属性。
+          JSESSIONID、RCPC 及其他验证 Cookie
+          是否存在，以浏览器当前请求为准；不要只挑某一个名称，也不要照抄示例补造字段。平台会调整验证方式，任何固定
+          Cookie 名称组合都不能保证服务器可用。
         </p>
         <p>
-          Cookie 等同登录凭据，只填入你信任的本网站 HTTPS 部署；不要分享给其他成员、上传 Git 或放进
-          AI 对话。已保存 Cookie 不回显；留空保留原值，更新或清除操作见配置表单。
+          只粘贴 Cookie 的完整值，不带 <code>Cookie:</code> 前缀。不要粘贴 Set-Cookie、Path / Domain
+          / Expires 属性、整段请求头、Copy as cURL 或整个
+          HAR。无需提交平台密码、验证码或浏览器用户目录。
+        </p>
+        <p>
+          找不到 Cookie？确认已登录，再刷新并选择该平台页面请求；不要在本站页面的 Network
+          中找，也不要复制「Application / 存储」面板的整张 Cookie 表。
+        </p>
+        <p>
+          Cookie 等同登录凭据，只交给你信任的本站 HTTPS 部署。不要发给其他成员、上传 Git 或放进 AI
+          对话。已保存 Cookie 不回显；留空保留原值，勾选清除则移除原会话。更新 Cookie
+          后必须保存再检测。
         </p>
         <a
           href="https://firefox-source-docs.mozilla.org/devtools-user/network_monitor/request_details/index.html"
           target="_blank"
           rel="noreferrer"
         >
-          Firefox 官方网络请求查看说明 ↗
+          Firefox 官方网络请求说明 ↗
+        </a>
+        {' · '}
+        <a
+          href="https://developer.chrome.com/docs/devtools/network/reference#headers"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Chrome 官方请求标头说明 ↗
         </a>
       </section>
       <div className="guide-platforms">
@@ -104,40 +146,52 @@ export function PlatformGuide() {
         ))}
       </div>
       <section className="card">
-        <h3>提交前必须知道</h3>
+        <h3>从历史提交回到工作台</h3>
         <p>
-          目前工作台尚未实现自动代提交。保存快照只保存在本网站，不会把代码发送给平台。当前判题关联支持
-          Codeforces；其他平台的采集支持不代表已支持在线提交。
+          在「提交记录」选择「回到工作台」，打开对应题目与当前编辑草稿。公开采集的历史记录通常不含源码，不能自动恢复当时的代码。需要旧代码请在官方提交记录中查看并自行复制；不要把当前草稿当作历史源码。
         </p>
-        <ol>
-          <li>在自己的浏览器登录 Codeforces，并确保登录的 handle 与本网站所选账号一致。</li>
+      </section>
+      <section className="card">
+        <h3>检测失败或结果不一致怎么办？</h3>
+        <ul>
           <li>
-            保存代码快照，下载本次代码，前往官方提交页选择题号和对应语言、粘贴或上传同一份代码。
+            <strong>Cookie 过期或已退出：</strong>在官方浏览器重新登录，重新复制当前请求
+            Cookie，保存后再检测。旧 Cookie 不会自行更新。
           </li>
           <li>
-            在官方页面点击提交，复制生成的数字提交号，返回工作台关联并核验判题。判题中可稍后刷新。
+            <strong>403 / Cloudflare / 验证页面：</strong>可能是服务器
+            IP、网络或平台验证限制。即使浏览器可访问，复制 Cookie
+            也未必让服务器通过。先在官方完成正常验证，避免连续快速重试；仍受限就使用官方页面。
           </li>
-        </ol>
-        <p>
-          浏览器已登录，不等于服务器 Cookie 有效；已配置
-          Cookie，也不代表登录状态已经验证。本网站无法直接读取另一个网站的浏览器登录状态。验证码由用户在官方页面完成。
-        </p>
+          <li>
+            <strong>账号错配：</strong>核对真实检测账号和配置 handle /
+            UID。不要通过更改昵称掩盖不一致；切换官方登录账号并重新复制
+            Cookie，或将本站配置改为正确目标。
+          </li>
+          <li>
+            <strong>仅公开数据可用 / 无法确认登录：</strong>
+            可以继续同步可公开访问的记录，但不能声称已绑定登录态。HTTP
+            200、公开个人主页和题面可读都不足以证明已登录。
+          </li>
+          <li>
+            <strong>服务器检测通过，官方提交页仍未登录：</strong>这是两套独立会话。服务器 Cookie
+            不会注入或共享给你的浏览器，Firefox
+            的登录也不会自动共享给本站内置浏览器；在实际打开提交页的浏览器中单独登录。
+          </li>
+        </ul>
       </section>
       <section className="card">
         <h3>题面获取失败怎么办？</h3>
         <p>
-          HTTP 403、验证页或超时可能来自平台反爬、网络或服务器
-          IP；不应反复快速重试。先打开原题，在浏览器完成正常验证，再刷新本网站题面。失效 Cookie
-          可按上述步骤更新。
+          先打开原题确认比赛访问权限、网络和登录状态，再尝试刷新本站题面。失败时界面应显示真实原因；不要把反爬验证页当作题面或把请求成功当作登录成功。
         </p>
         <p>
-          仍失败时：在原题按 F12 →「元素 / Inspector」→ Ctrl+F 搜索 <code>problem-statement</code> →
-          选中对应 div → 右键复制 Outer HTML / 外部
-          HTML，粘贴到工作台「导入题面」。只复制题面节点，不复制整页或登录表单。
+          仍失败可在原题 F12 →「元素 / Inspector」中找到题面节点（Codeforces 为{' '}
+          <code>problem-statement</code>，AtCoder 为 <code>task-statement</code>），复制该节点 Outer
+          HTML / 外部 HTML，粘贴到工作台「导入题面」。只复制题面，不复制整页或登录表单。
         </p>
         <p>
-          导入内容将标为「手动导入」，不能独立核验题号对应关系。只提取文本和样例，不执行
-          HTML；图片和复杂公式请同时查看原题。
+          导入内容标为手动导入，不能独立核验题号，也不能上传为官方共享译文。页面不会执行导入脚本；图片与复杂公式请对照原题。
         </p>
       </section>
     </div>

@@ -80,7 +80,7 @@ def test_draft_conflict_snapshot_immutable_and_utf8_limit(workspace):
     assert service.attempt(aid)['code'] == 'int main() { return 0; }'
     with pytest.raises(HTTPException): service.snapshot('4-A', 1)
     with pytest.raises(AIError): service.draft('4-A', Draft(code='字'*30000, revision=2))
-    assert client.post('/api/workbench/problem/4-A/snapshot', json={'code': 'not saved', 'revision': 2}).status_code == 409
+    assert client.post('/api/workbench/problem/4-A/snapshot', json={'code': 'not saved', 'revision': 2}).status_code in (404, 405)
     assert service.state('4-A')['draft']['code'] == 'new code'
 
 
@@ -394,3 +394,143 @@ def test_collected_platform_verdict_sync(workspace,platform,pid):
  with service.db.connect() as conn:conn.execute('UPDATE wb_attempts SET review=? WHERE id=?',(json.dumps({'category':'logic'}),aid))
  insert(status='AC');service.sync(aid,Link(handle='demo',submission_id=111))
  assert service.attempt(aid)['verdict']=='AC' and service.attempt(aid)['review'] is None
+
+
+def test_direct_submission_records_saved_code_only_with_explicit_confirmation(workspace, monkeypatch):
+    client, service, app = workspace
+    service.draft('4-A', Draft(code='my exact submitted code', revision=0))
+    queued = []
+    def enqueue(kind, payload):
+        queued.append((kind, payload))
+        return {'id': 'queued-job', 'status': 'queued'}
+    monkeypatch.setattr(app.state.jobs, 'start', enqueue)
+    path = '/api/workbench/problem/4-A/submission'
+    body = {'handle': 'DEMO', 'submission_id':12345, 'revision':1}
+    assert client.post(path,json=body).status_code == 422
+    assert client.post(path,json={**body,'code_matches_submission':False}).status_code == 422
+    assert not service.state('4-A')['attempts']
+    response = client.post(path,json={**body,'code_matches_submission':True})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['id'] == 'queued-job' and result['status'] == 'queued'
+    aid = result['attempt_id']
+    assert queued[0][0] == 'wb_sync' and queued[0][1]['handle'] == 'demo'
+    assert client.get('/api/workbench/attempt/'+aid).json()['code'] == 'my exact submitted code'
+    # Same association is idempotent; later edits cannot replace the recorded version.
+    assert client.post(path,json={**body,'code_matches_submission':True}).json()['attempt_id'] == aid
+    service.draft('4-A', Draft(code='different code',revision=1))
+    assert client.post(path,json={**body,'revision':2,'code_matches_submission':True}).status_code == 409
+    assert service.attempt(aid)['code'] == 'my exact submitted code'
+
+
+def test_submission_queue_failure_cleans_unclaimed_record(workspace,monkeypatch):
+    client,service,app=workspace
+    service.draft('4-A',Draft(code='code',revision=0))
+    monkeypatch.setattr(app.state.jobs,'start',lambda *args: (_ for _ in ()).throw(AIError('任务已满')))
+    response=client.post('/api/workbench/problem/4-A/submission',json={'handle':'demo','submission_id':1,'revision':1,'code_matches_submission':True})
+    assert response.status_code == 400
+    assert not service.state('4-A')['attempts']
+    assert service.state('4-A')['draft']['code']=='code'
+
+
+def test_history_does_not_attach_current_editor_to_collected_submission(workspace):
+    client,service,_=workspace
+    service.draft('4-A',Draft(code='current private draft',revision=0))
+    with service.db.connect() as db:
+        db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',('codeforces','demo','100','4-A',int(time.time())-10000,'WA',json.dumps({'language':'C++17'}),int(time.time())))
+    history=client.get('/api/workbench/problem/4-A/history').json()['items']
+    assert len(history)==1
+    assert history[0]['submission_id']=='100' and history[0]['attempt_id'] is None
+    assert history[0]['has_local_code'] is False and history[0]['review'] is None
+    assert 'current private draft' not in json.dumps(history)
+    assert service.state('4-A')['attempts']==[]
+    assert service.state('4-A')['draft']['code']=='current private draft'
+
+
+@pytest.mark.parametrize('platform,key', [('codeforces','4-A'), ('atcoder','abc001_1'), ('luogu','P1001'), ('nowcoder','contest-999-A')])
+def test_old_history_is_readable_without_creating_attempt_or_modifying_draft(workspace, platform, key):
+    client, service, _ = workspace
+    pid = platform + ':' + key
+    service.draft(pid, Draft(code='current independent work', revision=0))
+    old = int(time.time()) - 365 * 86400
+    with service.db.connect() as db:
+        for account in ('first', 'second'):
+            db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)', (platform, account, '77', key, old, 'WA', json.dumps({'language':'C++20'}), int(time.time())))
+    response = client.get('/api/workbench/problem/' + pid + '/history')
+    assert response.status_code == 200
+    rows = response.json()['items']
+    assert len(rows) == 2
+    assert {r['account'] for r in rows} == {'first','second'}
+    assert all(r['submitted_at']==old and not r['has_local_code'] for r in rows)
+    assert service.state(pid)['draft']['code'] == 'current independent work'
+    assert not service.state(pid)['attempts']
+
+
+def test_history_uses_official_rejudge_and_hides_stale_review(workspace):
+    _, service, _ = workspace
+    aid = snapshot(service)
+    with service.db.connect() as db:
+        db.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,review=? WHERE id=?', ('DEMO', 88, 'WA', json.dumps({'evidence':'stale claim'}), aid))
+        db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)', ('codeforces','demo','88','4-A',int(time.time()),'AC','{}',int(time.time())))
+    rows = service.history('4-A')['items']
+    assert len(rows) == 1
+    assert rows[0]['verdict'] == 'AC' and rows[0]['review'] is None
+    assert rows[0]['has_local_code'] is True and rows[0]['code_verified'] is False
+
+
+def test_history_preserves_case_sensitive_platform_accounts(workspace):
+    _, service, _ = workspace
+    with service.db.connect() as db:
+        for account in ('Demo','demo'):
+            db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)', ('atcoder',account,'88','abc001_1',int(time.time()),'AC','{}',int(time.time())))
+    assert len(service.history('atcoder:abc001_1')['items']) == 2
+
+
+def test_workbench_uses_cached_credential_check_without_network(workspace, monkeypatch):
+    from types import SimpleNamespace
+    _, service, _ = workspace
+    result = {'platform':'codeforces','handle':'demo','checked_at':int(time.time()),'login_verified':True,'status':'authenticated'}
+    monkeypatch.setattr(service.accounts, 'credential_checks', SimpleNamespace(statuses=lambda: {'items':[result]}), raising=False)
+    caps = service.state('4-A')['capabilities']
+    assert caps['login_verified'] is True
+    assert caps['credential_check']['handle'] == 'demo'
+    assert caps['auto_submit'] is False
+
+
+def test_prepare_submission_respects_case_sensitive_accounts(workspace, monkeypatch):
+    from acmweb.workbench import SubmissionLink
+    _, service, _ = workspace
+    monkeypatch.setattr(service.accounts, 'document', lambda: {'accounts': [
+        {'platform':'atcoder','handle':'Demo'}, {'platform':'atcoder','handle':'demo'}]})
+    service.draft('atcoder:abc001_1', Draft(code='first', revision=0))
+    first, _, _ = service.prepare_submission('atcoder:abc001_1', SubmissionLink(handle='Demo',submission_id=88,revision=1,code_matches_submission=True))
+    service.draft('atcoder:abc001_1', Draft(code='second', revision=1))
+    second, _, _ = service.prepare_submission('atcoder:abc001_1', SubmissionLink(handle='demo',submission_id=88,revision=2,code_matches_submission=True))
+    assert first != second
+    assert service.attempt(first)['code'] == 'first'
+    assert service.attempt(second)['code'] == 'second'
+
+
+def test_failed_submission_id_can_be_corrected_without_losing_code(workspace, monkeypatch):
+    client, service, app = workspace
+    service.draft('4-A', Draft(code='my practice code', revision=0))
+    mock_judge(monkeypatch)
+    body = {'handle':'demo','submission_id':99999,'revision':1,'code_matches_submission':True}
+    response = client.post('/api/workbench/problem/4-A/submission',json=body)
+    job_id = response.json()['id']
+    for _ in range(100):
+        job = next(j for j in client.get('/api/jobs').json()['items'] if j['id'] == job_id)
+        if job['status'] not in {'queued','running'}: break
+        time.sleep(.01)
+    assert job['status'] == 'failed'
+    assert service.state('4-A')['attempts'] == []
+    assert service.state('4-A')['draft']['code'] == 'my practice code'
+    response = client.post('/api/workbench/problem/4-A/submission',json={**body,'submission_id':12345})
+    assert response.status_code == 200
+    job_id = response.json()['id']
+    for _ in range(100):
+        job = next(j for j in client.get('/api/jobs').json()['items'] if j['id'] == job_id)
+        if job['status'] not in {'queued','running'}: break
+        time.sleep(.01)
+    assert job['status'] == 'completed'
+    assert service.attempt(response.json()['attempt_id'])['verdict'] == 'WA'
