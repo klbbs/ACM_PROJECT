@@ -10,7 +10,7 @@
 
 - 多人协作：邀请注册、管理员管理、独立训练空间、共享资料库、私人草稿及可恢复回收站。
 - 网站防护：密码哈希、可撤销会话、CSRF、限流、域名校验、请求与后台任务配额、安全审计。
-- Cookie 助手：在「连接与设置」复制或下载油猴脚本，在官方平台主动获取 Cookie 后回本站粘贴、保存与检测；不再要求未签名 Firefox 扩展。HttpOnly API 不支持时提供 F12 完整 Cookie 备选；验证码、访问限制和重试有明确指引。[安装说明](docs/BROWSER_EXTENSION.md)
+- Cookie 助手：在「连接与设置」复制或下载油猴脚本，在官方平台主动获取 Cookie 后回本站粘贴、保存与检测；不再要求未签名 Firefox 扩展。无 HttpOnly 时允许明确确认后复制可读结果（可能不完整），API 空结果可尝试本页可读部分，完整 Cookie 可用 F12 获取；验证码、访问限制和重试有明确指引。[安装说明](docs/BROWSER_EXTENSION.md)
 - 更新公告：登录后提示未读版本，按账号保存已读状态；「更新公告」可回看历史。平台绑定教程已合并到「连接与设置」。
 
 - 训练总览：7/30/90 天或全部历史，去重通过题数、提交通过率、活跃天数、训练趋势和知识点分布。
@@ -132,7 +132,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.15.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.15.1.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

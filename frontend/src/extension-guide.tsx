@@ -29,7 +29,7 @@ export function ExtensionGuide() {
   }
   return (
     <section className="card extension-guide" id="cookie-helper">
-      <span className="eyebrow">BROWSER COMPANION · USERSCRIPT</span>
+      <span className="eyebrow">BROWSER COMPANION · USERSCRIPT 1.0.1</span>
       <h2>油猴脚本：获取平台 Cookie</h2>
       <p>
         使用 Tampermonkey 用户脚本管理器，在已登录的平台页面获取 Cookie，再回到本站粘贴。
@@ -68,6 +68,11 @@ export function ExtensionGuide() {
           />
         </details>
       )}
+      <p className="help">
+        已安装旧版？请在油猴中编辑原脚本，全选替换为本站新版源码、保存，并刷新平台标签页。
+        助手标题应显示 1.0.1；不要同时启用多份旧脚本。诊断只显示版本、来源与数量，不包含 Cookie
+        名称或值。
+      </p>
       <ol>
         <li>
           从管理器官网选择当前浏览器并安装 Tampermonkey
@@ -83,7 +88,10 @@ export function ExtensionGuide() {
           <code>www.luogu.com.cn</code>、<code>ac.nowcoder.com</code> 或 <code>atcoder.jp</code>。
           牛客建议在 <code>ac.nowcoder.com</code> 算法页面获取。
         </li>
-        <li>使用页面上的「ACM Lab」助手或管理器脚本菜单获取 Cookie，核对平台后复制。</li>
+        <li>
+          使用页面上的「ACM Lab」助手或管理器脚本菜单获取 Cookie。未返回 HttpOnly 时会显示
+          「完整性未知」；你可另点「复制当前可读 Cookie（可能不完整）」，再回本站检测。
+        </li>
         <li>
           回到下方「算法平台连接」，选择平台、填写自己的 handle / UID，粘贴 Cookie
           并保存；已有账号选择「编辑」。 然后点击「检测登录状态」。
@@ -92,10 +100,11 @@ export function ExtensionGuide() {
       <div className="cookie-helper-note">
         <strong>脚本读到 Cookie ≠ 服务器已登录</strong>
         <p>
-          本脚本通过 Tampermonkey 的 Cookie API 读取；普通 document.cookie 无法读取 HttpOnly。
-          HttpOnly 读取在部分管理器版本中受限，可能需要支持该能力的测试版；脚本检测不到 HttpOnly
-          时会停止复制并提示 F12。 无法使用时直接按下方 F12 教程复制官方请求中完整的 Cookie
-          值，不必更换浏览器。 即使 API 返回了 HttpOnly，检测结果仍以服务器实际验证为准。
+          Tampermonkey 稳定版可能不返回 HttpOnly Cookie；这不代表你未登录。脚本先尝试油猴 API，
+          没有适用结果时再读取当前页面的 document.cookie 可读部分；两者都不能保证包含完整登录凭据。
+          仅在你明确选择后复制不含 HttpOnly 的结果，并标明「可能不完整」。需要完整 Cookie
+          或检测未通过时，按下方 F12 教程获取实际请求 Cookie。支持 HttpOnly 的管理器版本还需允许
+          此脚本的 HttpOnly 权限；不必为此更换测试版。
         </p>
       </div>
       <p className="help">

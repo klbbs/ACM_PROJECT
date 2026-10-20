@@ -10,7 +10,8 @@ def test_userscript_source_and_download_are_consistent_and_credential_free(tmp_p
     with TestClient(create_app(settings)) as client:
         source = client.get('/api/browser-userscript').json()
         download = client.get('/api/browser-userscript/' + USERSCRIPT_NAME)
-    assert source == {'filename': USERSCRIPT_NAME, 'version': '1.0.0', 'source': userscript_source()}
+    assert source == {'filename': USERSCRIPT_NAME, 'version': '1.0.1', 'source': userscript_source()}
+    assert '// @version      1.0.1' in source['source']
     assert download.status_code == 200
     assert download.text == source['source']
     assert download.headers['content-type'].startswith('application/javascript')

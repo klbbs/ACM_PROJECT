@@ -11,7 +11,7 @@
 
 ## 优先使用油猴助手
 
-在连接与设置中复制 ACM Lab 脚本源码，在 Tampermonkey 新建脚本并保存，刷新算法平台后主动获取 Cookie。无需临时加载未签名 Firefox 扩展。脚本管理器不支持 HttpOnly 读取时，使用下面的 F12 完整 Cookie 流程；不能用 `document.cookie` 冒充完整凭据。具体安装与限制见 [油猴助手](BROWSER_EXTENSION.md)。
+在连接与设置中复制 ACM Lab 脚本源码，在 Tampermonkey 新建脚本并保存，刷新算法平台后主动获取 Cookie。无需临时加载未签名 Firefox 扩展。脚本没有返回 HttpOnly 时，可明确选择复制当前可读部分，随后以本站登录检测为准；这不保证凭据完整。需要完整 Cookie 或检测失败时，使用下面的 F12 流程；不能把 `document.cookie` 当作完整凭据。具体安装与限制见 [油猴助手](BROWSER_EXTENSION.md)。
 
 ## Codeforces：完整的 F12 操作
 

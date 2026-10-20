@@ -1,5 +1,14 @@
 # 验证记录
 
+## 0.15.1（2026-10-20）
+
+- 本机通过74项组件/脚本逻辑、8项相关Python、8项相关Chromium浏览器测试，TypeScript/Vite构建成功。本次聚焦脚本静态资源、下载及教程，未重复无关采集/AI全套。
+- 24项脚本测试覆盖无HttpOnly不自动复制、用户二次确认、API空/报错时当前页面可读备选、会话Cookie空到期时间、真正过期过滤、来源/数量诊断、凭据不回显、旧版本/隔离环境拒绝与原安全边界。
+- 浏览器使用实际Chrome Cookie存储中的一枚非HttpOnly及一枚HttpOnly合成Cookie，模拟Tampermonkey 5.5.0 API返回空数组：仅页面可读的一枚被二次确认复制；HttpOnly值不进入DOM或剪贴板。另覆盖API直接返回HttpOnly与非HttpOnly两条流程。
+- 未声称在真实Firefox/Tampermonkey管理器中复现全部行为。官方文档当前说明HttpOnly读取仅Beta支持，稳定版脚本不能保证获得完整登录凭据；空结果仅报告事实与可能原因，不断言用户未登录。
+- 下载资源版本和metadata均为1.0.1，用户需编辑替换原脚本、保存并刷新平台标签页；提供原始源码供独立更新，不依赖本次开发者部署。
+- 截图：[API为空时的可读结果确认](acceptance/2026-10-20-v0.15.1/userscript-empty-api.png)。未部署或操作服务器，未读取真实个人Cookie。
+
 ## 0.15.0（2026-10-20）
 
 - 最终本机全套通过：397 项 Python、66 项组件/脚本逻辑、41 项 Chromium 浏览器，TypeScript/Vite 构建成功；最后两处旧教程文案同步后重跑 4 项 updates 浏览器专项。

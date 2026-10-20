@@ -9,7 +9,7 @@ from fastapi import HTTPException, Response
 
 ASSETS = ('manifest.json', 'cookies.js', 'popup.html', 'popup.css', 'popup.js')
 USERSCRIPT_NAME = 'acm-lab-cookie-helper.user.js'
-USERSCRIPT_VERSION = '1.0.0'
+USERSCRIPT_VERSION = '1.0.1'
 
 
 @lru_cache(maxsize=1)

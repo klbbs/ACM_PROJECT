@@ -1,4 +1,4 @@
-# 平台 Cookie 油猴助手与更新公告（0.15.0）
+# 平台 Cookie 油猴助手与更新公告（0.15.1 · 脚本1.0.1）
 
 在网站登录后打开「连接与设置」的 Cookie 助手与平台绑定教程。当前推荐油猴脚本，不再要求用户加载未签名 Firefox 扩展或每次重启临时安装。
 
@@ -8,15 +8,21 @@
 2. 在 ACM Lab 教程中复制脚本源码；打开油猴管理面板，新建脚本，替换默认示例后保存。也可下载 `.user.js` 后在油猴中导入。主推复制源码，避免脚本管理器跨上下文获取时丢失 ACM Lab 登录态。
 3. 正常登录算法平台、完成平台验证，在官方 HTTPS 页面点击 ACM Lab Cookie 助手或油猴菜单命令。支持 `codeforces.com`、`www.luogu.com.cn`、`www.nowcoder.com`、`ac.nowcoder.com`、`atcoder.jp`。
 4. 复制成功后，回到「算法平台连接」选择平台、填写本人的 handle / UID，粘贴 Cookie，保存并检测。牛客建议在 `ac.nowcoder.com` 算法页面操作。
-5. 若脚本提示 Cookie API 不支持或不能确认读取了 HttpOnly Cookie，请使用本页的 F12 备选流程：Network → 刷新官方页面 → Document 请求 → Request Headers → Cookie 完整值。不要用 `document.cookie` 替代完整请求 Cookie。
+5. 若未确认 HttpOnly 读取能力，可另点「复制当前可读 Cookie（可能不完整）」并回本站检测；API 为空/不可用时仅尝试当前页面可读部分，不称为完整凭据。需要完整 Cookie 或检测不通过时，使用 F12：Network → 刷新官方页面 → Document 请求 → Request Headers → Cookie 完整值。不要用 `document.cookie` 替代完整请求 Cookie。
 
 ### HttpOnly 限制
 
 脚本仅支持普通默认会话；Firefox 容器、隐私窗口和首方隔离请在原平台标签页用 F12 获取完整 Cookie，以免导出错误会话。
 
-油猴脚本需要脚本管理器提供的 `GM_cookie` / `GM.cookie` API。Tampermonkey 官方文档对 HttpOnly 读取有版本和环境限制，不能保证所有稳定版浏览器及脚本管理器均支持。没有可靠能力时脚本明确失败并引导 F12，不输出看似成功的残缺 Cookie，也不要求关闭浏览器安全机制。详见 [官方 Cookie API 文档](https://www.tampermonkey.net/documentation.php#api:GM_cookie)。
+脚本优先使用 `GM_cookie` / `GM.cookie` API。官方文档当前说明 HttpOnly 读取仅支持 Beta 版本，还需允许脚本相关权限；不能保证稳定版能获取全部登录凭据。没有 HttpOnly 标记不表示未登录，1.0.1 不再把它当作一律拒绝条件，而是让用户明确选择是否复制「可能不完整」的结果。API 空/不可用时尝试当前页面 `document.cookie` 可读部分，同样需要二次确认，不把它当完整请求 Cookie。若两个来源都为空，会说明权限、版本及未登录等可能原因，不单凭空结果断言用户未登录。详见 [官方 Cookie API 文档](https://www.tampermonkey.net/documentation.php#api:GM_cookie)。
 
 脚本只在用户主动操作后读取当前固定官方域名的 Cookie，不自动上传、不持久保存、不更改 Cookie、不访问其他网站、不调用 AI。剪贴板内容仍是登录凭据，只粘贴到你信任的 ACM Lab HTTPS 站点，用完自行覆盖。
+
+### 更新已安装脚本与诊断
+
+在油猴编辑原脚本，全部替换为本版源码并保存，再刷新所有相关平台标签页；标题应显示 **ACM Lab 1.0.1**。无需另外安装一份并保留旧版同时运行。本站不部署服务器，下载更新需维护者自行更新代码；也可直接从仓库版本获取新脚本源码。
+
+诊断显示 Tampermonkey 版本、API 返回数量、适用数量、被过滤的域名/路径/分区/过期数量及当前来源，不显示 Cookie 名称或值。会话 Cookie 的 `session=true` 与空到期时间不再误判为过期。真正过期、其他域/路径、分区凭据、无效标头字符和超过16 KiB仍拒绝复制。
 
 ## 验证码与访问限制
 
