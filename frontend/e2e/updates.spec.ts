@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('merged settings expose extension ZIP downloads and the existing guide shortcut', async ({
+test('merged settings expose userscript source, downloads and the existing guide shortcut', async ({
   page,
 }) => {
   await page.goto('/')
@@ -8,16 +8,24 @@ test('merged settings expose extension ZIP downloads and the existing guide shor
     page.getByRole('navigation').getByRole('button', { name: '平台绑定教程', exact: true }),
   ).toHaveCount(0)
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
-  await page.getByRole('button', { name: '下载 Cookie 插件与绑定教程' }).click()
-  await expect(page.getByRole('heading', { name: '一键获取平台 Cookie' })).toBeVisible()
+  await page.getByRole('button', { name: '安装油猴脚本与绑定教程' }).click()
+  await expect(page.getByRole('heading', { name: '油猴脚本：获取平台 Cookie' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '平台绑定与提交教程' })).toBeVisible()
-  await expect(page.getByText('Firefox 128+ · 临时测试安装')).toBeVisible()
+  await expect(page.getByText(/公开数据可以先不填 Cookie/)).toContainText('油猴脚本')
+  await expect(page.locator('.platform-guide')).toContainText('官方当前会话并核对数字 UID')
+  await expect(page.getByText('Chrome、Edge、Firefox', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: '② 复制 ACM Lab 脚本源码' }).click()
+  await expect(page.locator('.extension-guide [role="status"]')).toContainText(
+    /脚本源码已复制|浏览器未允许自动复制/,
+  )
+  await page.getByText('查看并手动复制脚本源码', { exact: true }).click()
+  await expect(page.getByLabel('ACM Lab 油猴脚本源码')).toHaveValue(/==UserScript==/)
   await page.locator('.settings-guide').scrollIntoViewIfNeeded()
   await page.screenshot({ path: test.info().outputPath('settings.png') })
   const downloadEvent = page.waitForEvent('download')
-  await page.getByRole('link', { name: '下载 Chrome / Edge 插件 ZIP ↓' }).click()
+  await page.getByRole('link', { name: '下载 .user.js 文件（备用）↓' }).click()
   const download = await downloadEvent
-  expect(download.suggestedFilename()).toBe('acm-lab-cookie-helper-chromium-1.0.0.zip')
+  expect(download.suggestedFilename()).toBe('acm-lab-cookie-helper.user.js')
   expect(await download.failure()).toBeNull()
   await page.getByRole('button', { name: '配置平台账号', exact: true }).click()
   await expect(page.getByRole('heading', { name: '算法平台连接', exact: true })).toBeInViewport()
@@ -63,4 +71,86 @@ test('release banner persists read state, retains history and rejects failed ack
   await page.getByRole('button', { name: '更新公告', exact: true }).click()
   await expect(page.getByRole('region', { name: '历史更新公告' })).toContainText('本次测试公告')
   await expect(page.getByRole('region', { name: '历史更新公告' })).toContainText('已读')
+})
+
+test('Luogu verification explains browser handling and refreshes after a user completes it', async ({
+  page,
+}) => {
+  const blocked = {
+    platform: 'luogu',
+    handle: '42',
+    status: 'blocked',
+    reason: 'captcha',
+    browser_action_required: true,
+    browser_action_url: 'https://unsafe.example/challenge',
+    checked_at: Math.floor(Date.now() / 1000),
+    message: '平台要求完成验证',
+  }
+  await page.route('**/api/platforms', (route) =>
+    route.fulfill({
+      json: { items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }] },
+    }),
+  )
+  await page.route('**/api/accounts/checks', (route) =>
+    route.fulfill({ json: { items: [blocked] } }),
+  )
+  await page.route('**/api/accounts/check', (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      platform: 'luogu',
+      handle: '42',
+      force_refresh: true,
+    })
+    return route.fulfill({
+      json: {
+        ...blocked,
+        status: 'authenticated',
+        reason: '',
+        browser_action_required: false,
+        matched_account: '42',
+        message: '检测账号匹配',
+      },
+    })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  const account = page.locator('.platform-account-check')
+  await expect(account).toContainText('需要在官方完成验证')
+  await expect(account.getByRole('link', { name: '打开官方平台处理验证 ↗' })).toHaveAttribute(
+    'href',
+    'https://www.luogu.com.cn/',
+  )
+  await expect(account).toContainText('不等于 Cookie 过期')
+  await expect(account.locator('iframe')).toHaveCount(0)
+  await account.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: test.info().outputPath('platform-verification.png') })
+  await account.getByRole('button', { name: '已处理，重新检测' }).click()
+  await expect(account).toContainText('已验证登录')
+  await expect(account.getByRole('button', { name: '已处理，重新检测' })).toHaveCount(0)
+})
+
+test('mobile userscript guide keeps install controls and source within the viewport', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  const notice = page.getByRole('button', { name: '已读以上更新', exact: true })
+  if (await notice.count()) await notice.click()
+  await page.getByRole('button', { name: '打开菜单', exact: true }).click()
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: '连接与设置', exact: true })
+    .click()
+  await page.getByRole('button', { name: '安装油猴脚本与绑定教程', exact: true }).click()
+  const guide = page.locator('.extension-guide')
+  await expect(guide).toContainText('Firefox 容器标签页、隐私窗口和首方隔离不支持脚本复制')
+  await guide.getByRole('button', { name: '② 复制 ACM Lab 脚本源码' }).click()
+  await guide.getByText('查看并手动复制脚本源码', { exact: true }).click()
+  await expect(guide.getByLabel('ACM Lab 油猴脚本源码')).toBeVisible()
+  const widths = await page.evaluate(() => ({
+    viewport: window.innerWidth,
+    document: document.documentElement.scrollWidth,
+  }))
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport)
+  await guide.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: test.info().outputPath('userscript-mobile.png') })
 })

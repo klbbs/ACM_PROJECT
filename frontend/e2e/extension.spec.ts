@@ -71,3 +71,46 @@ test('downloaded Chromium extension reads a synthetic HttpOnly cookie using real
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+// The manager APIs below are synthetic. This verifies the shipped userscript's
+// browser UI/gesture handling; it does not claim real Tampermonkey compatibility.
+for (const httpOnly of [true, false]) {
+  test(`Tampermonkey userscript ${httpOnly ? 'copies synthetic HttpOnly after click' : 'rejects a partial capture'}`, async ({ page, request }) => {
+    const response = await request.get('/api/browser-userscript')
+    expect(response.ok()).toBeTruthy()
+    const { source } = await response.json()
+    await page.route('https://www.luogu.com.cn/**', route => route.fulfill({
+      contentType: 'text/html', body: '<h1>Synthetic Luogu fixture</h1>',
+    }))
+    await page.addInitScript(({ script, hasHttpOnly }) => {
+      const browser = globalThis as any
+      browser.__cookieReads = 0
+      browser.__copied = ''
+      browser.GM_info = { scriptHandler: 'Tampermonkey', version: '5.5.1' }
+      browser.GM = { cookie: { list: async () => {
+        browser.__cookieReads++
+        return [{ name: 'session', value: 'synthetic-http-only', httpOnly: hasHttpOnly, domain: '.luogu.com.cn', path: '/' }]
+      } } }
+      browser.GM_registerMenuCommand = () => {}
+      browser.GM_setClipboard = (value: string, _type: string, done: () => void) => { browser.__copied = value; done() }
+      // Test-only open shadow root for role-based inspection of the closed UI.
+      const attach = Element.prototype.attachShadow
+      Element.prototype.attachShadow = function () { return attach.call(this, { mode: 'open' }) }
+      document.addEventListener('DOMContentLoaded', () => new Function(script)())
+    }, { script: source, hasHttpOnly: httpOnly })
+    await page.goto('https://www.luogu.com.cn/problem/P1000')
+    const helper = page.locator('#acm-lab-cookie-helper')
+    await expect(helper.getByRole('button', { name: '获取 Cookie 并复制' })).toBeVisible()
+    expect(await page.evaluate(() => (globalThis as any).__cookieReads)).toBe(0)
+    await helper.getByRole('button', { name: '获取 Cookie 并复制' }).click()
+    if (httpOnly) {
+      await expect(helper.getByRole('status')).toContainText('包含 HttpOnly')
+      expect(await page.evaluate(() => (globalThis as any).__copied)).toBe('session=synthetic-http-only')
+      await expect(helper).not.toContainText('synthetic-http-only')
+    } else {
+      await expect(helper.getByRole('status')).toContainText('已停止复制')
+      await expect(helper.getByRole('status')).toContainText('F12')
+      expect(await page.evaluate(() => (globalThis as any).__copied)).toBe('')
+    }
+  })
+}

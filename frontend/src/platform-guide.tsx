@@ -14,7 +14,7 @@ const platforms = [
     profile: 'https://www.luogu.com.cn/user/数字UID',
     identity: '个人主页地址里的数字 UID，不是昵称',
     detail:
-      '复制 www.luogu.com.cn 已登录页面的请求 Cookie。实际 UID 必须与配置一致；418 表示访问受限，不能当作 Cookie 过期。',
+      '复制 www.luogu.com.cn 已登录页面的完整请求 Cookie，包括实际发送的 HttpOnly 字段。实际 UID 必须与配置一致；418 或验证页表示访问受限，不能当作 Cookie 过期。在官方页面完成验证后，重新复制并保存，再检测。',
   },
   {
     name: '牛客',
@@ -22,7 +22,7 @@ const platforms = [
     profile: 'https://ac.nowcoder.com/acm/contest/profile/数字UID',
     identity: '个人主页的数字 UID',
     detail:
-      '登录后打开 ac.nowcoder.com 算法页面；复制该域实际发送的 Cookie。目前没有可靠的只读身份接口，检测可能显示“无法确认登录”，不能当作已验证。',
+      '登录后打开 ac.nowcoder.com 算法页面，复制该域实际发送的 Cookie。检测需读取官方当前会话并核对数字 UID；公开用户主页不能证明登录。页面结构无法可靠识别时仍会显示“无法确认”。',
   },
   {
     name: 'AtCoder',
@@ -40,8 +40,12 @@ export function PlatformGuide() {
         <h2>平台绑定与提交教程</h2>
         <p>
           推荐先使用上方 Cookie
-          助手：安装插件，在已登录的平台点击获取，回到本页粘贴、保存并检测。也可以按下面的 F12
-          步骤手动完成。
+          助手：安装油猴脚本，在已登录的平台点击获取，回到本页粘贴、保存并检测。脚本可能读不到
+          HttpOnly Cookie，此时按下面的 F12 步骤手动完成。
+        </p>
+        <p>
+          油猴助手仅支持普通默认会话；Firefox 容器、隐私窗口或首方隔离请直接使用 F12，
+          并在当前已登录的平台标签页复制实际请求 Cookie，不要换到其他窗口获取。
         </p>
         <p>
           本站账号与算法平台账号分别登录。添加 handle / UID
@@ -169,7 +173,7 @@ export function PlatformGuide() {
             Cookie，保存后再检测。旧 Cookie 不会自行更新。
           </li>
           <li>
-            <strong>403 / Cloudflare / 验证页面：</strong>可能是服务器
+            <strong>403 / 418 / Cloudflare / 验证页面：</strong>可能是服务器
             IP、网络或平台验证限制。即使浏览器可访问，复制 Cookie
             也未必让服务器通过。先在官方完成正常验证，避免连续快速重试；仍受限就使用官方页面。
           </li>

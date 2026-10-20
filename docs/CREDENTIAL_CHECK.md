@@ -14,12 +14,22 @@ Cookie 是登录凭据，请勿发到聊天、日志、共享资料、翻译或 
 | missing | 尚未保存 Cookie，只能尝试公开数据采集 |
 | invalid | Cookie 格式不完整或包含非 ASCII 字符/标头前缀，未发送至平台；请复制完整请求标头值 |
 
-`public_reachable=true` 只说明官方页面响应 HTTP 200，不能证明登录。CF/AtCoder 检查需要设置表单、退出登录入口和唯一当前账号导航等组合证据；单个公开个人主页或 CSRF 字段不算登录成功。洛谷仅信明确的 `currentUser` 会话字段，不将用户主页的 `user` 视作会话身份。牛客当前没有已验证稳定的只读身份接口，所以即使页面 200 也可返回 unknown，不能为了显示绿灯降低验证标准。
+`public_reachable=true` 只说明官方页面响应 HTTP 200，不能证明登录。CF/AtCoder 检查需要设置表单、退出登录入口和唯一当前账号导航等组合证据；单个公开个人主页或 CSRF 字段不算登录成功。洛谷仅信明确的 `currentUser` 会话字段，不将用户主页的 `user` 视作会话身份。牛客使用官网当前会话 bootstrap：同一受支持脚本结构的 `window.isLogin=true` 与 `window.globalInfo.ownerId` 组合。静态解析平面字面量，不执行 JavaScript，不接受公开 profile/userId、嵌套对象或代码表达式作为身份。官方明确 `isLogin=false` 判为未登录；格式不匹配则仍为 unknown，不能为了显示绿灯降低验证标准。
 
-结果存在服务端内存，60 秒内复用，前端最多展示 5 分钟旧结果；凭据改变后旧结果失效。同一账号 10 秒检测间隔，全进程最多 2 个检测请求。响应不包含 Cookie、凭据摘要、上游网页或 CSRF token。
+结果存在服务端内存，普通检测 60 秒内复用，前端最多展示 5 分钟旧结果；凭据改变后旧结果失效。用户主动「已处理，重新检测」使用 `force_refresh=true` 跳过 60 秒结果缓存，仍保留同一账号 10 秒间隔与平台返回的限流等待，全进程最多 2 个检测请求。不能通过不停点重试绕过平台限流。响应不包含 Cookie、凭据摘要、上游网页或 CSRF token。
+
+诊断新增 `reason`、`upstream_status`、`retry_after_seconds`、`browser_action_required`、固定官方 `browser_action_url` 和安全文本 `guidance`。验证码 `captcha`、浏览器挑战 `browser_challenge` 与无验证码证据的 403/418 `access_restricted` 分开；429 为 `rate_limited`，连接超时、网络失败、5xx 与页面结构变化单独说明。HTTP 状态码不会直接证明 Cookie 有效或过期。
+
+需要用户处理时，点击卡片的官方入口，在本人浏览器完成登录/验证码，重新获取并保存 Cookie 后重检。本站不将上游挑战 HTML、验证码会话或第三方脚本放入自己域名；浏览器验证不能保证服务器 IP 或浏览器环境获准访问。
 
 2026-10-20 匿名实际访问（未使用个人 Cookie）：CF `/settings/general` 与 AtCoder `/settings` 返回 302 登录跳转；洛谷主页 418 访问受限；牛客主页 200 但不能证明登录。单元测试使用合成设置页覆盖登录、错账号、过期、验证拦截、公开个人页误判防护与禁止跟随重定向；没有声称真实个人 Cookie 已通过验证。
 
 连接与设置中的每个平台卡片现按账号提供“检测登录状态”按钮，分别展示“已保存凭据”和实际检测结果。检测不会在保存时暗中运行。修改配置会立即移除界面上的旧成功状态；晚到的旧请求不能覆盖新配置。工作台只读取仍有效的缓存，不因打开题目重复访问平台。
 
 上游响应使用流式读取，最多解析 1 MiB；超限返回 unknown，不从截断文档判定成功。接口明确返回 `auto_submit_supported=false` 和 `submission_method=official_page`。隔离用户工作区不读取服务器 Cookie 环境变量；凭据只来自该用户已保存配置。多用户 API 继续经过统一的会话、CSRF、来源校验和请求限流。
+
+## 0.15.0 本机复查（2026-10-20）
+
+现有本地账号配置的只读真实请求，不显示 Cookie 或个人账号：AtCoder HTTP200、会话身份匹配；牛客修复当前会话解析后 HTTP200、会话身份匹配；CF HTTP302 登录跳转，需要更新当前配置 Cookie；洛谷 HTTP418，未提供可确认的验证码标记，准确报告服务器访问限制。此结果只代表本机当次出口，不承诺其他服务器相同，也没有替用户重新登录、提交代码或绕过验证。
+
+正常页面的 Cloudflare JavaScript Detections `/scripts/jsd/` 不视为验证码或浏览器挑战；明确 challenge 页/交互组件仍阻止身份认证，避免误报与假登录。

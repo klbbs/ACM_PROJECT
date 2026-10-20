@@ -45,7 +45,7 @@ export function MainDirectory({
         <span>② 设置题量与 AI</span>
         <span>③ 选题、练习、同步结果</span>
         <button className="text-button" onClick={onGuide}>
-          查看绑定与插件教程 <ArrowRight size={14} />
+          查看绑定与油猴教程 <ArrowRight size={14} />
         </button>
       </section>
       <div className="directory-search">

@@ -84,3 +84,19 @@ def test_credential_routes_require_session_csrf_and_isolate_workspace_cache(tmp_
             assert 'SECRET' not in response.text and 'session=' not in response.text
         assert request(admin,'POST','/api/accounts/check',payload).json()['cached'] is True
         assert len(calls) == 2
+        # An explicit browser-recovery retry must reach the authenticated owner's
+        # own workspace and perform a new request, without evading the cooldown.
+        retry_payload = dict(payload, force_refresh=True)
+        assert request(None,'POST','/api/accounts/check',retry_payload).status_code == 401
+        assert request(member,'POST','/api/accounts/check',retry_payload,csrf=False).status_code == 403
+        too_soon = request(admin,'POST','/api/accounts/check',retry_payload)
+        assert too_soon.status_code == 429 and int(too_soon.headers['Retry-After']) > 0
+        assert len(calls) == 2
+        owner_checker = app.state.workspaces.apps[admin['user']['id']][0].state.credential_checks
+        owner_checker.last[('codeforces','same_user')] -= 11
+        rechecked = request(admin,'POST','/api/accounts/check',retry_payload)
+        assert rechecked.status_code == 200 and rechecked.json()['cached'] is False
+        assert rechecked.json()['status'] == 'authenticated'
+        assert calls == ['session=OWNER-SECRET','session=MEMBER-SECRET','session=OWNER-SECRET']
+        assert request(member,'GET','/api/accounts/checks').json()['items'][0]['status'] == 'account_mismatch'
+        assert 'SECRET' not in rechecked.text and 'session=' not in rechecked.text

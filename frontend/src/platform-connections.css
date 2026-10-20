@@ -1,0 +1,43 @@
+.platform-browser-action,
+.cookie-helper-note {
+  margin: 14px 0;
+  padding: 16px;
+  border: 1px solid #e9c789;
+  border-radius: 12px;
+  background: #fff9e9;
+  color: #594221;
+  overflow-wrap: anywhere;
+}
+.platform-browser-action ol {
+  padding-left: 22px;
+  line-height: 1.8;
+}
+.platform-browser-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.platform-browser-actions > a {
+  display: inline-block;
+  text-decoration: none;
+  padding: 10px 14px;
+  border: 1px solid #c7cbd7;
+  border-radius: 10px;
+}
+.userscript-source textarea {
+  display: block;
+  width: 100%;
+  min-height: 210px;
+  box-sizing: border-box;
+  margin: 12px 0;
+  font-family: monospace;
+}
+@media (max-width: 600px) {
+  .platform-browser-actions > a,
+  .platform-browser-actions > button {
+    width: 100%;
+    box-sizing: border-box;
+    text-align: center;
+  }
+}

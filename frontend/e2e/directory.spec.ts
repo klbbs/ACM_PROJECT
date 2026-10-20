@@ -23,15 +23,15 @@ test('home directory groups tools, searches feature descriptions and opens the m
   await expect(directory.getByRole('button', { name: '打开连接与设置', exact: true })).toBeVisible()
   await directory.getByRole('button', { name: '打开连接与设置', exact: true }).click()
   await expect(
-    page.getByRole('button', { name: '下载 Cookie 插件与绑定教程', exact: true }),
+    page.getByRole('button', { name: '安装油猴脚本与绑定教程', exact: true }),
   ).toBeVisible()
   await page.getByRole('button', { name: '主要目录', exact: true }).click()
   await page.getByLabel('搜索功能', { exact: true }).fill('不存在的功能')
   await expect(page.getByRole('heading', { name: '没有找到这个功能', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '查看全部功能', exact: true }).click()
-  await directory.getByRole('button', { name: '查看绑定与插件教程' }).click()
+  await directory.getByRole('button', { name: '查看绑定与油猴教程' }).click()
   await expect(
-    page.getByRole('heading', { name: '一键获取平台 Cookie', exact: true }),
+    page.getByRole('heading', { name: '油猴脚本：获取平台 Cookie', exact: true }),
   ).toBeVisible()
 })
 

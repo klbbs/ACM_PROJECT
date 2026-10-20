@@ -95,7 +95,7 @@ def create_app(settings=None):
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.14.3",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.15.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     register_credential_checks(app,account_config)
     from .extension import register as register_extension
     from .announcements import register as register_announcements
@@ -138,7 +138,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.14.3"}
+    def health():return {"status":"ok","version":"0.15.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):

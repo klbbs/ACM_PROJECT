@@ -24,7 +24,7 @@ def main():
         app = create_app(settings)
         # Synthetic principal evidence exists only in this guarded temporary fixture.
         app.state.credential_checks.statuses = lambda: {'items':[{'platform':'codeforces','handle':'fixture','status':'authenticated','login_verified':True,'checked_at':int(time.time())}]}
-        def fixture_login_check(platform, handle):
+        def fixture_login_check(platform, handle, force_refresh=False):
             cookie, _ = app.state.credential_checks.credential(platform, handle)
             return {'platform':platform,'handle':handle,'status':'authenticated' if cookie else 'missing',
                     'login_verified':bool(cookie),'checked_at':int(time.time()),'auto_submit_supported':False,

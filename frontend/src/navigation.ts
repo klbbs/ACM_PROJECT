@@ -81,8 +81,8 @@ export const nav = [
     name: '连接与设置',
     icon: Settings2,
     group: 'manage',
-    description: '绑定算法平台、下载 Cookie 插件、接入 AI 与调整训练偏好。',
-    keywords: '教程 API Key 模型 登录 DeepSeek ChatGPT',
+    description: '绑定算法平台、安装 Cookie 油猴脚本、接入 AI 与调整训练偏好。',
+    keywords: '教程 API Key 模型 登录 DeepSeek ChatGPT Tampermonkey 用户脚本 插件',
   },
   {
     id: 'community',

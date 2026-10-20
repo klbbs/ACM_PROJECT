@@ -8,6 +8,14 @@ from importlib.resources import files
 from fastapi import HTTPException, Response
 
 ASSETS = ('manifest.json', 'cookies.js', 'popup.html', 'popup.css', 'popup.js')
+USERSCRIPT_NAME = 'acm-lab-cookie-helper.user.js'
+USERSCRIPT_VERSION = '1.0.0'
+
+
+@lru_cache(maxsize=1)
+def userscript_source():
+    """A generic script: never embed an installation URL, credentials or user ID."""
+    return files('acmweb').joinpath('userscripts', USERSCRIPT_NAME).read_text(encoding='utf-8')
 
 
 @lru_cache(maxsize=2)
@@ -34,6 +42,20 @@ def build_extension(browser):
 
 
 def register(app):
+    # Both endpoints inherit normal single/multi-user API authentication. Script
+    # managers may omit the website session during installation, so provide the
+    # authenticated source API for manual import rather than bypassing auth.
+    @app.get('/api/browser-userscript')
+    def script_source():
+        return {'filename': USERSCRIPT_NAME, 'version': USERSCRIPT_VERSION, 'source': userscript_source()}
+
+    @app.get('/api/browser-userscript/acm-lab-cookie-helper.user.js')
+    def download_script():
+        return Response(userscript_source(), media_type='application/javascript', headers={
+            'Content-Disposition': f'attachment; filename="{USERSCRIPT_NAME}"',
+            'Cache-Control': 'no-store',
+        })
+
     @app.get('/api/browser-extension/{browser}.zip')
     def download(browser: str):
         return Response(build_extension(browser), media_type='application/zip', headers={

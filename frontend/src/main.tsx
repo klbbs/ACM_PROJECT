@@ -1115,7 +1115,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.14.3</span>
+              数据有边界，进步有方向。 <span className="version">v0.15.0</span>
             </span>
           </footer>
         </div>
@@ -2098,7 +2098,7 @@ function SettingsPage({
             guideRef.current?.scrollIntoView({ block: 'start' })
           }}
         >
-          下载 Cookie 插件与绑定教程
+          安装油猴脚本与绑定教程
         </button>
       </div>
       <details
@@ -2107,7 +2107,7 @@ function SettingsPage({
         open={guideOpen}
         onToggle={(e) => setGuideOpen(e.currentTarget.open)}
       >
-        <summary>平台绑定教程与 Cookie 插件下载</summary>
+        <summary>平台绑定教程与油猴脚本</summary>
         <ExtensionGuide />
         <PlatformGuide />
       </details>
@@ -2639,9 +2639,9 @@ function SettingsPage({
             />
           </label>
           <p className="help">
-            公开数据可以先不填 Cookie。需要登录时，先用本页提供的浏览器插件获取并复制 Cookie，或按
-            F12
-            教程手动获取，粘贴后保存并点击检测。无需服务器安装浏览器；插件只在你点击并授权后读取当前平台。
+            公开数据可以先不填 Cookie。需要登录时，先用本页提供的油猴脚本获取并复制 Cookie，或按 F12
+            教程手动获取，粘贴后保存并点击检测。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
+            F12。
           </p>
           <label className="checkbox">
             <input
