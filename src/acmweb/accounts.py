@@ -1,4 +1,5 @@
 """Private, writable web configuration layered over an optional read-only TOML."""
+import hashlib
 import json
 import os
 import re
@@ -51,7 +52,33 @@ class Accounts:
     def __init__(self, settings):
         self.settings = settings
         self.path = settings.data_dir / 'accounts.web.toml'
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+
+    @staticmethod
+    def _revision(doc):
+        return hashlib.sha256(json.dumps(doc.get('accounts', []), sort_keys=True).encode()).hexdigest()
+
+    def revision(self):
+        with self.lock:
+            return self._revision(self.document())
+
+    def bind_verified_account(self, platform, handle, cookie, revision):
+        """Merge a freshly verified credential atomically, preserving other accounts."""
+        with self.lock:
+            doc = self.document()
+            if self._revision(doc) != revision:
+                raise AIError('扫码期间账号配置已更改，请重新开始扫码')
+            handle = normalize_handle(platform, handle)
+            items = [AccountInput(platform=a['platform'], handle=str(a['handle']),
+                                  enrich=a.get('enrich', False)) for a in doc.get('accounts', [])]
+            target = next((a for a in items if a.platform == platform and a.handle == handle), None)
+            if target is None:
+                if len(items) >= 20:
+                    raise AIError('账号数量已达上限，请先移除不再使用的绑定')
+                target = AccountInput(platform=platform, handle=handle)
+                items.append(target)
+            target.cookie = cookie
+            return self.save(AccountList(items=items))
 
     @property
     def effective_path(self):

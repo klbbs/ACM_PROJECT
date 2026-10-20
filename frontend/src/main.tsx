@@ -1115,7 +1115,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.15.2</span>
+              数据有边界，进步有方向。 <span className="version">v0.16.0</span>
             </span>
           </footer>
         </div>
@@ -2527,6 +2527,12 @@ function SettingsPage({
       </div>
       <PlatformConnections
         revision={`${revision}:${accountRevision}`}
+        onBound={async () => {
+          const refreshed = await api('/accounts')
+          setAccounts(refreshed.items)
+          setAccountRevision((value) => value + 1)
+          onNotice('牛客扫码登录已验证，账号列表已刷新')
+        }}
         run={run}
         onError={onError}
       />

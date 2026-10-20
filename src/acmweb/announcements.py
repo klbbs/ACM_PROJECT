@@ -3,6 +3,11 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 RELEASES = [
+    {'id': '0.16.0', 'date': '2026-10-20', 'title': '牛客微信扫码登录与自动绑定', 'items': [
+        '连接与设置新增牛客官方微信二维码，无需填写牛客密码；本人扫码并在手机确认后，网站自动核对当前牛客 UID，再保存绑定。',
+        '支持自动识别 UID 或限定已有账号，二维码过期可刷新、可随时取消；扫码失败不会覆盖原有绑定，Cookie 方式继续保留。',
+        '临时扫码会话按站内用户及登录会话隔离，注销、取消、过期即失效；不把扫码完成或公开个人主页当作身份验证成功。',
+    ]},
     {'id': '0.15.2', 'date': '2026-10-20', 'title': 'CF 会话排查与洛谷连接简化', 'items': [
         'Cookie 教程新增官方 Firefox Beta 下载入口、停用重复管理器、HttpOnly 授权及登录 CF 设置页后的完整导出步骤；现有助手1.0.1继续兼容。',
         'CF 登录检测增加常见会话字段 JSESSIONID 的辅助检查；该字段存在不等于已登录，只有 CF 返回的当前身份与配置 handle 匹配才显示验证通过。',

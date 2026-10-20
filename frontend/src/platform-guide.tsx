@@ -22,7 +22,7 @@ const platforms = [
     profile: 'https://ac.nowcoder.com/acm/contest/profile/数字UID',
     identity: '个人主页的数字 UID',
     detail:
-      '登录后打开 ac.nowcoder.com 算法页面，复制该域实际发送的 Cookie。检测需读取官方当前会话并核对数字 UID；公开用户主页不能证明登录。页面结构无法可靠识别时仍会显示“无法确认”。',
+      '优先使用上方牛客卡片的微信扫码绑定，由官方当前会话确认数字 UID 后自动保存。也可登录 ac.nowcoder.com 算法页面，复制该域实际发送的 Cookie 后保存检测；公开用户主页不能证明登录。',
   },
   {
     name: 'AtCoder',

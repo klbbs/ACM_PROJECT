@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, date, names } from './api'
 import './platform-connections.css'
+import { NowcoderQrLogin } from './nowcoder-qr-login'
 
 // These links are controlled locally, never copied from challenge HTML or response URLs.
 const officialPages: Record<string, string> = {
@@ -59,7 +60,7 @@ function browserAction(result: any) {
     link: '打开官方平台处理验证 ↗',
   }
 }
-export function PlatformConnections({ revision, run, onError }: any) {
+export function PlatformConnections({ revision, run, onError, onBound }: any) {
   const [items, setItems] = useState<any[]>([])
   const [checks, setChecks] = useState<Record<string, any>>({})
   const epoch = useRef(0)
@@ -130,6 +131,7 @@ export function PlatformConnections({ revision, run, onError }: any) {
         {items.map((p) => (
           <article key={p.platform}>
             <h3>{names[p.platform] || p.platform}</h3>
+            {p.platform === 'nowcoder' && <NowcoderQrLogin handles={(p.accounts || []).map((a: any) => a.handle)} onBound={onBound || (() => {})} />}
             {p.accounts?.map((a: any) => {
               const key = `${p.platform}:${a.handle}`
               if (p.platform === 'luogu') {

@@ -12,7 +12,8 @@ test('merged settings expose userscript source, downloads and the existing guide
   await expect(page.getByRole('heading', { name: '油猴脚本：获取平台 Cookie' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '平台绑定与提交教程' })).toBeVisible()
   await expect(page.getByText(/公开数据可以先不填 Cookie/)).toContainText('油猴脚本')
-  await expect(page.locator('.platform-guide')).toContainText('官方当前会话并核对数字 UID')
+  await expect(page.locator('.platform-guide')).toContainText('微信扫码绑定')
+  await expect(page.locator('.platform-guide')).toContainText('官方当前会话确认数字 UID')
   await expect(page.getByText('Chrome、Edge、Firefox', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: '② 复制 ACM Lab 脚本源码' }).click()
   await expect(page.locator('.extension-guide [role="status"]')).toContainText(

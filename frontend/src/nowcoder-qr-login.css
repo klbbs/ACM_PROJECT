@@ -1,0 +1,49 @@
+.nowcoder-qr-login {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #dce4ed;
+  border-radius: 16px;
+  background: #f8fbff;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.nowcoder-qr-login h4 {
+  margin: 0 0 12px;
+}
+.nowcoder-qr-login select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 8px 0 14px;
+}
+.nowcoder-qr-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.6;
+}
+.nowcoder-qr-consent input {
+  flex: 0 0 auto;
+  width: auto;
+  margin-top: 5px;
+}
+.nowcoder-qr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+.nowcoder-qr-actions button {
+  white-space: normal;
+}
+.nowcoder-qr-image {
+  display: block;
+  width: 260px;
+  max-width: 100%;
+  height: auto;
+  margin: 16px auto;
+  padding: 10px;
+  box-sizing: border-box;
+  background: white;
+  border-radius: 8px;
+}

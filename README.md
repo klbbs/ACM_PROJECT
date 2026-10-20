@@ -4,6 +4,8 @@
 
 **React + TypeScript + FastAPI + SQLite**。采集 CLI 可独立使用；前端构建后由后端提供，无需部署第二个前端服务。
 
+牛客可在「连接与设置」直接使用[官方微信扫码登录](docs/NOWCODER_QR.md)：扫码确认后自动核对 UID 并绑定，无需填写牛客密码。
+
 ## 功能
 
 - 主要目录：首页按开始训练、记录与社交、连接与管理展示所有可用功能，支持搜索和首次使用路线；侧栏同步分组。
@@ -132,7 +134,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.15.2.zip
+python3 scripts/verify_release.py releases/acm-lab-0.16.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

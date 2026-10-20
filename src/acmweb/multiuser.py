@@ -143,8 +143,19 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.15.2',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.16.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
+
+    def owner_valid(uid, owner):
+        now = int(time.time())
+        with identities.connect() as db:
+            return bool(db.execute('SELECT 1 FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.hash=? AND u.id=? AND u.active=1 AND s.expires_at>? AND s.seen_at>?', (owner, uid, now, now-7200)).fetchone())
+
+    def clear_login(uid, owner=None):
+        value = workspaces.apps.get(uid)
+        if value:
+            value[0].state.nowcoder_qr.clear(owner)
+
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
     def require(request, admin=False):
@@ -200,6 +211,9 @@ def create_multi_app(settings, factory):
                     if path in {'/api/auth/setup','/api/auth/login','/api/auth/register'}:
                         identities.limit('auth-ip:'+digest(peer),30,900)
                         identities.limit('auth-global',60,60)
+                    elif user and path == '/api/platform-login/nowcoder/start':
+                        identities.limit('platform-login-start:'+user['id'],6,60)
+                        identities.limit('platform-login-start-global',30,60)
                     elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings')) or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
@@ -220,7 +234,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.15.2','mode':'multi-user'}
+        return {'status':'ok','version':'0.16.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -265,7 +279,9 @@ def create_multi_app(settings, factory):
         return {'ok':True}
 
     @app.post('/api/auth/logout')
-    def logout(request:Request,response:Response):
+    async def logout(request:Request,response:Response):
+        user = require(request)
+        clear_login(user['id'], digest(request.cookies.get(COOKIE,'')))
         with identities.connect() as db:
             db.execute('DELETE FROM sessions WHERE hash=?',(digest(request.cookies.get(COOKIE,'')),))
         response.delete_cookie(COOKIE,secure=settings.production,httponly=True,samesite='strict')
@@ -281,15 +297,17 @@ def create_multi_app(settings, factory):
             db.execute('UPDATE users SET password_hash=? WHERE id=?',(hashed,user['id']))
             db.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],))
             identities.audit('password.changed',user['id'],None,db)
+        clear_login(user['id'])
         response.delete_cookie(COOKIE,secure=settings.production,httponly=True,samesite='strict')
         return {'ok':True,'reauthenticate':True}
 
     @app.post('/api/auth/logout-all')
-    def logout_all(request:Request,response:Response):
+    async def logout_all(request:Request,response:Response):
         user = require(request)
         with identities.connect() as db:
             db.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],))
             identities.audit('sessions.revoked',user['id'],None,db)
+        clear_login(user['id'])
         response.delete_cookie(COOKIE,secure=settings.production,httponly=True,samesite='strict')
         return {'ok':True}
 
@@ -336,6 +354,7 @@ def create_multi_app(settings, factory):
             db.execute('UPDATE users SET role=?,active=? WHERE id=?',(payload.role,int(payload.active),uid))
             db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
             identities.audit('user.updated',actor['id'],uid,db)
+        clear_login(uid)
         if not payload.active:
             await workspaces.remove(uid)
         return {'ok':True}
@@ -457,7 +476,8 @@ def create_multi_app(settings, factory):
             child = await workspaces.get(user['id'])
             headers = [(k,v) for k,v in request.scope['headers'] if k.lower() not in {b'authorization',b'cookie'}]
             headers.append((b'authorization',('Bearer '+child.state.internal_token).encode()))
-            scope = {**request.scope,'headers':headers}
+            child.state.nowcoder_qr.owner_valid = lambda owner: owner_valid(user['id'], owner)
+            scope = {**request.scope,'headers':headers, 'state': {**request.scope.get('state', {}), 'platform_login_owner': digest(request.cookies.get(COOKIE,''))}}
             return ChildResponse(child,scope,request.receive)
         return ChildResponse(assets,request.scope,request.receive)
 

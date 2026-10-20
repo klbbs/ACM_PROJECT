@@ -91,12 +91,15 @@ def create_app(settings=None):
     @asynccontextmanager
     async def lifespan(app):
         yield
+        app.state.nowcoder_qr.close()
         await jobs.close()
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.15.2",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.16.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     register_credential_checks(app,account_config)
+    from .nowcoder_qr import register as register_nowcoder_qr
+    register_nowcoder_qr(app, account_config, jobs)
     from .extension import register as register_extension
     from .announcements import register as register_announcements
     register_extension(app)
@@ -138,7 +141,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.15.2"}
+    def health():return {"status":"ok","version":"0.16.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -156,6 +159,7 @@ def create_app(settings=None):
 
     @app.post("/api/auth/logout")
     def logout(response:Response):
+        app.state.nowcoder_qr.clear()
         response.delete_cookie("acm_session");return {"ok":True}
 
     @app.get("/api/overview")
