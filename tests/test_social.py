@@ -262,3 +262,46 @@ def test_daily_catalog_metadata_joins_raw_and_canonical_ids_without_full_catalog
     assert [p['title'] for p in items] == ['Catalog A', 'Catalog B']
     assert [p['difficulty'] for p in items] == [1300, 1500]
     assert [p['tags'] for p in items] == [['dp'], ['graphs']]
+
+
+def test_duel_ac_preserves_account_snapshot_rating_history_and_watermark(site, monkeypatch):
+    from acmweb.analytics import overview
+    request, admin, member, *_ = site
+    duel = prepare_duel(site, monkeypatch); start, did = duel['starts_at'], duel['id']
+    runtime = child(site, admin)
+    saved_profile = {'handle': 'FirstOwner', 'rating': 1723, 'maxRating': 1800}
+    saved_history = [{'contest_id': '900', 'new_rating': 1723, 'old_rating': 1690}]
+    store = Store(runtime.state.database.path)
+    try:
+        store.save('full-profile-before-duel', start-20, Collection('codeforces', 'FirstOwner',
+            profile=saved_profile, rating_history=saved_history,
+            submissions=[Submission('old-record', '900-B', start-30, 'AC')],
+            complete=True, warnings=['retained account warning']))
+        before_watermark = store.watermark('codeforces', 'FirstOwner')
+        before_snapshots = store.db.execute('SELECT * FROM snapshots ORDER BY collected_at,run_id').fetchall()
+    finally:
+        store.close()
+    previous_overview = overview(runtime.state.database, now=start)
+    monkeypatch.setattr('acmweb.social.time.time', lambda: start+60)
+    accepted = official('FirstOwner', start+10)
+    accepted.update(programmingLanguage='GNU C++20', timeConsumedMillis=31, memoryConsumedBytes=262144)
+    monkeypatch.setattr('acmweb.social.official_history', lambda handle, since=None: [accepted] if handle == 'FirstOwner' else [])
+    result = request(member, 'POST', f'/api/social/duels/{did}/check', {})
+    assert result.status_code == 200, result.text
+    assert result.json()['winner_id'] == admin['user']['id']
+    store = Store(runtime.state.database.path)
+    try:
+        assert store.watermark('codeforces', 'FirstOwner') == before_watermark
+        assert store.db.execute('SELECT * FROM snapshots ORDER BY collected_at,run_id').fetchall() == before_snapshots
+        record = json.loads(store.db.execute("SELECT data FROM submissions WHERE id='123'").fetchone()[0])
+        assert record['language'] == 'GNU C++20' and record['contest_id'] == '1000'
+        assert record['time_ms'] == 31 and record['memory_bytes'] == 262144
+        assert record['url'] == 'https://codeforces.com/contest/1000/submission/123'
+        assert record['problem']['difficulty'] == 1200 and record['problem']['tags'] == ['dp']
+    finally:
+        store.close()
+    current_overview = overview(runtime.state.database, now=start+60)
+    assert current_overview['platforms'][0]['rating'] == previous_overview['platforms'][0]['rating'] == 1723
+    assert current_overview['platforms'][0]['rating_history'] == saved_history
+    assert current_overview['platforms'][0]['last_sync'] == previous_overview['platforms'][0]['last_sync']
+    assert current_overview['stats']['accepted'] == previous_overview['stats']['accepted'] + 1

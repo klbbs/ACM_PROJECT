@@ -431,7 +431,12 @@ class Social:
                     try:
                         store.save('duel-' + uuid.uuid4().hex, int(time.time()), Collection('codeforces', handle, submissions=[
                             Submission(str(r['id']), pid.split(':', 1)[1], r['creationTimeSeconds'], 'AC',
-                                       problem=r.get('problem') or {}, raw=r) for r in records], complete=False))
+                                language=r.get('programmingLanguage'), contest_id=str(r['problem']['contestId']),
+                                time_ms=r.get('timeConsumedMillis'), memory_bytes=r.get('memoryConsumedBytes'),
+                                url=f"https://codeforces.com/contest/{r['problem']['contestId']}/submission/{r['id']}",
+                                problem={'title': r['problem'].get('name'), 'difficulty': r['problem'].get('rating'),
+                                         'tags': r['problem'].get('tags', []), 'raw': r['problem']},
+                                raw=r) for r in records], complete=False), capture_snapshot=False)
                     finally:
                         store.close()
                 # A currently TESTING earlier submission could still overtake the

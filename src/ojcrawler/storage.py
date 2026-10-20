@@ -117,7 +117,13 @@ class Store:
                     return old[0]
         return account
 
-    def save(self, run_id, collected_at, result):
+    def save(self, run_id, collected_at, result, *, capture_snapshot=True):
+        """Merge submissions and, by default, capture the collected account state.
+
+        Submission-only official checks disable snapshot capture and use an
+        incomplete Collection so they cannot replace profiles or advance a
+        full-history collection checkpoint.
+        """
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             account = self.account_key(result.platform, result.account)
@@ -136,9 +142,10 @@ class Store:
                     verdict=excluded.verdict, data=excluded.data, updated_at=excluded.updated_at""",
                     (result.platform, old[1] if old else account, row.id, row.problem_id, row.submitted_at, row.verdict, dumps(data), collected_at))
                 sync_workbench_submission(self.db, result.platform, result.account, data, collected_at)
-            self.db.execute("INSERT INTO snapshots VALUES(?,?,?,?,?,?,?,?,?)", (
-                run_id, result.platform, result.account, collected_at, dumps(result.profile),
-                dumps(result.rating_history), int(result.complete), dumps(result.warnings), result.error))
+            if capture_snapshot:
+                self.db.execute("INSERT INTO snapshots VALUES(?,?,?,?,?,?,?,?,?)", (
+                    run_id, result.platform, result.account, collected_at, dumps(result.profile),
+                    dumps(result.rating_history), int(result.complete), dumps(result.warnings), result.error))
             # Partial pages can be retained safely, but never advance a checkpoint.
             if result.complete:
                 maximum = max((s.submitted_at for s in result.submissions), default=0)
