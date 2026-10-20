@@ -6,6 +6,8 @@
 
 ## 功能
 
+- 主要目录：首页按开始训练、记录与社交、连接与管理展示所有可用功能，支持搜索和首次使用路线；侧栏同步分组。
+
 - 多人协作：邀请注册、管理员管理、独立训练空间、共享资料库、私人草稿及可恢复回收站。
 - 网站防护：密码哈希、可撤销会话、CSRF、限流、域名校验、请求与后台任务配额、安全审计。
 - Cookie 助手：在「连接与设置」下载 Chrome / Edge / Firefox 插件，在已登录的平台点击获取并复制，回本站粘贴、保存后检测。Firefox 当前是未签名临时测试安装。[安装说明](docs/BROWSER_EXTENSION.md)
@@ -130,7 +132,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.14.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.14.1.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

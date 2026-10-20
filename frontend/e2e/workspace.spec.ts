@@ -21,6 +21,7 @@ test('overview replaces standalone analysis and authenticated users can inspect 
     }),
   )
   await page.goto('/')
+  await page.getByRole('button', { name: '训练总览', exact: true }).click()
   await expect(page.getByRole('button', { name: 'AI 能力分析', exact: true })).toHaveCount(0)
   await expect(page.locator('#overview-training-advice')).toBeVisible()
   await page.locator('.online-users summary').click()

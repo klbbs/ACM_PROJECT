@@ -10,15 +10,12 @@ import {
   Check,
   CheckCheck,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Circle,
   Clock3,
   Code2,
   Database,
   ExternalLink,
-  FileText,
   Flame,
   Github,
   KeyRound,
@@ -26,18 +23,13 @@ import {
   LoaderCircle,
   LogIn,
   Menu,
-  Play,
-  Plus,
   RefreshCw,
   Search,
-  Settings2,
   ShieldCheck,
   Sparkles,
   Target,
   TrendingUp,
-  Trophy,
   X,
-  Zap,
 } from 'lucide-react'
 import { api, date, fmt, names, shortDate } from './api'
 import './style.css'
@@ -51,29 +43,10 @@ import { PlatformConnections } from './platform-connections'
 import { AdminPage } from './admin'
 import { DailyTasksPage } from './daily-tasks'
 import { SocialPage } from './social'
+import { nav, navigationGroups, availableNavigation, type Page } from './navigation'
+import { MainDirectory } from './main-directory'
 
 type Row = Record<string, any>
-type Page =
-  | 'announcements'
-  | 'workbench'
-  | 'overview'
-  | 'submissions'
-  | 'practice'
-  | 'settings'
-  | 'community'
-  | 'social'
-  | 'admin'
-const nav = [
-  { id: 'overview', name: '训练总览', icon: BarChart3 },
-  { id: 'submissions', name: '提交记录', icon: Layers3 },
-  { id: 'workbench', name: '刷题工作台', icon: Code2 },
-  { id: 'practice', name: '今日练习', icon: Target },
-  { id: 'settings', name: '连接与设置', icon: Settings2 },
-  { id: 'announcements', name: '更新公告', icon: BookOpen },
-  { id: 'social', name: '排行榜与好友', icon: Trophy },
-  { id: 'community', name: '共享资料与成员', icon: BookOpen },
-  { id: 'admin', name: '管理后台', icon: ShieldCheck },
-] as const
 const statusNames: Record<string, string> = {
   queued: '等待中',
   running: '执行中',
@@ -172,13 +145,15 @@ function Button({
 function App() {
   const [auth, setAuth] = useState<Row | null>(null),
     [token, setToken] = useState('')
-  const [page, setPageRaw] = useState<Page>('overview'),
+  const [page, setPageRaw] = useState<Page>('home'),
     [mobile, setMobile] = useState(false),
     [days, setDays] = useState(30),
     [platform, setPlatform] = useState('')
   const setPage = (next: Page) => {
-    if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true })))
+    if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
       setPageRaw(next)
+    }
   }
   const [workbenchSelection, setWorkbenchSelection] = useState<Row | null>(null)
   const openSubmission = (row: Row) => {
@@ -448,6 +423,25 @@ function App() {
     (overview.platforms.find((p: Row) => p.platform === 'codeforces') || overview.platforms[0])
       ?.account ||
     '算法练习者'
+  const sidebarItem = (n: (typeof nav)[number]) => (
+    <button
+      key={n.id}
+      title={n.name}
+      aria-label={n.name}
+      aria-current={page === n.id ? 'page' : undefined}
+      className={page === n.id ? 'active' : ''}
+      onClick={() => {
+        setPage(n.id)
+        setMobile(false)
+      }}
+    >
+      <n.icon size={19} />
+      <span className="nav-label">{n.name}</span>
+      {n.id === 'announcements' && announcements.unread.length > 0 && (
+        <span className="nav-unread" aria-label="有未读公告" />
+      )}
+    </button>
+  )
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
@@ -456,7 +450,7 @@ function App() {
           href="#"
           onClick={(e) => {
             e.preventDefault()
-            setPage('overview')
+            setPage('home')
           }}
         >
           <span className="brand-mark">
@@ -470,28 +464,16 @@ function App() {
         <div className="workspace-label">
           个人工作空间 <span>PERSONAL</span>
         </div>
-        <nav>
-          {nav
-            .filter(
-              (n) =>
-                (!['community', 'social'].includes(n.id) || auth.multi_user) &&
-                (n.id !== 'admin' || auth.user?.role === 'admin'),
-            )
-            .map((n) => (
-              <button
-                key={n.id}
-                title={n.name}
-                aria-label={n.name}
-                className={page === n.id ? 'active' : ''}
-                onClick={() => {
-                  setPage(n.id)
-                  setMobile(false)
-                }}
-              >
-                <n.icon size={19} />
-                <span className="nav-label">{n.name}</span>
-              </button>
-            ))}
+        <nav aria-label="主要功能导航">
+          {sidebarItem(nav[0])}
+          {navigationGroups.map((group) => (
+            <div className="nav-group" role="group" aria-label={group.name} key={group.id}>
+              <span className="nav-group-label">{group.name}</span>
+              {availableNavigation(Boolean(auth.multi_user), auth.user?.role)
+                .filter((n) => n.group === group.id)
+                .map(sidebarItem)}
+            </div>
+          ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-note">
@@ -600,7 +582,15 @@ function App() {
               {notice}
             </div>
           )}
-          <div className={page === 'social' ? 'page-heading social-heading' : 'page-heading'}>
+          <div
+            className={
+              page === 'home'
+                ? 'directory-heading'
+                : page === 'social'
+                  ? 'page-heading social-heading'
+                  : 'page-heading'
+            }
+          >
             <div>
               <div className="eyebrow">YOUR NEXT ACCEPTED STARTS HERE</div>
               <h1>
@@ -675,9 +665,15 @@ function App() {
               )}
             </div>
           </div>
-          {!['settings', 'community', 'social', 'practice', 'workbench', 'announcements'].includes(
-            page,
-          ) && (
+          {![
+            'home',
+            'settings',
+            'community',
+            'social',
+            'practice',
+            'workbench',
+            'announcements',
+          ].includes(page) && (
             <div className="filter-row">
               <div className="tabs">
                 {[7, 30, 90, 0].map((d) => (
@@ -709,6 +705,16 @@ function App() {
               </span>
               {loading && <LoaderCircle size={16} className="spin" />}
             </div>
+          )}
+          {page === 'home' && (
+            <MainDirectory
+              multiUser={Boolean(auth.multi_user)}
+              role={auth.user?.role}
+              username={handle}
+              unreadCount={announcements.unread.length}
+              onNavigate={setPage}
+              onGuide={openGuide}
+            />
           )}
           {page === 'overview' && (
             <>
@@ -1089,7 +1095,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.14.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.14.1</span>
             </span>
           </footer>
         </div>

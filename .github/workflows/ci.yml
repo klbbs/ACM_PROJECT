@@ -37,7 +37,7 @@ jobs:
           name: editor-browser-test-results
           path: frontend/test-results/
       - run: python scripts/package.py --skip-build
-      - run: python scripts/verify_release.py releases/acm-lab-0.14.0.zip
+      - run: python scripts/verify_release.py releases/acm-lab-0.14.1.zip
       - uses: actions/upload-artifact@v4
         with:
           name: acm-lab-deployment
