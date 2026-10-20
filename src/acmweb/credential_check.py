@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import requests
 from bs4 import BeautifulSoup
 from fastapi import HTTPException
-from .cookie_validation import valid_cookie, COOKIE_ERROR
+from .cookie_validation import valid_cookie, COOKIE_ERROR, cookie_summary
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
@@ -156,6 +156,9 @@ def diagnostics(result):
     elif status=='unknown':
         result['guidance']=['可以在官方网页继续做题与交题；公开资料可采集不等于本站已验证登录，重新获取 Cookie 也不会强制把结果改为登录成功。']
     else:result['guidance']=[]
+    if status=='invalid' and result.get('cookie_info'):
+        result['message']=result['cookie_info']['message']
+        result['guidance']=['编辑该账号，粘贴油猴助手导出的新 Cookie 后保存；编辑框留空只会保留旧值。也可勾选清除 Cookie，继续同步公开资料。']
     if result['platform']=='codeforces' and status!='authenticated' and not result.get('cookie_diagnostics',{}).get('cf_session_cookie_present'):
         result['guidance'].insert(0,'本次未发现 CF 常见会话字段 JSESSIONID。它仅用于排查导出完整性，不单凭字段判断登录；请从当前已登录的 CF 页面用支持 HttpOnly 的油猴 Beta 或 F12 重新获取完整请求 Cookie。')
     return result
@@ -181,6 +184,30 @@ class CredentialChecks:
             if cached and cached[0]==digest and time.time()-cached[1]['checked_at']<300:items.append(dict(cached[1],cached=True))
         return {'items':items}
 
+    def remember_verified(self, platform, handle, cookie):
+        """Cache only the exact credential just verified by official login."""
+        try:
+            current, digest = self.credential(platform, handle)
+        except HTTPException as error:
+            if error.status_code == 404:
+                return False
+            raise
+        if current != cookie:
+            return False
+        now = int(time.time())
+        result = dict(platform=platform, handle=handle, checked_at=now,
+                      status='authenticated', reason='identity_verified', login_verified=True,
+                      public_reachable=True, auto_submit_supported=False, submission_method='official_page',
+                      retry_after_seconds=10, cached=False, upstream_status=200, matched_account=handle)
+        if platform == 'codeforces':
+            result['cookie_diagnostics'] = {'cf_session_cookie_present': any(
+                part.strip().partition('=')[0] == 'JSESSIONID' and part.strip().partition('=')[2]
+                for part in cookie.split(';'))}
+        diagnostics(result)
+        with self.lock:
+            self.cache[(platform, handle)] = (digest, result)
+        return True
+
     def check(self,platform,handle,force_refresh=False):
         cookie,digest=self.credential(platform,handle); key=(platform,handle);now=time.time()
         with self.lock:
@@ -199,6 +226,7 @@ class CredentialChecks:
             result['cookie_diagnostics']={'cf_session_cookie_present':any(part.strip().partition('=')[0]=='JSESSIONID' and bool(part.strip().partition('=')[2]) for part in cookie.split(';'))}
         if cookie and not valid_cookie(cookie):
             result['status']='invalid';result['reason']='invalid_cookie'
+            result['cookie_info']=cookie_summary(cookie)
         elif cookie:
             if not SLOTS.acquire(blocking=False):raise HTTPException(429,'平台检测繁忙，请稍后再试')
             try:

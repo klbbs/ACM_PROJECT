@@ -40,6 +40,7 @@ import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
 import { OnlineUsers } from './online-users'
 import { PlatformConnections } from './platform-connections'
+import { AccountCookieField } from './account-cookie-field'
 import { AdminPage } from './admin'
 import { DailyTasksPage } from './daily-tasks'
 import { SocialPage } from './social'
@@ -1115,7 +1116,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.16.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.17.0</span>
             </span>
           </footer>
         </div>
@@ -1971,14 +1972,30 @@ function SettingsPage({
     enrich: false,
   })
   const [accountSaving, setAccountSaving] = useState(false)
-  const saveAccounts = async (items: Row[]) => {
+  const saveAccounts = async (items: Row[], verifyLast = false) => {
     setAccountSaving(true)
     try {
       const result = await api('/accounts', 'PUT', { items })
       setAccounts(result.items)
-      setAccountRevision((value) => value + 1)
       setEditingAccount({ platform: 'codeforces', handle: '', cookie: '', enrich: false })
-      onNotice('平台账号已保存，可立即同步；Cookie 不会返回浏览器')
+      const target = verifyLast ? result.items[result.items.length - 1] : undefined
+      if (target?.cookie_info?.status === 'invalid') {
+        onError(`账号配置已保存，但 Cookie 需要修正：${target.cookie_info.message}`)
+      } else if (target?.has_cookie && target.platform !== 'luogu') {
+        onNotice('平台账号已保存，正在使用这份凭据检测登录…')
+        try {
+          const checked = await api('/accounts/check', 'POST', {
+            platform: target.platform,
+            handle: target.handle,
+          })
+          onNotice(`账号已保存；${checked.message}`)
+        } catch (error: any) {
+          onError(`账号已保存，登录检测尚未完成：${error.message}`)
+        }
+      } else {
+        onNotice('平台账号已保存，可同步公开资料；官方交题仍需在平台登录。')
+      }
+      setAccountRevision((value) => value + 1)
     } catch (e: any) {
       onError(e.message)
     } finally {
@@ -2004,7 +2021,7 @@ function SettingsPage({
     }
     if (editingAccount.clearCookie) item.cookie = ''
     else if (editingAccount.cookie) item.cookie = editingAccount.cookie
-    saveAccounts([...payload, item])
+    saveAccounts([...payload, item], true)
   }
   const readAccount = async () => {
     setConnecting(true)
@@ -2531,7 +2548,7 @@ function SettingsPage({
           const refreshed = await api('/accounts')
           setAccounts(refreshed.items)
           setAccountRevision((value) => value + 1)
-          onNotice('牛客扫码登录已验证，账号列表已刷新')
+          onNotice('平台登录已验证，账号列表已刷新')
         }}
         run={run}
         onError={onError}
@@ -2566,7 +2583,13 @@ function SettingsPage({
                 <strong>{names[a.platform]}</strong>
                 <small>{a.handle}</small>
               </div>
-              <span className="badge neutral">{a.has_cookie ? '会话已配置' : '公开接口'}</span>
+              <span className="badge neutral">
+                {a.cookie_info?.status === 'invalid'
+                  ? 'Cookie 格式需修正'
+                  : a.has_cookie
+                    ? '凭据已保存'
+                    : '公开接口'}
+              </span>
               <button
                 className="text-button"
                 disabled={accountSaving}
@@ -2633,20 +2656,16 @@ function SettingsPage({
               />
             </label>
           </div>
-          <label>
-            Cookie（可选）
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={editingAccount.cookie}
-              maxLength={16384}
-              onChange={(e) => setEditingAccount({ ...editingAccount, cookie: e.target.value })}
-              placeholder="name=value; name2=value2；留空保留已保存的会话"
-            />
-          </label>
+          <AccountCookieField
+            value={editingAccount.cookie}
+            saved={editingAccount.has_cookie}
+            info={editingAccount.cookie_info}
+            disabled={accountSaving || editingAccount.clearCookie}
+            onChange={(cookie) => setEditingAccount({ ...editingAccount, cookie })}
+          />
           <p className="help">
             公开数据可以先不填 Cookie。需要登录时，先用本页提供的油猴脚本获取并复制 Cookie，或按 F12
-            教程手动获取，粘贴后保存并点击检测。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
+            教程手动获取，粘贴保存后自动检测，之后也可手动重检。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
             F12。
           </p>
           <label className="checkbox">

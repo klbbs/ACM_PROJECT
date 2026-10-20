@@ -1,0 +1,12 @@
+[
+  {
+    "requests": [
+      {
+        "method": "GET",
+        "url": "https://atcoder.jp/login",
+        "status": 200
+      }
+    ],
+    "password_submitted_upstream": false
+  }
+]

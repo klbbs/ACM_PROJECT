@@ -134,7 +134,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.16.1.zip
+python3 scripts/verify_release.py releases/acm-lab-0.17.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
@@ -174,3 +174,6 @@ cd frontend && npm run build
 CodeMirror 6 提供四种语言标签的高亮与本地补全、普通/Vim 切换、字号与换行偏好、全屏、搜索替换及安全降级。补全不调用 AI，不发送源码；Vim `:w` 沿用现有草稿保存流程。见 [编辑器说明](docs/EDITOR.md)。
 
 鼠标操作工作台验收、子 agent 教练反馈和修复记录见 [2026-10-19 验收报告](docs/USER_ACCEPTANCE_2026-10-19.md)。判题为隔离模拟，未向真实账号交题。
+
+
+平台绑定的保存/编辑规则见[平台教程](docs/PLATFORM_BINDING.md)，CF与AtCoder账号密码尝试及实际限制见[密码登录](docs/PASSWORD_LOGIN.md)。站内密码入口并不保证通过平台浏览器验证；当前交题仍在官方页面。

@@ -1,0 +1,13 @@
+.account-cookie-field > label {
+  display: block;
+}
+.account-cookie-field > input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.account-cookie-field .settings-actions {
+  align-items: center;
+  flex-wrap: wrap;
+}

@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-21",
+  "version": "0.17.0",
+  "deployment_performed": false,
+  "real_submission_performed": false,
+  "cookie_save_ui": {
+    "fixture": "synthetic CF account/cookie",
+    "single_header_prefix_normalized": true,
+    "consecutive_dots_accepted": true,
+    "saved_pair_count": 2,
+    "saved_cookie_returned_by_api": false,
+    "empty_edit_preserves_credential": true,
+    "save_triggers_platform_check": true,
+    "synthetic_cookie_login_status": "expired",
+    "response_http": 302
+  },
+  "password_login_actual": {
+    "codeforces": {
+      "status": "blocked",
+      "reason": "browser_challenge",
+      "real_login_verified": false
+    },
+    "atcoder_initial": {
+      "status": "rejected",
+      "reason": "credentials_not_accepted",
+      "real_login_verified": false
+    },
+    "atcoder_final_preflight": {
+      "status": "blocked",
+      "reason": "browser_challenge",
+      "upstream_get_count": 1,
+      "upstream_status": 200,
+      "upstream_password_posted": false,
+      "real_login_verified": false
+    }
+  },
+  "password_inputs_cleared": true,
+  "original_accounts_not_overwritten": true,
+  "normal_firefox_modified": false,
+  "notes": [
+    "Real password attempts are distinct from previously verified Cookie exports.",
+    "No password/Cookie/CSRF values, account emails or upstream HTML are retained in this report."
+  ]
+}

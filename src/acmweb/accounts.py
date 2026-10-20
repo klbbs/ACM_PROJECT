@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 from ojcrawler.config import load, tomllib
 from .codex_bridge import AIError
-from .cookie_validation import valid_cookie, COOKIE_ERROR
+from .cookie_validation import cookie_summary, prepare_cookie
 
 
 class AccountInput(BaseModel):
@@ -93,9 +93,18 @@ class Accounts:
 
     def public(self):
         doc = self.document()
+        isolated = getattr(self.settings, 'isolated', False)
+        def credential_info(account):
+            cookie = account.get('cookie') or ('' if isolated else os.environ.get(account.get('cookie_env', ''), ''))
+            summary = cookie_summary(cookie)
+            if not cookie and account.get('cookie_env'):
+                summary = {'status': 'invalid', 'code': 'environment_missing', 'pair_count': 0,
+                           'message': '配置了 Cookie 环境变量，但当前服务没有读到值，请联系维护者。'}
+            return summary
         return {'configured': bool(doc.get('accounts')), 'source': 'web' if self.path.exists() else 'file',
                 'items': [{'platform': a['platform'], 'handle': a['handle'], 'enrich': a.get('enrich', False),
                            'has_cookie': bool(a.get('cookie') or a.get('cookie_env')),
+                           'cookie_info': credential_info(a),
                            'credential_source': 'environment' if a.get('cookie_env') else ('saved' if a.get('cookie') else 'public')}
                           for a in doc.get('accounts', [])]}
 
@@ -117,11 +126,20 @@ class Accounts:
                 if item.cookie is None:
                     old = previous.get(key, {})
                     account.update({k: old[k] for k in ('cookie', 'cookie_env') if old.get(k)})
+                    # Repair safe single-header copy artifacts on explicit save.
+                    # Unrelated legacy credentials are retained, but public()
+                    # reports their precise syntax error instead of pretending
+                    # the session has been verified.
+                    if account.get('cookie'):
+                        try:
+                            account['cookie'] = prepare_cookie(account['cookie'])
+                        except ValueError:
+                            pass
                 elif item.cookie:
-                    cookie = item.cookie.strip()
-                    if not valid_cookie(item.cookie):
-                        raise AIError(COOKIE_ERROR)
-                    account['cookie'] = cookie
+                    try:
+                        account['cookie'] = prepare_cookie(item.cookie)
+                    except ValueError as error:
+                        raise AIError(str(error)) from None
                 accounts.append(account)
             crawler = dict(doc.get('crawler', {}))
             crawler.update(database=str(self.settings.database), output_dir=str(self.settings.data_dir / 'runs'))

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, date, names } from './api'
 import './platform-connections.css'
 import { NowcoderQrLogin } from './nowcoder-qr-login'
+import { PlatformPasswordLogin } from './platform-password-login'
 
 // These links are controlled locally, never copied from challenge HTML or response URLs.
 const officialPages: Record<string, string> = {
@@ -17,7 +18,7 @@ const labels: Record<string, string> = {
   blocked: '平台验证 / 访问限制',
   unknown: '无法确认登录',
   missing: '未填写 Cookie',
-  invalid: 'Cookie 格式不完整',
+  invalid: 'Cookie 格式需修正',
 }
 const reasonLabels: Record<string, string> = {
   captcha: '验证码',
@@ -131,15 +132,26 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
         {items.map((p) => (
           <article key={p.platform}>
             <h3>{names[p.platform] || p.platform}</h3>
-            {p.platform === 'nowcoder' && <NowcoderQrLogin handles={(p.accounts || []).map((a: any) => a.handle)} onBound={onBound || (() => {})} />}
+            {(p.platform === 'codeforces' || p.platform === 'atcoder') && (
+              <PlatformPasswordLogin platform={p.platform} onBound={onBound || (() => {})} />
+            )}
+            {p.platform === 'nowcoder' && (
+              <NowcoderQrLogin
+                handles={(p.accounts || []).map((a: any) => a.handle)}
+                onBound={onBound || (() => {})}
+              />
+            )}
             {p.accounts?.map((a: any) => {
               const key = `${p.platform}:${a.handle}`
               if (p.platform === 'luogu') {
                 return (
                   <div key={a.handle} className="platform-account-check">
-                    <p><strong>{a.handle}</strong> · 公开资料同步</p>
+                    <p>
+                      <strong>{a.handle}</strong> · 公开资料同步
+                    </p>
                     <p className="help">
-                      使用数字 UID 同步可公开访问的资料与提交记录。完成题目后，请在洛谷官方网页交题，再同步记录。
+                      使用数字 UID
+                      同步可公开访问的资料与提交记录。完成题目后，请在洛谷官方网页交题，再同步记录。
                     </p>
                   </div>
                 )
@@ -156,6 +168,13 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
                         : labels[result.status] || '无法确认登录'
                       : '尚未检测'}
                   </p>
+                  {a.cookie_info && (
+                    <p className="help">
+                      {a.cookie_info.status === 'valid'
+                        ? `已保存 ${a.cookie_info.pair_count} 项请求 Cookie，格式通过；是否已登录以平台检测为准。`
+                        : a.cookie_info.message}
+                    </p>
+                  )}
                   <button
                     className="secondary"
                     disabled={busy[key]}
@@ -262,7 +281,12 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
             <p>交题：打开工作台题目，复制代码后进入该平台官方提交页。</p>
             {p.platform === 'luogu' && (
               <p>
-                <a className="secondary" href={officialPages.luogu} target="_blank" rel="noreferrer">
+                <a
+                  className="secondary"
+                  href={officialPages.luogu}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   打开洛谷官方网页 ↗
                 </a>
               </p>
