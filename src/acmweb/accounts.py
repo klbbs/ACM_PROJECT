@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 from ojcrawler.config import load, tomllib
 from .codex_bridge import AIError
+from .cookie_validation import valid_cookie, COOKIE_ERROR
 
 
 class AccountInput(BaseModel):
@@ -91,8 +92,8 @@ class Accounts:
                     account.update({k: old[k] for k in ('cookie', 'cookie_env') if old.get(k)})
                 elif item.cookie:
                     cookie = item.cookie.strip()
-                    if not cookie or any(ord(c) < 32 or ord(c) == 127 for c in cookie) or '=' not in cookie:
-                        raise AIError('Cookie 应为单行 name=value; name2=value2，不能包含换行或请求头')
+                    if not valid_cookie(item.cookie):
+                        raise AIError(COOKIE_ERROR)
                     account['cookie'] = cookie
                 accounts.append(account)
             crawler = dict(doc.get('crawler', {}))

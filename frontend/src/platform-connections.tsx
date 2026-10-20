@@ -8,6 +8,7 @@ const labels: Record<string, string> = {
   blocked: '平台验证 / 访问限制',
   unknown: '无法确认登录',
   missing: '未填写 Cookie',
+  invalid: 'Cookie 格式不完整',
 }
 export function PlatformConnections({ revision, run, onError }: any) {
   const [items, setItems] = useState<any[]>([])

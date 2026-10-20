@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import requests
 from bs4 import BeautifulSoup
 from fastapi import HTTPException
+from .cookie_validation import valid_cookie, COOKIE_ERROR
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
@@ -95,7 +96,9 @@ class CredentialChecks:
             self.last[key]=now
         result={'platform':platform,'handle':handle,'checked_at':int(now),'status':'missing','login_verified':False,'public_reachable':False,'auto_submit_supported':False,'submission_method':'official_page'}
         identity=None
-        if cookie:
+        if cookie and not valid_cookie(cookie):
+            result['status']='invalid'
+        elif cookie:
             if not SLOTS.acquire(blocking=False):raise HTTPException(429,'平台检测繁忙，请稍后再试')
             try:
                 with requests.Session() as session:
@@ -131,6 +134,7 @@ class CredentialChecks:
             except (requests.RequestException, UnicodeError, ValueError):result['status']='unknown'
             finally:SLOTS.release()
         result['message']={
+            'invalid':COOKIE_ERROR,
             'missing':'未保存 Cookie；公开信息仍可采集，登录凭据尚未检测。',
             'authenticated':'官方返回的当前登录身份与绑定账号一致；交题仍需在官方页面完成。',
             'account_mismatch':'当前 Cookie 的登录账号与绑定账号不一致，请重新导出正确账号的 Cookie。',
