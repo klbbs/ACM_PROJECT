@@ -16,6 +16,7 @@ account.toml
 node_modules/
 frontend/dist/
 dist/
+build/
 releases/
 *.sqlite3*
 *.db*

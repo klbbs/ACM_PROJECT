@@ -1,0 +1,132 @@
+.announcement-banner {
+  margin-bottom: 24px;
+  padding: 20px 24px;
+  border: 1px solid #b2d987;
+  border-bottom-width: 3px;
+  border-radius: 18px;
+  background: #f1fbe9;
+  color: #274632;
+  animation: update-arrive 0.25s ease-out;
+}
+.announcement-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.announcement-banner details {
+  margin: 12px 0;
+}
+.announcement-banner summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.announcement-banner ul,
+.announcement-history ul {
+  padding-left: 22px;
+  line-height: 1.9;
+}
+.announcement-history {
+  display: grid;
+  gap: 18px;
+}
+.announcement-history .card {
+  padding: 24px;
+}
+.announcement-history h2 {
+  font-size: 19px;
+}
+.announcement-history time {
+  color: var(--muted, #68776c);
+  font-size: 13px;
+}
+.extension-guide {
+  margin-bottom: 20px;
+  padding: 24px;
+}
+.extension-guide h2 {
+  margin: 10px 0;
+}
+.extension-guide p,
+.extension-guide li {
+  line-height: 1.8;
+}
+.extension-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 18px 0;
+}
+.extension-download {
+  display: inline-flex;
+  align-items: center;
+  padding: 11px 16px;
+  border: 1px solid #87b95d;
+  border-bottom-width: 3px;
+  border-radius: 12px;
+  background: #ecf8de;
+  color: #345a25;
+  font-weight: 600;
+  text-decoration: none;
+}
+.extension-download:active {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+}
+.settings-shortcuts {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.settings-guide {
+  margin-bottom: 24px;
+  scroll-margin-top: 90px;
+}
+.settings-guide > summary {
+  padding: 18px 22px;
+  cursor: pointer;
+  font-weight: 600;
+  border: 1px solid #c6d8ba;
+  border-radius: 12px;
+  background: #f4faed;
+}
+.settings-guide[open] > summary {
+  margin-bottom: 16px;
+}
+#platform-accounts {
+  scroll-margin-top: 90px;
+}
+.extension-guide code {
+  overflow-wrap: anywhere;
+}
+@keyframes update-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (max-width: 650px) {
+  .announcement-banner,
+  .extension-guide {
+    padding: 16px;
+  }
+  .extension-download {
+    width: 100%;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .announcement-banner {
+    animation: none;
+  }
+  .extension-download:active {
+    transform: none;
+  }
+}

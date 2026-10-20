@@ -192,7 +192,7 @@ test('friend battle requires recipient acceptance and distinct official verifica
   const sent = await community(page, { duel: true })
   await page.getByRole('button', { name: '好友对战', exact: true }).click()
   await expect(page.getByText('CF 1200 · 60 分钟', { exact: true })).toBeVisible()
-  await expect(page.getByText(/不抵扣每日任务/)).toBeVisible()
+  await expect(page.getByText(/对战 AC 计入每日榜单与普通签到，不抵扣每日任务/)).toBeVisible()
   await page.getByRole('button', { name: '接受并随机抽题', exact: true }).click()
   await expect(page.getByRole('button', { name: '在工作台打开对战题', exact: true })).toBeVisible()
   expect(

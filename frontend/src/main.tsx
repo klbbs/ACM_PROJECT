@@ -42,6 +42,8 @@ import {
 import { api, date, fmt, names, shortDate } from './api'
 import './style.css'
 import { PlatformGuide } from './platform-guide'
+import { ExtensionGuide } from './extension-guide'
+import { AnnouncementBanner, AnnouncementPage, useAnnouncements } from './announcements'
 import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
 import { OnlineUsers } from './online-users'
@@ -52,7 +54,7 @@ import { SocialPage } from './social'
 
 type Row = Record<string, any>
 type Page =
-  | 'guide'
+  | 'announcements'
   | 'workbench'
   | 'overview'
   | 'submissions'
@@ -66,8 +68,8 @@ const nav = [
   { id: 'submissions', name: '提交记录', icon: Layers3 },
   { id: 'workbench', name: '刷题工作台', icon: Code2 },
   { id: 'practice', name: '今日练习', icon: Target },
-  { id: 'guide', name: '平台绑定教程', icon: BookOpen },
   { id: 'settings', name: '连接与设置', icon: Settings2 },
+  { id: 'announcements', name: '更新公告', icon: BookOpen },
   { id: 'social', name: '排行榜与好友', icon: Trophy },
   { id: 'community', name: '共享资料与成员', icon: BookOpen },
   { id: 'admin', name: '管理后台', icon: ShieldCheck },
@@ -192,6 +194,14 @@ function App() {
     }
   }
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideRequest, setGuideRequest] = useState(0)
+  const openGuide = () => {
+    if (!window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) return
+    setPageRaw('settings')
+    setGuideOpen(true)
+    setGuideRequest((n) => n + 1)
+  }
   const [overview, setOverview] = useState<Row>(emptyOverview),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(''),
@@ -210,6 +220,7 @@ function App() {
   const [modelBusy, setModelBusy] = useState(false),
     [modelNote, setModelNote] = useState('')
   const unlocked = auth?.authenticated
+  const announcements = useAnnouncements(Boolean(unlocked))
   useEffect(() => {
     const expired = () => {
       setAuth(null)
@@ -219,8 +230,8 @@ function App() {
     return () => window.removeEventListener('acm:session-expired', expired)
   }, [])
   useEffect(() => {
-    if (window.location.hash === '#platform-guide') setPageRaw('guide')
-    const guide = () => setPage('guide')
+    if (window.location.hash === '#platform-guide') openGuide()
+    const guide = () => openGuide()
     const settings = () => setPage('settings')
     window.addEventListener('acm:open-guide', guide)
     window.addEventListener('acm:open-settings', settings)
@@ -574,6 +585,7 @@ function App() {
           </div>
         </header>
         <div className="content">
+          <AnnouncementBanner state={announcements} onOpen={() => setPage('announcements')} />
           {error && (
             <div className="alert" role="alert">
               <span>{error}</span>
@@ -663,7 +675,7 @@ function App() {
               )}
             </div>
           </div>
-          {!['settings', 'community', 'social', 'practice', 'workbench', 'guide'].includes(
+          {!['settings', 'community', 'social', 'practice', 'workbench', 'announcements'].includes(
             page,
           ) && (
             <div className="filter-row">
@@ -1005,7 +1017,7 @@ function App() {
               onNotice={setNotice}
             />
           )}
-          {page === 'guide' && <PlatformGuide />}
+          {page === 'announcements' && <AnnouncementPage state={announcements} />}
           {page === 'workbench' && (
             <WorkbenchPage
               initialSelection={workbenchSelection}
@@ -1036,6 +1048,9 @@ function App() {
           )}
           {page === 'settings' && (
             <SettingsPage
+              guideOpen={guideOpen}
+              setGuideOpen={setGuideOpen}
+              guideRequest={guideRequest}
               provider={provider}
               setProvider={chooseProvider}
               onError={setError}
@@ -1074,7 +1089,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.13.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.14.0</span>
             </span>
           </footer>
         </div>
@@ -1778,6 +1793,9 @@ function PracticePage({
 }
 
 function SettingsPage({
+  guideOpen,
+  setGuideOpen,
+  guideRequest,
   provider,
   setProvider,
   onError,
@@ -1787,6 +1805,10 @@ function SettingsPage({
   run,
   model,
 }: any) {
+  const guideRef = useRef<HTMLDetailsElement>(null)
+  useEffect(() => {
+    if (guideRequest && guideOpen) guideRef.current?.scrollIntoView({ block: 'start' })
+  }, [guideRequest])
   const [config, setConfig] = useState<Row>({
       base_url: 'https://api.openai.com/v1',
       protocol: 'responses',
@@ -1948,6 +1970,35 @@ function SettingsPage({
   }
   return (
     <>
+      <div className="settings-shortcuts">
+        <button
+          className="secondary"
+          onClick={() =>
+            document.getElementById('platform-accounts')?.scrollIntoView({ block: 'start' })
+          }
+        >
+          配置平台账号
+        </button>
+        <button
+          className="secondary"
+          onClick={() => {
+            setGuideOpen(true)
+            guideRef.current?.scrollIntoView({ block: 'start' })
+          }}
+        >
+          下载 Cookie 插件与绑定教程
+        </button>
+      </div>
+      <details
+        className="settings-guide"
+        ref={guideRef}
+        open={guideOpen}
+        onToggle={(e) => setGuideOpen(e.currentTarget.open)}
+      >
+        <summary>平台绑定教程与 Cookie 插件下载</summary>
+        <ExtensionGuide />
+        <PlatformGuide />
+      </details>
       <div className="settings-grid">
         <section className="card settings-card">
           <div className="card-heading">
@@ -2367,7 +2418,7 @@ function SettingsPage({
         run={run}
         onError={onError}
       />
-      <section className="card settings-card">
+      <section className="card settings-card" id="platform-accounts">
         <div className="card-heading">
           <div>
             <h2>
@@ -2476,9 +2527,9 @@ function SettingsPage({
             />
           </label>
           <p className="help">
-            公开数据可以先不填
-            Cookie。需要登录才能读取的数据，请在自己的浏览器登录对应平台，从开发者工具的网络请求中复制
-            Cookie 值。无需服务器安装浏览器。网页无法直接读取其他网站的登录状态。
+            公开数据可以先不填 Cookie。需要登录时，先用本页提供的浏览器插件获取并复制 Cookie，或按
+            F12
+            教程手动获取，粘贴后保存并点击检测。无需服务器安装浏览器；插件只在你点击并授权后读取当前平台。
           </p>
           <label className="checkbox">
             <input
@@ -2647,8 +2698,7 @@ function SettingsPage({
           保存训练偏好
         </Button>
         <p className="help">
-          比赛 ID 与 Round
-          编号不同；可用此下限控制题目新旧。题库会排除已有提交，以及本地导入的已练习记录。
+          使用题目真实发布日期控制新旧；缺少可靠日期的题不会进入有日期下限的推荐。题库会排除已有提交，以及本地导入的已练习记录。
         </p>
       </section>
     </>

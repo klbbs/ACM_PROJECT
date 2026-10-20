@@ -39,6 +39,11 @@ export function PlatformGuide() {
       <section className="card">
         <h2>平台绑定与提交教程</h2>
         <p>
+          推荐先使用上方 Cookie
+          助手：安装插件，在已登录的平台点击获取，回到本页粘贴、保存并检测。也可以按下面的 F12
+          步骤手动完成。
+        </p>
+        <p>
           本站账号与算法平台账号分别登录。添加 handle / UID
           只是选择采集目标，不能证明你拥有该账号。请依次完成以下四步。
         </p>

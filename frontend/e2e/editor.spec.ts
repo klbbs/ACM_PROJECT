@@ -227,7 +227,7 @@ test('collapsible sidebars, platform tutorial and imported statement are usable'
     )
   await page.getByRole('button', { name: '导入本题文本与样例' }).click()
   await expect(page.locator('.wb-statement')).toContainText('手动导入题面')
-  await page.getByRole('button', { name: '平台绑定教程', exact: true }).click()
+  await page.getByRole('button', { name: '查看详细教程', exact: true }).click()
   await expect(page.getByRole('heading', { name: '平台绑定与提交教程', exact: true })).toBeVisible()
   await expect(page.locator('.platform-guide')).toContainText('本站目前不会自动代交')
 })

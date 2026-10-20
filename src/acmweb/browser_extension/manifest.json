@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "ACM Lab 平台 Cookie 助手",
+  "version": "1.0.0",
+  "description": "点击后复制当前算法平台的 Cookie；不自动上传、不读取其他网站。",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab", "cookies", "clipboardWrite"],
+  "optional_host_permissions": [
+    "https://codeforces.com/*",
+    "https://www.luogu.com.cn/*",
+    "https://www.nowcoder.com/*",
+    "https://ac.nowcoder.com/*",
+    "https://atcoder.jp/*"
+  ],
+  "action": {"default_popup": "popup.html", "default_title": "ACM Lab · 获取当前平台 Cookie"},
+  "content_security_policy": {"extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"}
+}

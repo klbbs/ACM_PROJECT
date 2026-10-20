@@ -1,0 +1,6 @@
+body { width: 350px; margin: 0; padding: 20px; box-sizing: border-box; font: 14px/1.6 system-ui, sans-serif; color: #203c31; background: #f8fcf8; }
+h1 { font-size: 22px; margin: 0 0 12px; } h1 span { font-size: 14px; color: #54725b; }
+button { width: 100%; padding: 11px; margin: 6px 0; border: 1px solid #2f7a42; border-bottom-width: 3px; border-radius: 10px; background: #e3f6ce; color: #204932; cursor: pointer; font: inherit; font-weight: 600; }
+button:disabled { opacity: .5; cursor: default; } button:focus-visible, textarea:focus-visible { outline: 3px solid #76aa35; outline-offset: 2px; }
+.note { font-size: 12px; color: #5a6d61; } #status { overflow-wrap: anywhere; } .error { color: #a32d25; }
+textarea { width: 100%; box-sizing: border-box; height: 95px; margin-top: 8px; } [hidden] { display: none; }

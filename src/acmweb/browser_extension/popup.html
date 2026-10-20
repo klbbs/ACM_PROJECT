@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ACM Lab Cookie 助手</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>ACM Lab <span>Cookie 助手</span></h1>
+  <p id="platform">正在识别当前页面…</p>
+  <p>先在官方平台登录，再点击获取。首次使用仅请求当前域名权限，包含页面脚本无法读取的 HttpOnly Cookie。</p>
+  <button id="capture" disabled>获取 Cookie 并复制</button>
+  <p id="status" role="status" aria-live="polite"></p>
+  <section id="fallback" hidden>
+    <p>自动复制失败。点击下方按钮重试，或选中文本后手动复制。</p>
+    <label for="value">仅在此弹窗中临时展示的 Cookie</label>
+    <textarea id="value" readonly spellcheck="false"></textarea>
+    <button id="retry">重新复制</button>
+    <button id="clear">清除弹窗中的内容</button>
+  </section>
+  <p class="note">回到 ACM Lab → 连接与设置 → 填写平台用户名 / UID → 粘贴 Cookie → 保存 → 检测登录状态。</p>
+  <p class="note">插件不发送网络请求、不自动上传、不保存 Cookie。Cookie 等同登录凭据；请只粘贴到你信任的 ACM Lab。复制成功不代表服务器已登录，也不能绕过平台验证。</p>
+  <script type="module" src="popup.js"></script>
+</body></html>
