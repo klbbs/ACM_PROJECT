@@ -143,7 +143,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.14.2',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.14.3',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -200,7 +200,7 @@ def create_multi_app(settings, factory):
                     if path in {'/api/auth/setup','/api/auth/login','/api/auth/register'}:
                         identities.limit('auth-ip:'+digest(peer),30,900)
                         identities.limit('auth-global',60,60)
-                    elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings')) or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
+                    elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings')) or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
             else:
@@ -220,7 +220,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.14.2','mode':'multi-user'}
+        return {'status':'ok','version':'0.14.3','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):

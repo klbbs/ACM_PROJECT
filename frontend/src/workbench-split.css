@@ -1,0 +1,75 @@
+.wb-reading-workspace,
+.wb-split-panes,
+.wb-statement-pane,
+.wb-editor-pane {
+  min-width: 0;
+}
+.wb-layout-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+.wb-layout-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.wb-layout-controls .muted {
+  font-size: 12px;
+}
+.wb-layout-error {
+  color: #ad3434;
+  font-size: 12px;
+}
+.wb-split-panes {
+  display: grid;
+  align-items: start;
+  gap: 0;
+}
+.wb-split-panes.is-stacked {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+.wb-split-panes.is-stacked .wb-pane-divider {
+  display: none;
+}
+.wb-pane-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  min-height: 120px;
+  cursor: col-resize;
+  touch-action: none;
+  color: #7c709e;
+  border-radius: 8px;
+  background: linear-gradient(90deg, transparent 7px, #e4dfef 7px, #e4dfef 11px, transparent 11px);
+}
+.wb-pane-divider:hover,
+.wb-pane-divider:focus-visible,
+.is-resizing .wb-pane-divider {
+  background: #ede8ff;
+  color: #6551cd;
+  outline: 2px solid #b4a5f4;
+  outline-offset: -2px;
+}
+.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+.wb-pane-divider svg {
+  background: #f4f1fb;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.wb-split-panes .wb-statement {
+  max-height: none;
+  overflow: visible;
+}
+.wb-split-panes.is-split .wb-statement {
+  max-height: 80dvh;
+  overflow: auto;
+}

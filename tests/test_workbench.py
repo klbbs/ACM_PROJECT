@@ -655,3 +655,21 @@ def test_workbench_cross_platform_choices_respect_date_and_native_difficulty(wor
     assert [row['id'] for row in choices['items']] == ['atcoder:abc500_a']
     assert choices['items'][0]['difficulty'] is None
     assert choices['items'][0]['difficulty_source'] == 'AtCoder 未标定'
+
+
+def test_layout_preferences_validate_and_persist_across_app_instances(workspace, tmp_path):
+    client, service, app = workspace
+    path = '/api/workbench/layout-settings'
+    assert client.get(path).json() == {'mode': 'auto', 'statement_percent': 50}
+    saved = {'mode': 'split', 'statement_percent': 62}
+    assert client.put(path, json=saved).json() == saved
+    assert service.db.get('layout_settings') == saved
+    for invalid in ({'mode': 'unknown'}, {'statement_percent': 29},
+                    {'statement_percent': 71}, {'statement_percent': True},
+                    {'statement_percent': 50.5}, {'code': 'private'}):
+        assert client.put(path, json=invalid).status_code == 422
+        assert client.get(path).json() == saved
+    # The preference is database-backed, not a browser-only or process-only setting.
+    from acmweb.app import create_app
+    with TestClient(create_app(Settings(data_dir=tmp_path, config_path=tmp_path/'account.toml', enable_codex=False))) as second:
+        assert second.get(path).json() == saved

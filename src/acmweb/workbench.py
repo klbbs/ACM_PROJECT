@@ -114,6 +114,11 @@ class EditorSettings(Strict):
     line_wrapping: bool = Field(default=False, strict=True)
 
 
+class LayoutSettings(Strict):
+    mode: Literal['auto', 'split', 'stacked'] = 'auto'
+    statement_percent: int = Field(default=50, ge=30, le=70, strict=True)
+
+
 class StatementImport(Strict):
     html: str = Field(min_length=1, max_length=200000)
 
@@ -603,6 +608,15 @@ def register(app, service, jobs, daily=None):
     @app.put('/api/workbench/editor-settings')
     def save_editor_settings(data: EditorSettings):
         service.db.set('editor_settings', data.model_dump())
+        return data.model_dump()
+
+    @app.get('/api/workbench/layout-settings')
+    def layout_settings():
+        return LayoutSettings.model_validate(service.db.get('layout_settings', {})).model_dump()
+
+    @app.put('/api/workbench/layout-settings')
+    def save_layout_settings(data: LayoutSettings):
+        service.db.set('layout_settings', data.model_dump())
         return data.model_dump()
 
     @app.get('/api/workbench/coach-settings')

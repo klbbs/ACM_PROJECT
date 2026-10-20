@@ -7,6 +7,7 @@ import { EditorShell } from './editor-shell'
 import { SubmissionHistory, SubmissionForm } from './submission-history'
 import { SelfTestPanel } from './self-test-panel'
 import './editor-self-test.css'
+import { WorkbenchSplit } from './workbench-split'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
@@ -361,253 +362,259 @@ export function WorkbenchPage({
           {!pid ? (
             <section className="card empty">
               <h3>选择一道题开始训练</h3>
-              <p>先读题、观察样例，再打开右侧的代码编辑器。</p>
+              <p>先读题、观察样例，再开始编写代码。</p>
             </section>
           ) : (
             <>
-              <section className="card wb-statement">
-                {data?.fetch_status?.status === 'failed' && (
-                  <div className="wb-warning" role="alert">
-                    {data.fetch_status.error}
+              <WorkbenchSplit>
+                <section className="card wb-statement">
+                  {data?.fetch_status?.status === 'failed' && (
+                    <div className="wb-warning" role="alert">
+                      {data.fetch_status.error}
+                    </div>
+                  )}
+                  <details className="wb-import">
+                    <summary>获取失败？导入浏览器题面 / 查看教程</summary>
+                    <p>
+                      打开原题，在 F12 元素面板复制包含完整正文和样例的节点 Outer
+                      HTML，粘贴下方。只提取文本和样例；手动导入无法核验题号。
+                    </p>
+                    <button
+                      className="text-button"
+                      onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
+                    >
+                      查看详细教程
+                    </button>
+                    <textarea
+                      aria-label="题面 HTML"
+                      value={importHtml}
+                      maxLength={200000}
+                      onChange={(e) => setImportHtml(e.target.value)}
+                    />
+                    <button
+                      disabled={!importHtml || busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          await api(
+                            `/workbench/problem/${encodeURIComponent(pid)}/import`,
+                            'POST',
+                            {
+                              html: importHtml,
+                            },
+                          )
+                          setImportHtml('')
+                          await refresh()
+                        } catch (e) {
+                          fail(e)
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      导入本题文本与样例
+                    </button>
+                  </details>
+                  {statement?.source === 'user_import' && (
+                    <p className="wb-warning">手动导入题面：请自行确认与当前题号一致。</p>
+                  )}
+                  <div className="wb-heading">
+                    <h2>{statement?.title || pid}</h2>
+                    <a href={data?.url} target="_blank" rel="noreferrer">
+                      查看原题 <ExternalLink size={14} />
+                    </a>
+                    <button
+                      className="secondary"
+                      disabled={active}
+                      onClick={() => run('/workbench/open', { problem: pid })}
+                    >
+                      <RefreshCw size={14} /> 刷新题面
+                    </button>
                   </div>
-                )}
-                <details className="wb-import">
-                  <summary>获取失败？导入浏览器题面 / 查看教程</summary>
-                  <p>
-                    打开原题，在 F12 元素面板复制包含完整正文和样例的节点 Outer
-                    HTML，粘贴下方。只提取文本和样例；手动导入无法核验题号。
-                  </p>
-                  <button
-                    className="text-button"
-                    onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
-                  >
-                    查看详细教程
-                  </button>
-                  <textarea
-                    aria-label="题面 HTML"
-                    value={importHtml}
-                    maxLength={200000}
-                    onChange={(e) => setImportHtml(e.target.value)}
-                  />
-                  <button
-                    disabled={!importHtml || busy}
-                    onClick={async () => {
-                      setBusy(true)
-                      try {
-                        await api(`/workbench/problem/${encodeURIComponent(pid)}/import`, 'POST', {
-                          html: importHtml,
-                        })
-                        setImportHtml('')
-                        await refresh()
-                      } catch (e) {
-                        fail(e)
-                      } finally {
-                        setBusy(false)
-                      }
-                    }}
-                  >
-                    导入本题文本与样例
-                  </button>
-                </details>
-                {statement?.source === 'user_import' && (
-                  <p className="wb-warning">手动导入题面：请自行确认与当前题号一致。</p>
-                )}
-                <div className="wb-heading">
-                  <h2>{statement?.title || pid}</h2>
-                  <a href={data?.url} target="_blank" rel="noreferrer">
-                    查看原题 <ExternalLink size={14} />
-                  </a>
-                  <button
-                    className="secondary"
-                    disabled={active}
-                    onClick={() => run('/workbench/open', { problem: pid })}
-                  >
-                    <RefreshCw size={14} /> 刷新题面
-                  </button>
-                </div>
-                {!statement ? (
-                  <p>
-                    题面尚未获取。任务状态见页面底部；平台要求浏览器验证时，可先打开原题阅读并继续写代码。
-                  </p>
-                ) : (
-                  <TranslationPanel
-                    problemId={pid}
-                    statement={statement}
-                    provider={provider}
-                    model={model}
-                    revision={revision}
-                    jobs={jobs}
-                    run={run}
-                    onError={onError}
-                  >
-                    <>
-                      <p className="muted">
-                        {statement.time_limit} · {statement.memory_limit} · 抓取于{' '}
-                        {date(data?.fetched_at)}
-                      </p>
-                      <React.Suspense fallback={<p>正在排版题面…</p>}>
-                        <StatementView statement={statement} />
-                      </React.Suspense>
-                      {statement.samples.map((s: Row, i: number) => (
-                        <div key={i} className="wb-samples">
-                          <div>
-                            <h4>样例输入 {i + 1}</h4>
-                            <pre>{s.input}</pre>
+                  {!statement ? (
+                    <p>
+                      题面尚未获取。任务状态见页面底部；平台要求浏览器验证时，可先打开原题阅读并继续写代码。
+                    </p>
+                  ) : (
+                    <TranslationPanel
+                      problemId={pid}
+                      statement={statement}
+                      provider={provider}
+                      model={model}
+                      revision={revision}
+                      jobs={jobs}
+                      run={run}
+                      onError={onError}
+                    >
+                      <>
+                        <p className="muted">
+                          {statement.time_limit} · {statement.memory_limit} · 抓取于{' '}
+                          {date(data?.fetched_at)}
+                        </p>
+                        <React.Suspense fallback={<p>正在排版题面…</p>}>
+                          <StatementView statement={statement} />
+                        </React.Suspense>
+                        {statement.samples.map((s: Row, i: number) => (
+                          <div key={i} className="wb-samples">
+                            <div>
+                              <h4>样例输入 {i + 1}</h4>
+                              <pre>{s.input}</pre>
+                            </div>
+                            <div>
+                              <h4>样例输出 {i + 1}</h4>
+                              <pre>{s.output}</pre>
+                            </div>
                           </div>
-                          <div>
-                            <h4>样例输出 {i + 1}</h4>
-                            <pre>{s.output}</pre>
-                          </div>
-                        </div>
-                      ))}
-                    </>
-                  </TranslationPanel>
-                )}
-              </section>
-              <section
-                className={`card wb-editor ${editorFullscreen ? 'wb-editor-fullscreen' : ''}`}
-              >
-                <div className="wb-heading">
-                  <h3>代码编辑器</h3>
-                  <select
-                    aria-label="代码语言"
-                    disabled={busy}
-                    value={language}
-                    onChange={(e) => {
-                      setLanguage(e.target.value)
+                        ))}
+                      </>
+                    </TranslationPanel>
+                  )}
+                </section>
+                <section
+                  className={`card wb-editor ${editorFullscreen ? 'wb-editor-fullscreen' : ''}`}
+                >
+                  <div className="wb-heading">
+                    <h3>代码编辑器</h3>
+                    <select
+                      aria-label="代码语言"
+                      disabled={busy}
+                      value={language}
+                      onChange={(e) => {
+                        setLanguage(e.target.value)
+                        dirty.current = true
+                        setSaved('尚未保存')
+                      }}
+                    >
+                      <option value="cpp17">C++17</option>
+                      <option value="cpp20">C++20</option>
+                      <option value="python3">Python 3</option>
+                      <option value="java17">Java 17</option>
+                    </select>
+                    <span className="muted" role="status">
+                      {saved}
+                    </span>
+                  </div>
+                  <div className="wb-editor-controls">
+                    <label>
+                      键位
+                      <select
+                        aria-label="编辑器键位"
+                        value={editorSettings.keymap}
+                        disabled={!settingsReady || settingsBusy}
+                        onChange={(e) =>
+                          updateSettings({ keymap: e.target.value as 'standard' | 'vim' })
+                        }
+                      >
+                        <option value="standard">普通</option>
+                        <option value="vim">Vim</option>
+                      </select>
+                    </label>
+                    <label>
+                      字号
+                      <select
+                        aria-label="编辑器字号"
+                        value={editorSettings.font_size}
+                        disabled={!settingsReady || settingsBusy}
+                        onChange={(e) => updateSettings({ font_size: Number(e.target.value) })}
+                      >
+                        {Array.from({ length: 13 }, (_, i) => i + 12).map((size) => (
+                          <option key={size} value={size}>
+                            {size}px
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="wb-wrap">
+                      <input
+                        type="checkbox"
+                        checked={editorSettings.line_wrapping}
+                        disabled={!settingsReady || settingsBusy}
+                        onChange={(e) => updateSettings({ line_wrapping: e.target.checked })}
+                      />
+                      自动换行
+                    </label>
+                    <button
+                      className="secondary"
+                      aria-pressed={editorFullscreen}
+                      onClick={() => setEditorFullscreen((v) => !v)}
+                    >
+                      {editorFullscreen ? '退出全屏' : '编辑器全屏'}
+                    </button>
+                    <span className="muted">
+                      {settingsBusy
+                        ? '保存偏好…'
+                        : settingsReady
+                          ? '偏好已按用户保存'
+                          : '正在读取偏好'}
+                    </span>
+                  </div>
+                  <EditorShell
+                    key={pid}
+                    documentId={pid}
+                    value={code}
+                    language={language}
+                    settings={editorSettings}
+                    readOnly={busy}
+                    onChange={(value) => {
+                      setCode(value)
                       dirty.current = true
                       setSaved('尚未保存')
                     }}
-                  >
-                    <option value="cpp17">C++17</option>
-                    <option value="cpp20">C++20</option>
-                    <option value="python3">Python 3</option>
-                    <option value="java17">Java 17</option>
-                  </select>
-                  <span className="muted" role="status">
-                    {saved}
-                  </span>
-                </div>
-                <div className="wb-editor-controls">
-                  <label>
-                    键位
-                    <select
-                      aria-label="编辑器键位"
-                      value={editorSettings.keymap}
-                      disabled={!settingsReady || settingsBusy}
-                      onChange={(e) =>
-                        updateSettings({ keymap: e.target.value as 'standard' | 'vim' })
-                      }
+                    onSave={save}
+                    onError={onError}
+                  />
+                  <SelfTestPanel
+                    key={pid}
+                    code={code}
+                    language={language}
+                    samples={statement?.samples || []}
+                  />
+                  <details className="wb-shortcuts">
+                    <summary>编辑器快捷键与补全说明</summary>
+                    <p>
+                      Ctrl/Cmd+S 保存；Ctrl+Space 补全；方向键选择、Tab 接受、Enter 换行、Esc
+                      关闭；无候选时 Tab 缩进或跳转片段占位符；Ctrl/Cmd+F 搜索、Ctrl+H 替换。Vim
+                      模式使用 :w 保存，:q、:wq、:x 不退出网站。全屏请使用「退出全屏」按钮，Esc
+                      保留给 Vim 和补全。
+                    </p>
+                    <p>
+                      候选来自关键字、常用名称、基础语法片段和当前文件单词，不是类型推断或编译诊断；补全不调用
+                      AI，也不发送源码。
+                      <a href="/third-party-notices.txt" target="_blank" rel="noreferrer">
+                        开源许可
+                      </a>
+                    </p>
+                  </details>
+                  <div className="wb-heading">
+                    <button
+                      className="secondary"
+                      disabled={!code.trim()}
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(code)
+                          setSaved('代码已复制，请前往官方提交页粘贴')
+                        } catch {
+                          onError('浏览器未允许复制，请在编辑器中 Ctrl/Cmd+A、Ctrl/Cmd+C 复制代码')
+                        }
+                      }}
                     >
-                      <option value="standard">普通</option>
-                      <option value="vim">Vim</option>
-                    </select>
-                  </label>
-                  <label>
-                    字号
-                    <select
-                      aria-label="编辑器字号"
-                      value={editorSettings.font_size}
-                      disabled={!settingsReady || settingsBusy}
-                      onChange={(e) => updateSettings({ font_size: Number(e.target.value) })}
+                      复制待交代码
+                    </button>
+                    <a
+                      className="button"
+                      href={data?.capabilities?.official_submit_url || data?.url}
+                      target="_blank"
+                      rel="noreferrer"
                     >
-                      {Array.from({ length: 13 }, (_, i) => i + 12).map((size) => (
-                        <option key={size} value={size}>
-                          {size}px
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="wb-wrap">
-                    <input
-                      type="checkbox"
-                      checked={editorSettings.line_wrapping}
-                      disabled={!settingsReady || settingsBusy}
-                      onChange={(e) => updateSettings({ line_wrapping: e.target.checked })}
-                    />
-                    自动换行
-                  </label>
-                  <button
-                    className="secondary"
-                    aria-pressed={editorFullscreen}
-                    onClick={() => setEditorFullscreen((v) => !v)}
-                  >
-                    {editorFullscreen ? '退出全屏' : '编辑器全屏'}
-                  </button>
-                  <span className="muted">
-                    {settingsBusy
-                      ? '保存偏好…'
-                      : settingsReady
-                        ? '偏好已按用户保存'
-                        : '正在读取偏好'}
-                  </span>
-                </div>
-                <EditorShell
-                  key={pid}
-                  documentId={pid}
-                  value={code}
-                  language={language}
-                  settings={editorSettings}
-                  readOnly={busy}
-                  onChange={(value) => {
-                    setCode(value)
-                    dirty.current = true
-                    setSaved('尚未保存')
-                  }}
-                  onSave={save}
-                  onError={onError}
-                />
-                <SelfTestPanel
-                  key={pid}
-                  code={code}
-                  language={language}
-                  samples={statement?.samples || []}
-                />
-                <details className="wb-shortcuts">
-                  <summary>编辑器快捷键与补全说明</summary>
-                  <p>
-                    Ctrl/Cmd+S 保存；Ctrl+Space 补全；方向键选择、Tab 接受、Enter 换行、Esc
-                    关闭；无候选时 Tab 缩进或跳转片段占位符；Ctrl/Cmd+F 搜索、Ctrl+H 替换。Vim
-                    模式使用 :w 保存，:q、:wq、:x 不退出网站。全屏请使用「退出全屏」按钮，Esc 保留给
-                    Vim 和补全。
-                  </p>
-                  <p>
-                    候选来自关键字、常用名称、基础语法片段和当前文件单词，不是类型推断或编译诊断；补全不调用
-                    AI，也不发送源码。
-                    <a href="/third-party-notices.txt" target="_blank" rel="noreferrer">
-                      开源许可
+                      前往官方提交页 ↗
                     </a>
+                  </div>
+                  <p className="muted">
+                    最多 64 KiB；代码自动保存，自测由专用隔离服务执行。请在题目所属平台
+                    选择相应语言提交同一份代码。
                   </p>
-                </details>
-                <div className="wb-heading">
-                  <button
-                    className="secondary"
-                    disabled={!code.trim()}
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(code)
-                        setSaved('代码已复制，请前往官方提交页粘贴')
-                      } catch {
-                        onError('浏览器未允许复制，请在编辑器中 Ctrl/Cmd+A、Ctrl/Cmd+C 复制代码')
-                      }
-                    }}
-                  >
-                    复制待交代码
-                  </button>
-                  <a
-                    className="button"
-                    href={data?.capabilities?.official_submit_url || data?.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    前往官方提交页 ↗
-                  </a>
-                </div>
-                <p className="muted">
-                  最多 64 KiB；代码自动保存，自测由专用隔离服务执行。请在题目所属平台
-                  选择相应语言提交同一份代码。
-                </p>
-              </section>
+                </section>
+              </WorkbenchSplit>
               <section className="card wb-coach">
                 <h3>
                   <Lightbulb size={18} /> AI 小提示

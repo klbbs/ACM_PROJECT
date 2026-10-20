@@ -2894,7 +2894,7 @@ td small {
 .wb-content {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
 }
 .wb-heading {
@@ -3097,7 +3097,7 @@ td small {
 }
 @media (min-width: 1400px) {
   .wb-content {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
   .wb-content > .card {
     min-width: 0;
@@ -3205,11 +3205,6 @@ td small {
   white-space: pre-wrap;
   padding: 16px;
   background: #f4f6fa;
-}
-@media (min-width: 1200px) {
-  .wb-content {
-    grid-template-columns: minmax(300px, 0.9fr) minmax(380px, 1.1fr);
-  }
 }
 @media (max-width: 1199px) {
   .wb-layout {

@@ -300,3 +300,15 @@ def test_ten_character_password_registration_login_and_change(site):
     assert request(who,'POST','/api/auth/password',change).status_code == 200
     assert request(who,'GET','/api/accounts').status_code == 401
     assert request(None,'POST','/api/auth/login',{'username':'ten_chars','password':'Xyzabcd123'}).status_code == 200
+
+
+def test_layout_preferences_are_private_csrf_protected_and_not_ai_limited(site):
+    request, admin, member, *_ = site
+    path = '/api/workbench/layout-settings'
+    value = {'mode': 'stacked', 'statement_percent': 60}
+    for _ in range(8):
+        assert request(admin, 'PUT', path, value).status_code == 200
+    assert request(admin, 'GET', path).json() == value
+    assert request(member, 'GET', path).json() == {'mode': 'auto', 'statement_percent': 50}
+    assert request(member, 'PUT', path, value, {'X-CSRF-Token': 'wrong'}).status_code == 403
+    assert request(None, 'GET', path).status_code == 401
