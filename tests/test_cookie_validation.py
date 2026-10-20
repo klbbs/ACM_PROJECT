@@ -5,7 +5,7 @@ from acmweb.credential_check import CredentialChecks
 from acmweb.codex_bridge import AIError
 from acmweb.settings import Settings
 
-@pytest.mark.parametrize('value', ['session=abc==; another=value;', 'a=; b=value', 'x=abc.def-123_456', 'session="abc=="; x=value'])
+@pytest.mark.parametrize('value', ['session=abc==; another=value;', 'a=; b=value', 'x=abc.def-123_456', 'session="abc=="; x=value', 'Hm_lvt_test=1760920000,1761006400; session=abc', 'label="browser value"; session=abc'])
 def test_complete_request_cookie(value):
     assert valid_cookie(value)
 

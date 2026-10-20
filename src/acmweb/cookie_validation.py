@@ -20,10 +20,11 @@ def valid_cookie(value):
         part = part.strip()
         if '=' not in part:
             return False
-        name, content = part.split('=', 1)
-        if len(content) >= 2 and content.startswith('"') and content.endswith('"'):
-            content = content[1:-1]
-        if not _NAME.fullmatch(name) or any(char in content for char in (' ', '\\', '"', ',')):
+        name, _ = part.split('=', 1)
+        # Preserve printable values exactly as browsers sent them. In practice
+        # analytics cookies contain commas, spaces and quoted values; these do
+        # not inject HTTP headers (all control characters were rejected above).
+        if not _NAME.fullmatch(name):
             return False
     return bool(parts)
 
