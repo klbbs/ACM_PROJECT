@@ -35,6 +35,7 @@ import {
   Sparkles,
   Target,
   TrendingUp,
+  Trophy,
   X,
   Zap,
 } from 'lucide-react'
@@ -47,6 +48,7 @@ import { OnlineUsers } from './online-users'
 import { PlatformConnections } from './platform-connections'
 import { AdminPage } from './admin'
 import { DailyTasksPage } from './daily-tasks'
+import { SocialPage } from './social'
 
 type Row = Record<string, any>
 type Page =
@@ -57,6 +59,7 @@ type Page =
   | 'practice'
   | 'settings'
   | 'community'
+  | 'social'
   | 'admin'
 const nav = [
   { id: 'overview', name: '训练总览', icon: BarChart3 },
@@ -65,6 +68,7 @@ const nav = [
   { id: 'practice', name: '今日练习', icon: Target },
   { id: 'guide', name: '平台绑定教程', icon: BookOpen },
   { id: 'settings', name: '连接与设置', icon: Settings2 },
+  { id: 'social', name: '排行榜与好友', icon: Trophy },
   { id: 'community', name: '共享资料与成员', icon: BookOpen },
   { id: 'admin', name: '管理后台', icon: ShieldCheck },
 ] as const
@@ -217,11 +221,16 @@ function App() {
   useEffect(() => {
     if (window.location.hash === '#platform-guide') setPageRaw('guide')
     const guide = () => setPage('guide')
+    const settings = () => setPage('settings')
     window.addEventListener('acm:open-guide', guide)
+    window.addEventListener('acm:open-settings', settings)
     api('/auth/status')
       .then(setAuth)
       .catch((e) => setError(e.message))
-    return () => window.removeEventListener('acm:open-guide', guide)
+    return () => {
+      window.removeEventListener('acm:open-guide', guide)
+      window.removeEventListener('acm:open-settings', settings)
+    }
   }, [])
   useEffect(() => {
     if (auth?.authenticated)
@@ -454,7 +463,7 @@ function App() {
           {nav
             .filter(
               (n) =>
-                (n.id !== 'community' || auth.multi_user) &&
+                (!['community', 'social'].includes(n.id) || auth.multi_user) &&
                 (n.id !== 'admin' || auth.user?.role === 'admin'),
             )
             .map((n) => (
@@ -579,7 +588,7 @@ function App() {
               {notice}
             </div>
           )}
-          <div className="page-heading">
+          <div className={page === 'social' ? 'page-heading social-heading' : 'page-heading'}>
             <div>
               <div className="eyebrow">YOUR NEXT ACCEPTED STARTS HERE</div>
               <h1>
@@ -595,9 +604,11 @@ function App() {
                       ? '从真实题库出发，为下一场比赛积累确定性。'
                       : page === 'workbench'
                         ? '在题目、代码与提示之间，把每次尝试变成下一次进步。'
-                        : page === 'community'
-                          ? '按需共享训练资料，管理成员与账号安全。'
-                          : '连接你的平台账号与 AI，让训练工作台持续运转。'}
+                        : page === 'social'
+                          ? '看看今天谁在进步，结识朋友，来一场公平的算法对战。'
+                          : page === 'community'
+                            ? '按需共享训练资料，管理成员与账号安全。'
+                            : '连接你的平台账号与 AI，让训练工作台持续运转。'}
               </p>
             </div>
             <div className="heading-actions">
@@ -652,7 +663,9 @@ function App() {
               )}
             </div>
           </div>
-          {!['settings', 'community', 'workbench', 'guide'].includes(page) && (
+          {!['settings', 'community', 'social', 'practice', 'workbench', 'guide'].includes(
+            page,
+          ) && (
             <div className="filter-row">
               <div className="tabs">
                 {[7, 30, 90, 0].map((d) => (
@@ -1005,6 +1018,16 @@ function App() {
               onError={setError}
             />
           )}
+          {page === 'social' && auth.multi_user && (
+            <SocialPage
+              onOpenProblem={(pid: string) => {
+                if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
+                  setWorkbenchSelection({ problem_id: pid, request_id: Date.now() })
+                  setPageRaw('workbench')
+                }
+              }}
+            />
+          )}
           {page === 'community' && auth.multi_user && (
             <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}
@@ -1051,7 +1074,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.12.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.13.0</span>
             </span>
           </footer>
         </div>
@@ -1448,11 +1471,10 @@ function PracticePage({
   onError,
   onNotice,
 }: any) {
-  const [recommendPlatform, setRecommendPlatform] = useState('codeforces')
   const [minimum, setMinimum] = useState(800),
     [maximum, setMaximum] = useState(1600),
     [tag, setTag] = useState(''),
-    [minContest, setMinContest] = useState(0),
+    [publishedAfter, setPublishedAfter] = useState(''),
     [catalog, setCatalog] = useState<Row>({ items: [] }),
     [removed, setRemoved] = useState<string[]>([])
   useEffect(() => {
@@ -1460,18 +1482,23 @@ function PracticePage({
       .then((p) => {
         setMinimum(p.minimum)
         setMaximum(p.maximum)
-        setMinContest(p.min_contest)
+        setPublishedAfter(p.published_after || '')
       })
       .catch((e) => onError(e.message))
   }, [])
   useEffect(() => {
     api(
-      `/catalog?platform=${recommendPlatform}&minimum=${minimum}&maximum=${maximum}&tags=${encodeURIComponent(tag)}&min_contest=${minContest}`,
+      `/catalog?minimum=${minimum}&maximum=${maximum}&tags=${encodeURIComponent(tag)}${publishedAfter ? `&published_after=${publishedAfter}` : ''}`,
     )
       .then(setCatalog)
       .catch((e) => onError(e.message))
-  }, [minimum, maximum, tag, minContest, revision, recommendPlatform])
-  const selected = report?.kind === 'recommend' ? report.data.selected_problems : []
+  }, [minimum, maximum, tag, publishedAfter, revision])
+  const selected =
+    report?.kind === 'recommend'
+      ? report.data.selected_problems.filter((item: Row) =>
+          catalog.items.some((candidate: Row) => candidate.id === item.id),
+        )
+      : []
   const mark = async (p: Row, status: string) => {
     try {
       await api('/feedback', 'POST', {
@@ -1505,83 +1532,106 @@ function PracticePage({
             onClick={() => run('/catalog/refresh')}
           >
             <RefreshCw size={15} />
-            同步 CF 题库
+            同步平台题库
           </Button>
         </div>
+        <div className="catalog-eligibility" aria-label="平台选题状态">
+          {(catalog.eligibility?.platforms || []).map((item: Row) => (
+            <article
+              className={`catalog-platform ${item.login_verified ? 'ready' : ''}`}
+              key={item.platform}
+            >
+              <strong>
+                {names[item.platform]} · {item.login_verified ? '已验证登录' : '待检测登录'}
+              </strong>
+              <p>
+                {item.login_verified
+                  ? `${item.date_eligible_count} 道符合日期要求`
+                  : '暂不参与推荐'}
+              </p>
+              <p>
+                缓存 {item.cached_count ?? 0} 题 · 日期未知 {item.unknown_publication_count ?? 0} 题
+              </p>
+              <p>{item.notice}</p>
+              {catalog.eligibility?.refresh?.find((row: Row) => row.platform === item.platform)
+                ?.status === 'failed' && <p>同步失败，已保留旧缓存；可重试或查看平台访问限制。</p>}
+              {item.updated_at && <p>最近同步：{date(item.updated_at)}</p>}
+            </article>
+          ))}
+        </div>
+        {!catalog.eligibility?.platforms?.some((item: Row) => item.login_verified) && (
+          <p className="social-note">
+            先到连接与设置绑定平台，再同步平台题库；点击 AI 选题时也会重新检测已保存的过期会话。
+            <button
+              className="text-button"
+              onClick={() => window.dispatchEvent(new Event('acm:open-settings'))}
+            >
+              管理连接
+            </button>
+          </p>
+        )}
+        {catalog.eligibility?.requires_publication_date && (
+          <p className="social-note">
+            {catalog.eligibility.notice}
+            <button
+              className="text-button"
+              onClick={() => window.dispatchEvent(new Event('acm:open-settings'))}
+            >
+              设置真实发布日期
+            </button>
+          </p>
+        )}
         <div className="practice-filters">
           <label>
-            推荐平台
-            <select
-              value={recommendPlatform}
-              onChange={(e) => setRecommendPlatform(e.target.value)}
-            >
-              {Object.entries({
-                codeforces: 'Codeforces',
-                atcoder: 'AtCoder',
-                luogu: '洛谷',
-                nowcoder: '牛客',
-              }).map(([v, n]) => (
-                <option key={v} value={v}>
-                  {n}
-                </option>
+            最低 CF 难度
+            <select value={minimum} onChange={(e) => setMinimum(Number(e.target.value))}>
+              {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
+                <option key={n}>{n}</option>
               ))}
             </select>
           </label>
-          {recommendPlatform === 'codeforces' && (
-            <>
-              <label>
-                最低 CF 难度
-                <select value={minimum} onChange={(e) => setMinimum(Number(e.target.value))}>
-                  {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
-                    <option key={n}>{n}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                最高 CF 难度
-                <select value={maximum} onChange={(e) => setMaximum(Number(e.target.value))}>
-                  {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
-                    <option key={n}>{n}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                强化知识点
-                <select value={tag} onChange={(e) => setTag(e.target.value)}>
-                  <option value="">不限知识点</option>
-                  {overview.topics
-                    .filter((t: Row) => !/^\d+$/.test(t.tag))
-                    .map((t: Row) => (
-                      <option key={t.tag}>{t.tag}</option>
-                    ))}
-                </select>
-              </label>
-              <label>
-                最小比赛 ID
-                <input
-                  type="number"
-                  min="0"
-                  max="100000"
-                  value={minContest}
-                  onChange={(e) => setMinContest(Number(e.target.value))}
-                />
-              </label>
-            </>
-          )}
+          <label>
+            最高 CF 难度
+            <select value={maximum} onChange={(e) => setMaximum(Number(e.target.value))}>
+              {Array.from({ length: 28 }, (_, i) => 800 + i * 100).map((n) => (
+                <option key={n}>{n}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            强化知识点
+            <select value={tag} onChange={(e) => setTag(e.target.value)}>
+              <option value="">不限知识点</option>
+              {overview.topics
+                .filter((t: Row) => !/^\d+$/.test(t.tag))
+                .map((t: Row) => (
+                  <option key={t.tag}>{t.tag}</option>
+                ))}
+            </select>
+          </label>
+          <label>
+            最早题目发布日期
+            <input type="date" aria-label="选题发布日期下限" value={publishedAfter} readOnly />
+            <button
+              className="text-button"
+              onClick={() => window.dispatchEvent(new Event('acm:open-settings'))}
+            >
+              在训练偏好中修改
+            </button>
+          </label>
         </div>
         <div className="ai-controls">
           {aiPicker}
           <Button
             className="primary"
             loading={busy}
-            disabled={!model || !catalog.items.length || minimum > maximum}
+            disabled={!model || minimum > maximum || catalog.eligibility?.requires_publication_date}
             onClick={() =>
               start({
-                platform: recommendPlatform,
                 minimum,
                 maximum,
-                tags: recommendPlatform === 'codeforces' && tag ? [tag] : [],
-                min_contest: minContest,
+                tags: tag ? [tag] : [],
+                published_after: publishedAfter || null,
               })
             }
           >
@@ -1591,8 +1641,8 @@ function PracticePage({
         </div>
         <p className="help">
           {catalog.source || '题库'} · 本次最多 60 道候选 ·{' '}
-          {recommendPlatform !== 'codeforces' &&
-            '请先在工作台获取该平台题面；候选仅包含自己缓存且未做过的官方题目，不跨平台换算难度。'}
+          随机混合已验证登录平台，发布时间早于下限或无法确认的题不会进入日期受限推荐；不同平台不换算
+          CF 难度。
           {catalog.updated_at ? `更新于 ${date(catalog.updated_at)}` : '尚未同步题库'}
         </p>
       </section>
@@ -1622,7 +1672,9 @@ function PracticePage({
                     <b>{p.difficulty}</b>
                   </div>
                   <h3>{p.title}</h3>
-                  <p className="problem-id">Codeforces · {p.problem_id}</p>
+                  <p className="problem-id">
+                    {names[p.platform] || p.platform} · {p.problem_id}
+                  </p>
                   <div className="tags">
                     {p.tags.map((t: string) => (
                       <span key={t}>{t}</span>
@@ -1666,7 +1718,7 @@ function PracticePage({
               <thead>
                 <tr>
                   <th>题目</th>
-                  <th>{recommendPlatform === 'codeforces' ? 'CF 难度' : '平台难度'}</th>
+                  <th>原平台难度 / 分数</th>
                   <th>知识点</th>
                   <th />
                 </tr>
@@ -1715,7 +1767,7 @@ function PracticePage({
                 onClick={() => run('/catalog/refresh')}
               >
                 <RefreshCw size={15} />
-                同步 CF 题库
+                同步平台题库
               </Button>
             }
           />
@@ -2521,16 +2573,32 @@ function SettingsPage({
             />
           </label>
           <label>
-            最小比赛 ID
+            最早题目发布日期
             <input
-              type="number"
-              min="0"
-              max="100000"
-              value={training.min_contest}
-              onChange={(e) => setTraining({ ...training, min_contest: Number(e.target.value) })}
+              type="date"
+              aria-label="最早题目发布日期"
+              value={training.published_after || ''}
+              onChange={(e) =>
+                setTraining({
+                  ...training,
+                  published_after: e.target.value || null,
+                  min_contest: 0,
+                })
+              }
             />
           </label>
         </div>
+        <button
+          className="text-button"
+          type="button"
+          disabled={!training.published_after && !training.min_contest}
+          onClick={() => {
+            setTraining({ ...training, published_after: null, min_contest: 0 })
+            onNotice('已清除日期与旧编号限制，请保存训练偏好生效')
+          }}
+        >
+          不限制发布日期（清除旧编号限制）
+        </button>
         <div className="preference-fields">
           <label>
             优先知识点（英文标签，逗号分隔）

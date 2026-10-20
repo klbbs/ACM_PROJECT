@@ -5,21 +5,22 @@ import json
 import os
 import secrets
 import time
+from datetime import date as calendar_date
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Annotated
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, AfterValidator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import analytics
 from .ai import AIProvider, ProviderConfig
-from .catalog import candidates
+from .catalog import recommendation_candidates, recommendation_status
 from .codex_bridge import AIError, CodexBridge
 from .database import Database
 from .jobs import Jobs
@@ -29,6 +30,15 @@ from .accounts import Accounts, AccountList
 
 class Login(BaseModel):
     token: str = Field(max_length=1000)
+
+
+def publication_date(value):
+    if value is not None:
+        calendar_date.fromisoformat(value)
+    return value
+
+
+PublicationDate = Annotated[str | None, Field(pattern=r'^\d{4}-\d{2}-\d{2}$'), AfterValidator(publication_date)]
 
 
 class Analyze(BaseModel):
@@ -42,6 +52,7 @@ class Analyze(BaseModel):
     maximum: int = Field(default=1600,ge=800,le=3500)
     tags: list[str] = Field(default_factory=list,max_length=10)
     min_contest: int = Field(default=0,ge=0,le=100000)
+    published_after: PublicationDate = None
 
 
 class Feedback(BaseModel):
@@ -57,6 +68,7 @@ class Training(BaseModel):
     minimum: int = Field(default=1000,ge=800,le=3500)
     maximum: int = Field(default=1600,ge=800,le=3500)
     min_contest: int = Field(default=0,ge=0,le=100000)
+    published_after: PublicationDate = None
     preferred_tags: list[str] = Field(default_factory=list,max_length=20)
     avoid_tags: list[str] = Field(default_factory=list,max_length=20)
     prefer_recent: bool = True
@@ -83,7 +95,7 @@ def create_app(settings=None):
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.12.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.13.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     register_credential_checks(app,account_config)
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     if not settings.access_token:
@@ -122,7 +134,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.12.0"}
+    def health():return {"status":"ok","version":"0.13.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -205,7 +217,7 @@ def create_app(settings=None):
     @app.post("/api/recommend")
     async def recommend(payload:Analyze):
         if payload.minimum>payload.maximum:raise HTTPException(400,"最低难度不能超过最高难度")
-        return jobs.start("recommend",payload.model_dump())
+        return jobs.start("recommend",{**payload.model_dump(), 'platform':''})
 
     @app.get("/api/reports")
     def reports():return {"items":database.reports()}
@@ -217,8 +229,14 @@ def create_app(settings=None):
         return result
 
     @app.get("/api/catalog")
-    def catalog(minimum:int=Query(default=800,ge=800,le=3500),maximum:int=Query(default=1600,ge=800,le=3500),tags:str="",min_contest:int=Query(default=0,ge=0,le=100000),platform:Literal["codeforces","atcoder","luogu","nowcoder"]="codeforces"):
-        return {"items":candidates(database,minimum,maximum,[t for t in tags.split(',') if t],60,min_contest,platform=platform),"updated_at":database.get("catalog_updated_at") if platform=="codeforces" else None,"source":"Codeforces 官方题库" if platform=="codeforces" else "已获取的官方题面缓存（非完整题库）"}
+    def catalog(minimum:int=Query(default=800,ge=800,le=3500),maximum:int=Query(default=1600,ge=800,le=3500),tags:str="",published_after:PublicationDate=None):
+        if minimum>maximum:raise HTTPException(400,"最低难度不能超过最高难度")
+        status = recommendation_status(database,account_config,published_after=published_after)
+        with database.connect() as db:
+            recent = db.execute("SELECT data FROM ai_reports WHERE kind='recommend' ORDER BY created_at DESC LIMIT 1").fetchone()
+        preferred = [p['id'] for p in json.loads(recent['data']).get('selected_problems', [])] if recent else []
+        pool = recommendation_candidates(database,account_config,minimum,maximum,[t for t in tags.split(',') if t],60,published_after=published_after,preferred_ids=preferred) if not status['requires_publication_date'] and any(p['login_verified'] for p in status['platforms']) else []
+        return {"items":pool,"updated_at":database.get("catalog_updated_at"),"source":"所有已验证登录平台的官方候选题", "eligibility":status}
 
     @app.post("/api/catalog/refresh")
     async def refresh():return jobs.start("catalog")
@@ -239,7 +257,7 @@ def create_app(settings=None):
         database.set("training",payload.model_dump());return payload.model_dump()
 
     from .daily import Daily, register as register_daily
-    app.state.daily = Daily(database, ai)
+    app.state.daily = Daily(database, ai, account_config)
     jobs.daily_evidence = app.state.daily.evidence
     register_daily(app, app.state.daily)
 

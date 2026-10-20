@@ -52,12 +52,29 @@ export function WorkbenchPage({
     [busy, setBusy] = useState(false)
   const [consent, setConsent] = useState(false),
     [saveTick, setSaveTick] = useState(0)
+  const [automaticCoach, setAutomaticCoach] = useState<Row>({
+    enabled: false,
+    provider: 'api',
+    model: '',
+  })
+  const [coachSettingsReady, setCoachSettingsReady] = useState(false)
+  const [coachSettingsBusy, setCoachSettingsBusy] = useState(false)
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(defaultEditorSettings)
   const [settingsReady, setSettingsReady] = useState(false),
     [settingsBusy, setSettingsBusy] = useState(false)
   const [editorFullscreen, setEditorFullscreen] = useState(false)
   useEffect(() => {
     let alive = true
+    api('/workbench/coach-settings')
+      .then((value) => {
+        if (alive) {
+          setAutomaticCoach(value)
+          setCoachSettingsReady(true)
+        }
+      })
+      .catch((e) => {
+        if (alive) onError(e.message)
+      })
     api<EditorSettings>('/workbench/editor-settings')
       .then((value) => {
         if (alive) {
@@ -72,6 +89,26 @@ export function WorkbenchPage({
       alive = false
     }
   }, [])
+  const toggleAutomaticCoach = async (enabled: boolean) => {
+    const previous = automaticCoach
+    setAutomaticCoach({ ...previous, enabled })
+    setCoachSettingsBusy(true)
+    try {
+      setAutomaticCoach(
+        await api('/workbench/coach-settings', 'PUT', {
+          enabled,
+          provider,
+          model,
+          consent: enabled,
+        }),
+      )
+    } catch (e) {
+      setAutomaticCoach(previous)
+      onError(e instanceof Error ? e.message : '自动提示设置保存失败')
+    } finally {
+      setCoachSettingsBusy(false)
+    }
+  }
   useEffect(() => {
     if (!editorFullscreen) return
     const previous = document.body.style.overflow
@@ -276,7 +313,10 @@ export function WorkbenchPage({
             <button disabled={busy}>打开</button>
           </form>
           {!choices.items.length && (
-            <p>暂无候选。请在「今日练习」同步题库并生成 AI 推荐，或输入题号开始。</p>
+            <p>
+              {choices.notice ||
+                '暂无符合条件的候选。请检测平台登录状态、同步题库并检查发布日期设置，或输入题号开始。'}
+            </p>
           )}
           {choices.items.map((p: Row) => (
             <button
@@ -292,8 +332,10 @@ export function WorkbenchPage({
                 <b className="wb-score">{p.match_score}</b>
               </span>
               <small>
-                {p.difficulty} · {p.recommendation_source}
+                {names[p.platform] || p.platform} ·{' '}
+                {p.difficulty ?? p.native_difficulty ?? '未标定难度'} · {p.recommendation_source}
               </small>
+              {p.difficulty_source && <small>{p.difficulty_source}</small>}
               <small>{p.reason}</small>
             </button>
           ))}
@@ -585,6 +627,34 @@ export function WorkbenchPage({
                   每次只给一个切入点，最多 8 次；先分析题目，再结合已有提示逐步引导。AI
                   可能判断有误，仍需自己验证。
                 </p>
+                <div className="wb-auto-coach">
+                  <label className="wb-consent">
+                    <input
+                      type="checkbox"
+                      aria-label="开启自动错误提示"
+                      checked={automaticCoach.enabled}
+                      disabled={
+                        !coachSettingsReady ||
+                        coachSettingsBusy ||
+                        (!automaticCoach.enabled && !model)
+                      }
+                      onChange={(e) => void toggleAutomaticCoach(e.target.checked)}
+                    />
+                    开启自动错误提示：我同意在关联或刷新官方错误结果后，将题面、当次代码及判题信息发送给
+                    AI。
+                  </label>
+                  <p className="muted" role="status">
+                    {coachSettingsBusy
+                      ? '正在保存自动提示设置…'
+                      : automaticCoach.enabled
+                        ? `已开启 · 使用 ${automaticCoach.provider} / ${automaticCoach.model}；更换模型请关闭后重新开启。`
+                        : '自动提示已关闭，不会自动发送代码。仍可手动获取小提示或分析错因。'}
+                  </p>
+                  <p className="muted">
+                    仅对已核验的
+                    WA、超时、编译或运行错误给一个排查方向，不给答案。同一份代码和判题结果只自动分析一次；关闭会取消在途分析，已发送的数据无法撤回。
+                  </p>
+                </div>
                 {data?.hints.map((h: Row, i: number) => (
                   <article className="wb-hint" key={i}>
                     <strong>
@@ -631,8 +701,6 @@ export function WorkbenchPage({
                       (pid.startsWith('codeforces:') ? choices.handles : [])
                     }
                     capabilities={data?.capabilities}
-                    provider={provider}
-                    model={model}
                     active={active}
                     consent={consent && !!model}
                     run={run}
@@ -649,21 +717,9 @@ export function WorkbenchPage({
   )
 }
 
-function Attempt({
-  attempt: a,
-  handles,
-  capabilities,
-  provider,
-  model,
-  active,
-  consent,
-  run,
-  coach,
-  onError,
-}: any) {
+function Attempt({ attempt: a, handles, capabilities, active, consent, run, coach, onError }: any) {
   const [handle, setHandle] = useState(a.handle || handles[0] || ''),
     [sid, setSid] = useState(a.submission_id ? String(a.submission_id) : '')
-  const [autoReview, setAutoReview] = useState(false)
   useEffect(() => {
     setHandle((previous: string) => {
       if (a.handle)
@@ -750,7 +806,6 @@ function Attempt({
             run(`/workbench/attempt/${a.id}/sync`, {
               handle,
               submission_id: Number(sid),
-              review: autoReview && consent ? { provider, model } : null,
             })
           }}
         >
@@ -789,15 +844,6 @@ function Attempt({
           {capabilities?.notice || '请在官方平台查看判题记录；同步账号信息后可更新训练统计。'}
         </p>
       )}
-      <label className="wb-consent">
-        <input
-          type="checkbox"
-          disabled={!consent || !canSync}
-          checked={autoReview}
-          onChange={(e) => setAutoReview(e.target.checked)}
-        />{' '}
-        本次同步得到未通过结果时，自动发送本次代码进行 AI 复盘
-      </label>
       {a.judge_data && (
         <p className="muted">
           官方结果：{a.judge_data.verdict || '判题中'} · 已过测试{' '}
@@ -814,7 +860,20 @@ function Attempt({
           )}
         </p>
       )}
-      {!['UNLINKED', 'PENDING', 'AC'].includes(a.verdict) && (
+      {[
+        'WA',
+        'RE',
+        'CE',
+        'TLE',
+        'MLE',
+        'OLE',
+        'PE',
+        'FAIL',
+        'PARTIAL',
+        'IDLENESS_LIMIT_EXCEEDED',
+        'PRESENTATION_ERROR',
+        'FAILED',
+      ].includes(a.verdict) && (
         <button
           className="secondary"
           disabled={!consent || active}

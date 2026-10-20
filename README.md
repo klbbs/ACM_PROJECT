@@ -101,6 +101,14 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 原生部署、环境变量和备份见 [部署说明](docs/DEPLOYMENT.md)。
 
+## 推荐、好友与对战
+
+AI 从已验证登录平台混合选题。请在训练偏好保存最早发布日期；目录未提供可靠时间的题会被排除，不以题号推测年份。详见 [推荐说明](docs/RECOMMENDATIONS.md)。
+
+多人模式新增“排行榜与好友”：可选择公开主页和每日榜单、检索并添加好友、约定 CF 精确难度对战。先在设置检测平台身份，再在个人主页认领，才能用于公开榜单或对战。对战按官方 AC 证据判胜，计普通签到但不抵扣每日任务。详见 [社交指南](docs/SOCIAL.md)。
+
+工作台自动错误提示默认关闭，需同意将当次代码发送至所选 AI。当前仍通过官方页面提交代码，本站关联结果或核验对战；没有自动代交。本次开发未执行服务器部署。
+
 ## 独立采集 CLI
 
 ```bash
@@ -120,7 +128,7 @@ Compose 挂载 `./data` 和只读的 `account.toml`，升级镜像不会删除�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.12.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.13.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

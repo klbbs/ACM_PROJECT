@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .catalog import candidates
+from .catalog import recommendation_candidates, refresh_recommendation_sessions
 from .codex_bridge import AIError
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -85,8 +85,8 @@ class Complete(Strict):
 
 
 class Daily:
-    def __init__(self, database, ai):
-        self.db, self.ai = database, ai
+    def __init__(self, database, ai, accounts=None):
+        self.db, self.ai, self.accounts = database, ai, accounts
         self.guard = None
         self.active_ai = False
         with self.db.connect() as db:
@@ -186,8 +186,9 @@ class Daily:
 
     def _candidate_pool(self, count, excluded):
         prefs = self.db.get("training", {})
-        pool = candidates(self.db, minimum=prefs.get("minimum", 1000), maximum=prefs.get("maximum", 1600),
-                          limit=1000000, min_contest=prefs.get("min_contest", 0))
+        pool = recommendation_candidates(self.db, self.accounts, minimum=prefs.get("minimum", 1000),
+                          maximum=prefs.get("maximum", 1600), limit=120,
+                          published_after=prefs.get("published_after"), excluded_ids=excluded)
         excluded = set(excluded)
         with self.db.connect() as db:
             excluded.update(self._canonical(platform, pid) for platform, pid, ts in self._trusted_ac(db, time.time()))
@@ -196,6 +197,7 @@ class Daily:
     async def generate(self, payload):
         day, count = payload["day"], payload["count"]
         try:
+            await refresh_recommendation_sessions(self.accounts)
             with self.db.connect() as db:
                 history = [row[0] for row in db.execute('SELECT problem_id FROM daily_roll_history WHERE day=?', (day,))]
             pool = self._candidate_pool(count, history)
@@ -210,6 +212,7 @@ class Daily:
                 current = db.execute("SELECT status FROM daily_plans WHERE day=?", (day,)).fetchone()
                 if not current or current[0] != "generating":
                     raise AIError("每日计划状态已变化，请重试")
+                self._assert_no_battles(db, [row["id"] for row in chosen])
                 db.execute("DELETE FROM daily_plan_tasks WHERE day=?", (day,))
                 db.executemany("INSERT INTO daily_plan_tasks(day,ordinal,problem_id,data,active,created_at) VALUES(?,?,?,?,1,?)",
                     [(day, i, row["id"], json.dumps(row, ensure_ascii=False), now) for i, row in enumerate(chosen)])
@@ -223,6 +226,7 @@ class Daily:
     async def _roll(self, payload):
         token, day, task_id = payload["token"], payload["day"], payload["task_id"]
         try:
+            await refresh_recommendation_sessions(self.accounts)
             pool = self._candidate_pool(1, payload["excluded_ids"])
             if not pool:
                 raise AIError("没有新的候选题可替换，请同步题库或调整训练难度")
@@ -237,6 +241,7 @@ class Daily:
                 active = db.execute("SELECT id FROM daily_plan_tasks WHERE id=? AND day=? AND active=1", (task_id, day)).fetchone()
                 if not reservation or reservation[0] != "reserved" or not active:
                     raise AIError("换题请求已失效，请刷新每日任务")
+                self._assert_no_battles(db, [replacement["id"]])
                 prior = db.execute("SELECT problem_id FROM daily_plan_tasks WHERE id=?", (task_id,)).fetchone()[0]
                 if any(self._canonical(platform, pid) == prior
                        and datetime.fromtimestamp(ts, TZ).date().isoformat() == day
@@ -265,7 +270,7 @@ class Daily:
              "difficulty_range": [prefs.get("minimum", 1000), prefs.get("maximum", 1600)],
              "training_preferences": prefs, "daily_budget": self.settings(),
              "actual_time_evidence": self.evidence(),
-             "candidates": [{k: p.get(k) for k in ("id", "title", "difficulty", "tags", "url")} for p in pool]}, DailySelection)
+             "candidates": [{k: p.get(k) for k in ("id", "platform", "title", "difficulty", "difficulty_source", "native_difficulty", "difficulty_label", "tags", "url", "published_at", "published_at_source")} for p in pool]}, DailySelection)
         finally:
             self.active_ai = False
         allowed = {item["id"]: item for item in pool}
@@ -280,7 +285,17 @@ class Daily:
             selected.append({**allowed[pid], "reason": str(row.get("reason", ""))[:500]})
         if len(selected) != count:
             raise AIError(f"AI 未按要求返回 {count} 道不同题目，请重试")
+        current = recommendation_candidates(self.db, self.accounts, minimum=prefs.get("minimum", 1000),
+            maximum=prefs.get("maximum", 1600), limit=count, preferred_ids=[row["id"] for row in selected])
+        if not {row["id"] for row in selected} <= {row["id"] for row in current}:
+            raise AIError("候选资格已变化（登录、训练日期、提交或对战），未保存题单，请重试")
         return selected
+
+    @staticmethod
+    def _assert_no_battles(db, ids):
+        row = db.execute("SELECT value FROM web_settings WHERE key='battle_problem_ids'").fetchone()
+        if row and set(ids) & set(json.loads(row[0])):
+            raise AIError("候选刚被分配为对战题，本次选题取消且不扣换题次数，请重试")
 
     def _trusted_ac(self, db, now):
         rows = {(r[0], r[1], r[2]) for r in db.execute(
@@ -327,6 +342,7 @@ class Daily:
         return pid if pid.startswith(platform + ':') else platform + ':' + pid
 
     def save_time(self, payload):
+        battles = set(self.db.get("battle_problem_ids", []))
         with self.db.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             task = db.execute("SELECT day,problem_id FROM daily_plan_tasks WHERE id=? AND active=1",
@@ -335,7 +351,7 @@ class Daily:
                 raise HTTPException(404, '找不到本人的每日任务')
             verified = {(self._canonical(platform, pid), datetime.fromtimestamp(ts, TZ).date().isoformat())
                         for platform, pid, ts in self._trusted_ac(db, time.time())}
-            if (task['problem_id'], task['day']) not in verified:
+            if task['problem_id'] in battles or (task['problem_id'], task['day']) not in verified:
                 raise HTTPException(409, '请先同步这道题任务当日的官方 AC，再记录实际用时')
             db.execute("""INSERT INTO daily_task_times VALUES(?,?,?) ON CONFLICT(task_id)
                 DO UPDATE SET duration_minutes=excluded.duration_minutes,updated_at=excluded.updated_at""",
@@ -343,6 +359,7 @@ class Daily:
         return self.state()
 
     def evidence(self):
+        battles = set(self.db.get("battle_problem_ids", []))
         # User estimates inform training; they never prove an AC or a check-in.
         with self.db.connect() as db:
             verified = {(self._canonical(platform, pid), datetime.fromtimestamp(ts, TZ).date().isoformat())
@@ -351,7 +368,7 @@ class Daily:
                 FROM daily_task_times m JOIN daily_plan_tasks t ON t.id=m.task_id
                 WHERE t.active=1 ORDER BY t.day DESC,m.updated_at DESC LIMIT 60""").fetchall()
         return [{**dict(row), 'source': 'self_reported', 'verified_ac': True}
-                for row in rows if (row['problem_id'], row['day']) in verified]
+                for row in rows if row['problem_id'] not in battles and (row['problem_id'], row['day']) in verified]
 
     def snapshot(self, now=None):
         current_time = time.time() if now is None else now
@@ -380,6 +397,7 @@ class Daily:
         for platform, pid, ts in all_ac:
             day = datetime.fromtimestamp(ts, TZ).date().isoformat()
             by_day.setdefault(day, set()).add((platform, pid))
+        battles = set(self.db.get("battle_problem_ids", []))
         tasks_by_day = {}
         for task in all_tasks:
             tasks_by_day.setdefault(task['day'], []).append(task)
@@ -388,16 +406,16 @@ class Daily:
             day = historical_plan['day']
             required = [row['problem_id'] for row in tasks_by_day.get(day, [])]
             if len(required) == historical_plan['goal_count'] and required and all(
-                    pid in {self._canonical(platform, item) for platform, item in by_day.get(day, set())} for pid in required):
+                    pid not in battles and pid in {self._canonical(platform, item) for platform, item in by_day.get(day, set())} for pid in required):
                 k_days.add(day)
         for day, goal, recorded, recommended in legacy_k:
-            trusted = {self._canonical(platform, pid) for platform, pid in by_day.get(day, set())}
+            trusted = {self._canonical(platform, pid) for platform, pid in by_day.get(day, set())} - battles
             if goal >= 1 and len(recorded & trusted) >= goal and recorded <= trusted and recommended & trusted:
                 k_days.add(day)
         ordinary_days = {day for day, rows in by_day.items() if rows}
         month_start = date.fromisoformat(today).replace(day=1).isoformat()
         monthly_days = {day for day in ordinary_days if month_start <= day <= today}
-        solved = {self._canonical(platform, pid) for platform, pid in by_day.get(today, set())}
+        solved = {self._canonical(platform, pid) for platform, pid in by_day.get(today, set())} - battles
         active_tasks = tasks_by_day.get(today, [])
         completed = [row['problem_id'] for row in active_tasks if row['problem_id'] in solved]
         snapshot = {"today": today, "timezone": "Asia/Shanghai", "settings": settings,

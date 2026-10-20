@@ -6,7 +6,7 @@ import uuid
 from argparse import Namespace
 
 from . import analytics
-from .catalog import refresh_catalog, candidates
+from .catalog import refresh_catalog, recommendation_candidates, recommendation_status, refresh_recommendation_sessions
 from .codex_bridge import AIError
 from ojcrawler.config import load
 from ojcrawler.cli import crawl
@@ -55,7 +55,8 @@ class Jobs:
                 self.update(job_id,"completed" if result["complete"] else "partial",result)
             elif kind=="catalog":
                 result=await asyncio.to_thread(refresh_catalog,self.db)
-                self.update(job_id,"completed",result)
+                status = "completed" if result["complete"] else ("partial" if result["count"] else "failed")
+                self.update(job_id,status,result,error="所有平台题库同步失败；已保留原缓存，请查看分平台状态" if status == "failed" else None)
             elif kind=="ai_test":
                 result=await self.ai.test_connection()
                 self.update(job_id,"completed",result)
@@ -74,7 +75,7 @@ class Jobs:
                 result=await runner(payload["problem_id"],request)
                 self.update(job_id,"completed",result)
             elif kind in {"analysis","recommend"}:
-                context=await asyncio.to_thread(analytics.overview,self.db,payload.get("days",30),payload.get("platform",""))
+                context=await asyncio.to_thread(analytics.overview,self.db,payload.get("days",30),"" if kind=="recommend" else payload.get("platform",""))
                 if kind=="analysis" and not context["stats"]["submissions"]:
                     raise AIError("所选时间窗口没有提交数据，请先采集或扩大时间范围")
                 from .workbench import training_evidence
@@ -83,13 +84,25 @@ class Jobs:
                 context['actual_time_evidence'] = evidence() if evidence else []
                 selected=[]
                 if kind=="recommend":
-                    selected=candidates(self.db,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,payload.get("min_contest",0),platform=payload.get("platform") or "codeforces")
+                    await refresh_recommendation_sessions(self.accounts)
+                    selected=recommendation_candidates(self.db,self.accounts,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,published_after=payload.get("published_after"))
+                    context["candidate_constraints"]=recommendation_status(self.db,self.accounts,payload.get("published_after"))
                     if not selected:
                         raise AIError("没有满足条件的未做题，请先同步题库或调整筛选条件")
                 report=await self.ai.generate(payload["provider"],payload["model"],context,selected,payload.get("goal",""),task=kind)
+                if kind == "recommend":
+                    ids = [p["id"] for p in report.get("selected_problems", [])]
+                    current = recommendation_candidates(self.db,self.accounts,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),max(1,len(ids)),published_after=payload.get("published_after"),preferred_ids=ids)
+                    if not set(ids) <= {p["id"] for p in current}:
+                        raise AIError("候选资格已变化（登录、日期、提交或对战），未保存推荐，请重试")
                 report_id=uuid.uuid4().hex
-                report["data_window"]={"days":context["days"],"platform":payload.get("platform", ""),"submissions":context["stats"]["submissions"]}
+                report["data_window"]={"days":context["days"],"platform":"" if kind=="recommend" else payload.get("platform", ""),"submissions":context["stats"]["submissions"]}
                 with self.db.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    if kind == "recommend":
+                        battles = db.execute("SELECT value FROM web_settings WHERE key='battle_problem_ids'").fetchone()
+                        if battles and set(ids) & set(json.loads(battles[0])):
+                            raise AIError("推荐题目刚被分配为对战题，未保存推荐，请重试")
                     db.execute("INSERT INTO ai_reports VALUES(?,?,?,?,?,?)",(report_id,int(time.time()),kind,payload["provider"],payload["model"],json.dumps(report,ensure_ascii=False)))
                 self.update(job_id,"completed",{"report_id":report_id})
             else:

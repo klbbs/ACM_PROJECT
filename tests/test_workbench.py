@@ -10,7 +10,7 @@ from acmweb.app import create_app
 from acmweb.settings import Settings
 from acmweb.daily import Settings as DailySettings
 from acmweb.codex_bridge import AIError
-from acmweb.workbench import Draft, Link, Coach, normalize, parse_statement, training_evidence
+from acmweb.workbench import Draft, Link, Coach, CoachSettings, normalize, parse_statement, training_evidence
 from ojcrawler.models import Collection, Submission, verdict
 from ojcrawler.storage import Store
 
@@ -239,9 +239,10 @@ def test_daily_crawl_unknown_or_running_judge_cannot_be_reviewed(workspace, monk
         asyncio.run(service.coach('4-A', Coach(provider='api', model='mock'), aid))
 
 
-def test_choices_never_resurrect_attempted_done_or_skipped_ai_recommendations(workspace):
+def test_choices_never_resurrect_attempted_done_or_skipped_ai_recommendations(workspace, monkeypatch):
     _, service, _ = workspace
     service.db.set('training', {'minimum': 1000, 'maximum': 1600})
+    monkeypatch.setattr('acmweb.catalog.verified_platforms', lambda _: ['codeforces'])
     ids = ['10-A', '10-B', '10-C', '10-D', '10-E']
     with service.db.connect() as db:
         for pid in ids:
@@ -254,7 +255,7 @@ def test_choices_never_resurrect_attempted_done_or_skipped_ai_recommendations(wo
         db.execute('INSERT INTO ai_reports VALUES(?,?,?,?,?,?)', ('report', 1, 'recommend', 'api', 'mock',
                    json.dumps({'selected_problems': [{'id': 'codeforces:' + pid, 'reason': 'AI recommendation'} for pid in ids]})))
     choices = service.choices()
-    assert {item['id'] for item in choices['items']} == {'codeforces:10-D', 'codeforces:10-E'}
+    assert {item['id'] for item in choices['items']} == {'codeforces:10-D'}
     assert all(item['recommendation_source'] == '已保存的 AI 推荐' for item in choices['items'])
 
 
@@ -288,6 +289,7 @@ def test_hints_and_review_constraints_no_credentials(workspace, monkeypatch):
 def test_background_job_safe_result_and_optional_auto_review(workspace, monkeypatch):
     client, service, app = workspace
     aid = snapshot(service)
+    service.set_coach_settings(CoachSettings(enabled=True, provider='api', model='mock', consent=True))
     mock_judge(monkeypatch)
     monkeypatch.setattr(app.state.ai, '_api_generate', AsyncMock(side_effect=AIError('mock AI unavailable')))
     result = client.post(f'/api/workbench/attempt/{aid}/sync', json={'handle': 'demo', 'submission_id': 12345, 'review': {'provider': 'api', 'model': 'mock'}})
@@ -392,6 +394,9 @@ def test_collected_platform_verdict_sync(workspace,platform,pid):
  insert();result=service.sync(aid,Link(handle='demo',submission_id=111))
  assert result['verdict']=='WA' and result['source']=='collected_official_record'
  with service.db.connect() as conn:conn.execute('UPDATE wb_attempts SET review=? WHERE id=?',(json.dumps({'category':'logic'}),aid))
+ with service.db.connect() as conn:conn.execute('UPDATE submissions SET updated_at=? WHERE platform=? AND id=?',(now+60,platform,'111'))
+ service.sync(aid,Link(handle='demo',submission_id=111))
+ assert service.attempt(aid)['review']=={'category':'logic'}
  insert(status='AC');service.sync(aid,Link(handle='demo',submission_id=111))
  assert service.attempt(aid)['verdict']=='AC' and service.attempt(aid)['review'] is None
 
@@ -534,3 +539,119 @@ def test_failed_submission_id_can_be_corrected_without_losing_code(workspace, mo
         time.sleep(.01)
     assert job['status'] == 'completed'
     assert service.attempt(response.json()['attempt_id'])['verdict'] == 'WA'
+
+
+def test_automatic_coach_requires_explicit_consent_and_preserves_model(workspace):
+    client, service, _ = workspace
+    assert client.get('/api/workbench/coach-settings').json() == {'enabled': False, 'provider': 'api', 'model': ''}
+    assert client.put('/api/workbench/coach-settings', json={'enabled': True, 'model': 'mock'}).status_code == 400
+    assert client.put('/api/workbench/coach-settings', json={'enabled': True, 'consent': True}).status_code == 400
+    enabled = client.put('/api/workbench/coach-settings', json={'enabled': True, 'consent': True, 'model': 'chosen-model'})
+    assert enabled.json() == {'enabled': True, 'provider': 'api', 'model': 'chosen-model'}
+    assert 'generation' not in enabled.text
+    assert client.put('/api/workbench/coach-settings', json={'enabled': False}).json()['enabled'] is False
+
+
+@pytest.mark.parametrize('status', ['AC', 'PENDING', 'UNLINKED', 'UNRECOGNIZED_FINAL', 'SKIPPED', 'REJECTED'])
+def test_auto_coach_never_sends_for_success_pending_or_unknown(workspace, monkeypatch, status):
+    _, service, app = workspace
+    aid = snapshot(service)
+    service.set_coach_settings(CoachSettings(enabled=True, model='mock', consent=True))
+    with service.db.connect() as conn:
+        conn.execute('UPDATE wb_attempts SET verdict=?,judge_data=? WHERE id=?', (status, '{"verdict":"fixture"}', aid))
+    fake = AsyncMock()
+    monkeypatch.setattr(app.state.ai, 'complete', fake)
+    assert asyncio.run(service.automatic_review(aid))['automatic_review'] == 'not_applicable'
+    fake.assert_not_awaited()
+
+
+def test_auto_coach_disabled_ignores_stale_link_review_payload(workspace, monkeypatch):
+    _, service, app = workspace
+    aid = snapshot(service)
+    mock_judge(monkeypatch)
+    fake = AsyncMock()
+    monkeypatch.setattr(app.state.ai, 'complete', fake)
+    result = asyncio.run(app.state.jobs.run_workbench('wb_sync', {
+        'aid': aid, 'handle': 'demo', 'submission_id': 12345, 'review': {'provider': 'api', 'model': 'stale'}}))
+    assert result['verdict'] == 'WA' and result['automatic_review'] == 'disabled'
+    assert service.attempt(aid)['review'] is None
+    fake.assert_not_awaited()
+
+
+def test_auto_coach_error_is_once_per_code_and_official_result(workspace, monkeypatch):
+    _, service, app = workspace
+    aid = snapshot(service)
+    mock_judge(monkeypatch)
+    service.sync(aid, Link(handle='demo', submission_id=12345))
+    fake = AsyncMock(return_value=json.dumps({'category': 'boundary', 'line': 1,
+        'evidence': '仅针对用户关联代码检查边界，未运行代码。', 'question': '最小输入符合题意吗？', 'confidence': 'low'}))
+    monkeypatch.setattr(app.state.ai, '_api_generate', fake)
+    service.set_coach_settings(CoachSettings(enabled=True, model='mock', consent=True))
+    assert asyncio.run(service.automatic_review(aid))['automatic_review'] == 'completed'
+    assert asyncio.run(service.automatic_review(aid))['automatic_review'] == 'already_requested'
+    assert fake.await_count == 1
+    with service.db.connect() as conn:
+        row = json.loads(conn.execute('SELECT judge_data FROM wb_attempts WHERE id=?', (aid,)).fetchone()[0])
+        row['collected_at'] = int(time.time()) + 60
+        conn.execute('UPDATE wb_attempts SET judge_data=? WHERE id=?', (json.dumps(row), aid))
+    assert asyncio.run(service.automatic_review(aid))['automatic_review'] == 'already_requested'
+    assert fake.await_count == 1
+    prompt = fake.call_args.args[1]
+    assert 'TOP-SECRET' not in prompt and 'session=' not in prompt
+    assert '小步引导' in prompt and '严禁代码' in prompt and '不能证明具体根因' in prompt
+
+
+def test_turning_off_auto_coach_cancels_inflight_without_saving(workspace, monkeypatch):
+    _, service, app = workspace
+    aid = snapshot(service)
+    mock_judge(monkeypatch)
+    service.sync(aid, Link(handle='demo', submission_id=12345))
+    service.set_coach_settings(CoachSettings(enabled=True, model='mock', consent=True))
+
+    async def scenario():
+        started, cancelled = asyncio.Event(), asyncio.Event()
+        async def slow(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        monkeypatch.setattr(app.state.ai, 'complete', slow)
+        task = asyncio.create_task(service.automatic_review(aid))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        service.set_coach_settings(CoachSettings(enabled=False))
+        assert (await asyncio.wait_for(task, timeout=2))['automatic_review'] == 'cancelled'
+        assert cancelled.is_set()
+    asyncio.run(scenario())
+    assert service.attempt(aid)['review'] is None
+
+
+def test_workbench_choices_require_verified_sessions_but_keep_drafts(workspace):
+    _, service, _ = workspace
+    service.draft('4-A', Draft(code='personal unfinished work', revision=0))
+    choices = service.choices()
+    assert choices['items'] == [] and '已验证登录' in choices['notice']
+    assert choices['recent'][0]['problem_id'] == 'codeforces:4-A'
+    assert choices['eligibility']['platforms']
+
+
+def test_workbench_cross_platform_choices_respect_date_and_native_difficulty(workspace, monkeypatch):
+    _, service, _ = workspace
+    monkeypatch.setattr('acmweb.catalog.verified_platforms', lambda _: ['atcoder'])
+    service.db.set('training', {'minimum': 800, 'maximum': 1600, 'published_after': '2026-01-01'})
+    rows = [
+        {'id': 'atcoder:abc500_a', 'platform': 'atcoder', 'problem_id': 'abc500_a', 'title': 'new', 'difficulty': None,
+         'difficulty_source': 'AtCoder 未标定', 'tags': [], 'published_at': 1780000000, 'published_at_source': 'atcoder.archive.time'},
+        {'id': 'atcoder:abc001_a', 'platform': 'atcoder', 'problem_id': 'abc001_a', 'title': 'old', 'difficulty': None,
+         'tags': [], 'published_at': 1000000000, 'published_at_source': 'atcoder.archive.time'},
+    ]
+    with service.db.connect() as conn:
+        for row in rows:
+            conn.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('atcoder', row['id'], json.dumps(row)))
+        conn.execute('INSERT INTO ai_reports VALUES(?,?,?,?,?,?)', ('cross-report', 1, 'recommend', 'api', 'mock',
+            json.dumps({'selected_problems': [{'id': r['id'], 'reason': 'past recommendation'} for r in rows]})))
+    choices = service.choices()
+    assert [row['id'] for row in choices['items']] == ['atcoder:abc500_a']
+    assert choices['items'][0]['difficulty'] is None
+    assert choices['items'][0]['difficulty_source'] == 'AtCoder 未标定'

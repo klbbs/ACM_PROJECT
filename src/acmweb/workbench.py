@@ -16,7 +16,7 @@ from fastapi import HTTPException, Query
 from ojcrawler.http import Client
 from ojcrawler.models import CrawlError
 from ojcrawler.storage import codeforces_judge_verdict
-from .catalog import candidates
+from .catalog import recommendation_candidates, recommendation_status
 from .codex_bridge import AIError
 from .daily import Complete
 
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,f
 CREATE TABLE IF NOT EXISTS wb_drafts (problem_id TEXT PRIMARY KEY,language TEXT NOT NULL,code TEXT NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_hints (problem_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(problem_id,seq));
 CREATE TABLE IF NOT EXISTS wb_attempts (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,language TEXT NOT NULL,code TEXT NOT NULL,code_hash TEXT NOT NULL,created_at INTEGER NOT NULL,handle TEXT,submission_id INTEGER,verdict TEXT NOT NULL DEFAULT 'UNLINKED',judge_data TEXT,review TEXT,last_synced INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS wb_auto_reviews (fingerprint TEXT PRIMARY KEY,created_at INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS wb_remote_platform_case ON wb_attempts(substr(problem_id,1,instr(problem_id,':')-1),CASE WHEN problem_id LIKE 'codeforces:%' THEN lower(handle) ELSE handle END,submission_id) WHERE submission_id IS NOT NULL;
 DROP INDEX IF EXISTS wb_remote;
 DROP INDEX IF EXISTS wb_remote_platform;
@@ -126,6 +127,21 @@ class Coach(Strict):
     model: str = Field(min_length=1, max_length=150)
 
 
+class CoachSettings(Strict):
+    enabled: bool = Field(strict=True)
+    provider: Literal['api', 'codex'] = 'api'
+    model: str = Field(default='', max_length=150)
+    consent: bool = Field(default=False, strict=True)
+
+
+ERROR_VERDICTS = frozenset({'WA', 'RE', 'CE', 'TLE', 'MLE', 'OLE', 'PE', 'FAIL', 'PARTIAL',
+    'IDLENESS_LIMIT_EXCEEDED', 'PRESENTATION_ERROR', 'FAILED'})
+
+
+def official_judge(judge):
+    return {key: value for key, value in (judge or {}).items() if key != 'collected_at'}
+
+
 class Link(Strict):
     handle: str = Field(min_length=1, max_length=50, pattern=r'^[A-Za-z0-9_.-]+$')
     submission_id: int = Field(gt=0, le=10**12)
@@ -180,35 +196,64 @@ class Workbench:
         with db.connect() as conn:
             conn.executescript(DDL)
 
+    def coach_settings(self):
+        value = self.db.get('automatic_coach', {})
+        return {key: value.get(key, default) for key, default in
+                (('enabled', False), ('provider', 'api'), ('model', ''))}
+
+    def set_coach_settings(self, data):
+        if data.enabled and (not data.consent or not data.model.strip()):
+            raise HTTPException(400, '开启自动提示前，请选择模型并同意发送题面、当次代码和判题信息')
+        self.db.set('automatic_coach', {'enabled': data.enabled, 'provider': data.provider,
+            'model': data.model.strip(), 'generation': uuid.uuid4().hex})
+        return self.coach_settings()
+
+    def automatic_generation(self, token):
+        value = self.db.get('automatic_coach', {})
+        return bool(value.get('enabled') and value.get('generation') == token)
+
+    async def automatic_review(self, aid):
+        settings = self.db.get('automatic_coach', {})
+        if not settings.get('enabled'):
+            return {'automatic_review': 'disabled'}
+        attempt = self.attempt(aid)
+        if attempt['verdict'] not in ERROR_VERDICTS or not attempt.get('judge_data'):
+            return {'automatic_review': 'not_applicable'}
+        return await self.coach(attempt['problem_id'],
+            Coach(provider=settings['provider'], model=settings['model']), aid,
+            automatic_token=settings['generation'])
+
     def choices(self):
         prefs = self.db.get('training', {})
-        pool = candidates(self.db, prefs.get('minimum', 1000), prefs.get('maximum', 1600), limit=60)
         with self.db.connect() as conn:
             report = conn.execute("SELECT data FROM ai_reports WHERE kind='recommend' ORDER BY created_at DESC LIMIT 1").fetchone()
             recent = [dict(r) for r in conn.execute('SELECT problem_id,updated_at FROM wb_drafts ORDER BY updated_at DESC LIMIT 30')]
-            all_catalog = {r['id']: json.loads(r['data']) for r in conn.execute("SELECT id,data FROM problem_catalog WHERE platform='codeforces'")}
+            all_catalog = {r['id']: json.loads(r['data']) for r in conn.execute('SELECT id,data FROM problem_catalog')}
             rows = conn.execute("SELECT problem_id,verdict FROM wb_attempts WHERE verdict NOT IN ('UNLINKED','PENDING','AC')").fetchall()
-            excluded = {'codeforces:' + r[0] for r in conn.execute("SELECT DISTINCT problem_id FROM submissions WHERE platform='codeforces'")}
-            excluded.update(r[0] + ':' + r[1] for r in conn.execute("SELECT platform,problem_id FROM practice_feedback WHERE status IN ('done','skip')"))
         selected = {p['id']: p.get('reason', '') for p in json.loads(report['data']).get('selected_problems', [])} if report else {}
+        notice = ''
+        try:
+            pool = recommendation_candidates(self.db, self.accounts, prefs.get('minimum', 1000),
+                prefs.get('maximum', 1600), limit=60, preferred_ids=list(selected))
+        except AIError as exc:
+            pool, notice = [], str(exc)
         weak_tags = set()
         for row in rows:
             weak_tags.update(all_catalog.get(row['problem_id'], {}).get('tags', []))
-        for pid in selected:
-            if pid in all_catalog and pid not in excluded and pid not in {p['id'] for p in pool}:
-                pool.append(all_catalog[pid])
         target = (prefs.get('minimum', 1000) + prefs.get('maximum', 1600)) / 2
         for p in pool:
             ai_reason = selected.get(p['id'])
-            weak = sorted(set(p['tags']) & weak_tags)
-            p['match_score'] = min(100, max(10, round(70 - abs(p['difficulty'] - target) / 20)) + (15 if weak else 0) + (15 if ai_reason else 0))
-            p['reason'] = ai_reason or ('近期未通过题目的关联知识点：' + '、'.join(weak) if weak else '符合当前训练难度范围')
+            weak = sorted(set(p.get('tags', [])) & weak_tags)
+            base = round(70 - abs(p['difficulty'] - target) / 20) if p['platform'] == 'codeforces' and isinstance(p.get('difficulty'), int) else 70
+            p['match_score'] = min(100, max(10, base) + (15 if weak else 0) + (15 if ai_reason else 0))
+            p['reason'] = ai_reason or ('近期未通过题目的关联知识点：' + '、'.join(weak) if weak else ('符合当前训练难度范围' if p['platform'] == 'codeforces' else '来自已验证登录的平台；保留该平台原始难度'))
             p['recommendation_source'] = '已保存的 AI 推荐' if ai_reason else '训练规则匹配'
         pool.sort(key=lambda p: -p['match_score'])
         return {'items': pool[:30], 'recent': recent, 'profile': training_evidence(self.db),
                 'handles_by_platform': {p:[a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform')==p] for p in ('codeforces','atcoder','luogu','nowcoder')},
                 'handles': [a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform') == 'codeforces'],
-                'score_note': '匹配指数由难度、近期未通过的关联标签和已保存 AI 推荐计算，并非通过概率。'}
+                'eligibility': recommendation_status(self.db, self.accounts), 'notice': notice,
+                'score_note': '在已验证登录的平台中混合随机选题，并遵守最早发布日期。匹配指数综合同平台难度、错误关联标签和 AI 推荐；跨平台难度不作等价换算，也不是通过概率。'}
 
     def state(self, pid):
         pid = normalize(pid)
@@ -461,19 +506,22 @@ class Workbench:
                 current=conn.execute('SELECT * FROM wb_attempts WHERE id=?',(attempt['id'],)).fetchone()
                 if current['submission_id'] and (current['submission_id']!=data.submission_id or current['handle']!=data.handle):
                     raise AIError('另一请求已关联提交，请刷新页面')
-                conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?',(data.handle,data.submission_id,status,serialized,now,status,serialized,attempt['id']))
+                unchanged = current['verdict'] == status and official_judge(json.loads(current['judge_data'] or '{}')) == official_judge(judge)
+                conn.execute('UPDATE wb_attempts SET handle=?,submission_id=?,verdict=?,judge_data=?,last_synced=?,review=CASE WHEN ? THEN review ELSE NULL END WHERE id=?',(data.handle,data.submission_id,status,serialized,now,unchanged,attempt['id']))
         except sqlite3.IntegrityError:
             raise AIError('此平台提交已关联另一份代码记录') from None
         return {'attempt_id':attempt['id'],'verdict':status,'code_verified':False,'source':'collected_official_record','collected_at':row['updated_at']}
 
-    async def coach(self, pid, config, aid=None):
+    async def coach(self, pid, config, aid=None, *, automatic_token=None):
         pid = normalize(pid)
         async with self.lock:
+            if automatic_token and not self.automatic_generation(automatic_token):
+                return {'automatic_review': 'cancelled'}
             state = self.state(pid)
             if not state['statement']:
                 raise AIError('请先成功获取题面')
             attempt = self.attempt(aid) if aid else None
-            if attempt and (attempt['problem_id'] != pid or attempt['verdict'] in {'UNLINKED', 'PENDING', 'AC'}):
+            if attempt and (attempt['problem_id'] != pid or attempt['verdict'] not in ERROR_VERDICTS or not attempt.get('judge_data')):
                 raise AIError('仅对本题已核验的未通过提交进行错因复盘')
             if not attempt and len(state['hints']) >= 8:
                 raise AIError('本题已提供 8 次提示，请先独立尝试或复习已有提示')
@@ -482,7 +530,33 @@ class Workbench:
             if attempt:
                 data['attempt'] = {k: attempt[k] for k in ('code', 'language', 'verdict', 'judge_data')}
                 data['code_correspondence_verified'] = False
-            completed = await self.ai.complete('review' if attempt else 'hint', config.provider, config.model, data, schema)
+            if automatic_token:
+                # Collection timestamps change on every sync and are not a new official result.
+                judge = official_judge(attempt['judge_data'])
+                fingerprint = hashlib.sha256(json.dumps([pid, attempt['handle'], attempt['submission_id'],
+                    attempt['code_hash'], attempt['verdict'], judge], sort_keys=True).encode()).hexdigest()
+                with self.db.connect() as conn:
+                    inserted = conn.execute('INSERT OR IGNORE INTO wb_auto_reviews VALUES(?,?)',
+                        (fingerprint, int(time.time()))).rowcount
+                if not inserted:
+                    return {'automatic_review': 'already_requested'}
+            request = asyncio.create_task(self.ai.complete('review' if attempt else 'hint', config.provider, config.model, data, schema))
+            try:
+                if automatic_token:
+                    while not request.done():
+                        await asyncio.wait({request}, timeout=.05)
+                        if not self.automatic_generation(automatic_token):
+                            return {'automatic_review': 'cancelled'}
+                completed = await request
+            finally:
+                if not request.done():
+                    request.cancel()
+                    try:
+                        await request
+                    except asyncio.CancelledError:
+                        pass
+            if automatic_token and not self.automatic_generation(automatic_token):
+                return {'automatic_review': 'cancelled'}
             result = completed.data
             serialized = json.dumps(result, ensure_ascii=False)
             if re.search(r'```|#include|\bint\s+main\s*\(|\bdef\s+\w+\s*\(|\bfor\s*\(|\bwhile\s*\(|public\s+static', serialized):
@@ -490,13 +564,21 @@ class Workbench:
             if attempt and result['line'] > len(attempt['code'].splitlines()):
                 raise AIError('AI 引用代码行号越界，已丢弃')
             with self.db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                if automatic_token:
+                    # Serialize the final consent check with disabling the preference.
+                    row = conn.execute("SELECT value FROM web_settings WHERE key='automatic_coach'").fetchone()
+                    settings = json.loads(row[0]) if row else {}
+                    if not settings.get('enabled') or settings.get('generation') != automatic_token:
+                        return {'automatic_review': 'cancelled'}
                 if attempt:
-                    changed = conn.execute('UPDATE wb_attempts SET review=? WHERE id=? AND verdict=? AND last_synced=? AND judge_data=?', (json.dumps(result, ensure_ascii=False), aid, attempt['verdict'], attempt['last_synced'], json.dumps(attempt['judge_data']))).rowcount
-                    if not changed:
+                    current = conn.execute('SELECT * FROM wb_attempts WHERE id=?', (aid,)).fetchone()
+                    if not current or current['verdict'] != attempt['verdict'] or current['code_hash'] != attempt['code_hash'] or official_judge(json.loads(current['judge_data'] or '{}')) != official_judge(attempt['judge_data']):
                         raise AIError('判题已改变，请重新复盘')
+                    conn.execute('UPDATE wb_attempts SET review=? WHERE id=?', (json.dumps(result, ensure_ascii=False), aid))
                 else:
                     conn.execute('INSERT INTO wb_hints VALUES(?,?,?,?)', (pid, len(state['hints']) + 1, json.dumps(result, ensure_ascii=False), int(time.time())))
-            return {'problem_id': pid, 'attempt_id': aid}
+            return {'problem_id': pid, 'attempt_id': aid, **({'automatic_review': 'completed'} if automatic_token else {})}
 
 
 def register(app, service, jobs, daily=None):
@@ -522,6 +604,14 @@ def register(app, service, jobs, daily=None):
     def save_editor_settings(data: EditorSettings):
         service.db.set('editor_settings', data.model_dump())
         return data.model_dump()
+
+    @app.get('/api/workbench/coach-settings')
+    def coach_settings():
+        return service.coach_settings()
+
+    @app.put('/api/workbench/coach-settings')
+    def save_coach_settings(data: CoachSettings):
+        return service.set_coach_settings(data)
 
     @app.get('/api/workbench')
     def choices(): return service.choices()
@@ -600,10 +690,9 @@ def register(app, service, jobs, daily=None):
                     await asyncio.to_thread(daily.complete, Complete(problem_id=attempt['problem_id']))
                 except Exception:
                     result['checkin_error'] = '判题已保存，但签到未更新；请刷新每日任务或同步平台记录'
-            if payload.get('review') and result['verdict'] not in {'UNLINKED', 'PENDING', 'AC'}:
+            if result['verdict'] in ERROR_VERDICTS:
                 try:
-                    attempt = service.attempt(payload['aid'])
-                    await service.coach(attempt['problem_id'], Coach.model_validate(payload['review']), payload['aid'])
+                    result.update(await service.automatic_review(payload['aid']))
                 except Exception:
                     result['review_error'] = '判题已保存，AI 复盘未完成，请手动重试'
             return result

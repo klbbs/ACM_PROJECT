@@ -22,6 +22,15 @@ def main():
                             allow_env_ai_key=False, multi_user=False, production=False,
                             access_token='', public_origin='')
         app = create_app(settings)
+        # Synthetic principal evidence exists only in this guarded temporary fixture.
+        app.state.credential_checks.statuses = lambda: {'items':[{'platform':'codeforces','handle':'fixture','status':'authenticated','login_verified':True,'checked_at':int(time.time())}]}
+        def fixture_login_check(platform, handle):
+            cookie, _ = app.state.credential_checks.credential(platform, handle)
+            return {'platform':platform,'handle':handle,'status':'authenticated' if cookie else 'missing',
+                    'login_verified':bool(cookie),'checked_at':int(time.time()),'auto_submit_supported':False,
+                    'message':'隔离合成身份验证' if cookie else '未保存 Cookie；公开信息仍可采集，登录凭据尚未检测。'}
+        app.state.credential_checks.check = fixture_login_check
+
         # Test-process-only substitutes: never post code or call paid AI APIs.
         from acmweb import workbench
         async def fixture_ai(model, prompt, schema):
@@ -70,7 +79,7 @@ def main():
             if any(not task.done() for _, task in app.state.jobs.tasks.values()):
                 raise HTTPException(409, 'Previous fixture job is still running')
             with app.state.database.connect() as db:
-                for table in ('wb_hints', 'wb_attempts', 'wb_drafts', 'wb_problems',
+                for table in ('wb_auto_reviews', 'wb_hints', 'wb_attempts', 'wb_drafts', 'wb_problems',
                               'submissions', 'accounts', 'snapshots', 'runs', 'practice_feedback'):
                     db.execute('DELETE FROM ' + table)
                 db.executemany('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements)

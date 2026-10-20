@@ -3,6 +3,7 @@ import json
 import time
 from datetime import timedelta
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -17,7 +18,8 @@ from acmweb.codex_bridge import AIError
 def daily(tmp_path):
     db = Database(tmp_path / 'daily.sqlite3')
     ai = AsyncMock()
-    service = Daily(db, ai)
+    accounts = SimpleNamespace(credential_checks=SimpleNamespace(statuses=lambda: {"items": [{"platform": "codeforces", "status": "authenticated", "login_verified": True}]}))
+    service = Daily(db, ai, accounts)
     service.configure(Settings(daily_goal=2, duration_days=14))
     with db.connect() as conn:
         conn.executemany('INSERT INTO problem_catalog VALUES(?,?,?)', [

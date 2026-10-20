@@ -13,6 +13,7 @@ async function open(page: Page, problem = '4-A') {
 async function reset(page: Page) {
   const restored = await page.request.post('/_fixture/reset-workbench')
   expect(restored.ok()).toBe(true)
+  await page.request.put('/api/workbench/coach-settings', { data: { enabled: false } })
   await page.request.put('/api/workbench/editor-settings', {
     data: { keymap: 'standard', font_size: 14, line_wrapping: false },
   })
@@ -473,4 +474,51 @@ test('self-test uses custom input, compares output and keeps results out of subm
   await expect(page.locator('.wb-attempt')).toHaveCount(0)
   await page.locator('.cm-content').fill('int main() { return 1; }')
   await expect(page.locator('.wb-selftest-result')).toHaveCount(0)
+})
+
+test('automatic error coaching needs opt-in and gives a small hint after a verified WA', async ({
+  page,
+}) => {
+  await page.route('**/api/ai/models?provider=api', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ id: 'fixture-coach', name: '合成教练模型' }],
+        default_model: 'fixture-coach',
+        source: 'fixture',
+        note: '离线测试',
+      },
+    }),
+  )
+  await page.request.put('/api/accounts', {
+    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
+  })
+  await open(page)
+  const toggle = page.getByRole('checkbox', { name: '开启自动错误提示', exact: true })
+  await expect(toggle).not.toBeChecked()
+  await expect(toggle).toBeDisabled()
+  await page.getByLabel('AI 通道').selectOption('api')
+  await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
+  await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
+  await toggle.check()
+  await expect(page.getByText(/已开启 · 使用 api \/ fixture-coach/)).toBeVisible()
+  await page.getByLabel('代码语言').selectOption('python3')
+  await page.getByLabel('源代码', { exact: true }).fill('print("automatic coach opt-in test")')
+  const form = page.locator('.wb-submission-form')
+  await form.getByLabel('本次平台提交号').fill('920001')
+  await form.getByRole('checkbox').check()
+  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  const attempt = page.locator('article.wb-attempt').last()
+  await expect(attempt.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
+  await expect(attempt.getByText(/仅针对本地快照检查边界/)).toBeVisible({ timeout: 15000 })
+  // Automatic consent is separate from optional manual-hint consent; no manual call was made.
+  await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).not.toBeChecked()
+  await toggle.uncheck()
+  await expect(
+    page.getByText('自动提示已关闭，不会自动发送代码。仍可手动获取小提示或分析错因。'),
+  ).toBeVisible()
+  await expect
+    .poll(
+      async () => (await (await page.request.get('/api/workbench/coach-settings')).json()).enabled,
+    )
+    .toBe(false)
 })
