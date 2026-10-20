@@ -415,7 +415,7 @@ test('self-test clearly reports disabled service and never sends code', async ({
     return route.abort()
   })
   await open(page)
-  await page.getByText('代码自测 · 自定义输入', { exact: true }).click()
+  await expect(page.locator('.wb-editor .wb-selftest')).toHaveAttribute('open', '')
   await expect(page.getByText('管理员尚未配置隔离自测服务。网站不会直接执行代码。')).toBeVisible()
   await expect(page.getByRole('button', { name: '运行自测', exact: true })).toHaveCount(0)
   expect(runs).toBe(0)
@@ -452,11 +452,19 @@ test('self-test uses custom input, compares output and keeps results out of subm
   })
   await open(page)
   await page.locator('.cm-content').fill('int main() { return 0; }')
-  await page.getByText('代码自测 · 自定义输入', { exact: true }).click()
+  await expect(page.locator('.wb-editor .wb-selftest')).toHaveAttribute('open', '')
+  // The console belongs to the editor card and stays available in fullscreen.
+  await expect(page.locator('.wb-content > .wb-self-test')).toHaveCount(0)
+  await page.getByRole('button', { name: '编辑器全屏', exact: true }).click()
+  await expect(page.locator('.wb-editor-fullscreen .wb-selftest')).toBeVisible()
+  await expect(page.locator('.wb-editor-fullscreen .cm-workspace + .wb-selftest')).toHaveCount(1)
   await page.getByLabel('填入自测样例').selectOption('0')
   await expect(page.getByLabel('自测输入', { exact: true })).toHaveValue('1\n2')
   await page.getByLabel('自测输入', { exact: true }).fill('3 4\n')
   await page.getByLabel('自测预期输出', { exact: true }).fill('8\n')
+  await page
+    .locator('.wb-editor')
+    .screenshot({ path: test.info().outputPath('editor-self-test.png') })
   const run = page.getByRole('button', { name: '运行自测', exact: true })
   await expect(run).toBeDisabled()
   await page.getByLabel('我同意将本次代码和输入发送到管理员配置的隔离自测服务').check()
@@ -474,6 +482,8 @@ test('self-test uses custom input, compares output and keeps results out of subm
   await expect(page.locator('.wb-attempt')).toHaveCount(0)
   await page.locator('.cm-content').fill('int main() { return 1; }')
   await expect(page.locator('.wb-selftest-result')).toHaveCount(0)
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click()
+  await expect(page.locator('.wb-editor .wb-selftest')).toBeVisible()
 })
 
 test('automatic error coaching needs opt-in and gives a small hint after a verified WA', async ({

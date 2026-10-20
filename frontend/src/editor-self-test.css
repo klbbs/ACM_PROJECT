@@ -1,0 +1,77 @@
+/* A single editing card contains both source code and its test console. */
+.wb-editor .cm-workspace {
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.wb-editor .wb-selftest {
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 1px solid var(--line, #e2e5ed);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: #f8faf9;
+}
+.wb-editor .wb-selftest summary {
+  padding: 2px 0;
+  font-size: 14px;
+}
+.wb-selftest-badge {
+  display: inline-block;
+  margin-left: 10px;
+  border: 1px solid #cce6d6;
+  border-radius: 20px;
+  padding: 1px 8px;
+  color: #276544;
+  background: #edf8f0;
+  font-size: 11px;
+  font-weight: 500;
+}
+.wb-selftest-intro {
+  margin-bottom: 8px;
+}
+.wb-selftest-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin: 12px 0;
+}
+.wb-selftest-inputs > label {
+  min-width: 0;
+}
+.wb-selftest-inputs textarea {
+  min-height: 125px;
+  resize: vertical;
+  font-size: 13px;
+  line-height: 1.6;
+  background: #fff;
+}
+.wb-editor .wb-selftest .wb-consent {
+  margin: 12px 0;
+}
+.wb-editor-fullscreen.wb-editor .cm-host .cm-scroller {
+  max-height: 50dvh;
+  min-height: 240px;
+}
+.wb-editor-fullscreen.wb-editor .cm-host .cm-content {
+  min-height: 240px;
+}
+.wb-editor-fullscreen.wb-editor .cm-host .cm-editor {
+  min-height: 240px;
+}
+@media (min-width: 650px) {
+  .wb-selftest-inputs.has-expected {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .wb-editor .wb-selftest {
+    padding: 12px 10px;
+  }
+  .wb-selftest-badge {
+    display: none;
+  }
+  .wb-editor-fullscreen.wb-editor .cm-host .cm-scroller {
+    max-height: 45dvh;
+  }
+}

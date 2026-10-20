@@ -111,7 +111,7 @@ class SelfTester:
 
     async def capabilities(self):
         if not self.enabled:
-            return {'enabled': False, 'languages': {}, 'message': '管理员尚未配置隔离自测服务。可下载代码后在本地运行，网站不会直接执行代码。'}
+            return {'enabled': False, 'languages': {}, 'message': '管理员尚未配置隔离自测服务。可复制代码后在本地运行，网站不会直接执行代码。'}
         if self._languages is None or time.monotonic() - self._languages_at > 300:
             async with self.client() as client:
                 languages = await self.request(client, 'GET', '/languages')

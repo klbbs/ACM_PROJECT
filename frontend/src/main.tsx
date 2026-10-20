@@ -45,6 +45,7 @@ import { DailyTasksPage } from './daily-tasks'
 import { SocialPage } from './social'
 import { nav, navigationGroups, availableNavigation, type Page } from './navigation'
 import { MainDirectory } from './main-directory'
+import { CatalogSyncPanel } from './catalog-sync'
 
 type Row = Record<string, any>
 const statusNames: Record<string, string> = {
@@ -185,6 +186,7 @@ function App() {
     [revision, setRevision] = useState(0),
     [search, setSearch] = useState(''),
     [globalSearch, setGlobalSearch] = useState('')
+  const [jobsReadError, setJobsReadError] = useState('')
   const seenJobs = useRef<Record<string, string>>({})
   const [provider, setProvider] = useState('codex'),
     [model, setModel] = useState(''),
@@ -254,6 +256,7 @@ function App() {
       api('/jobs')
         .then((data) => {
           if (!alive) return
+          setJobsReadError('')
           let changed = false
           for (const job of data.items) {
             if (
@@ -271,7 +274,9 @@ function App() {
           setJobs(data.items)
           if (changed) reload()
         })
-        .catch(() => {})
+        .catch((e) => {
+          if (alive) setJobsReadError(e.message)
+        })
     poll()
     const timer = setInterval(poll, 3500)
     return () => {
@@ -299,12 +304,25 @@ function App() {
       setError('')
       const created = await api(path, 'POST', payload ?? {})
       if (created.id) seenJobs.current[created.id] = 'queued'
-      setNotice('任务已加入队列，可在页面底部查看进度')
-      const data = await api('/jobs')
-      setJobs(data.items)
+      setNotice(
+        path === '/catalog/refresh'
+          ? '题库同步已提交，可在“真实候选题目”查看分平台进度'
+          : '任务已加入队列，可在页面底部查看进度',
+      )
+      try {
+        const data = await api('/jobs')
+        setJobs(data.items)
+        setJobsReadError('')
+      } catch (e: any) {
+        setJobsReadError(e.message)
+        // The POST was accepted. A failed status read must not lose its job id
+        // or encourage the user to submit the same work again.
+      }
+      return created
       // Keep newly queued status until the poll observes completion, including fast jobs.
     } catch (e: any) {
       setError(e.message)
+      return { error: e.message }
     }
   }
   const running = (kind: string) =>
@@ -1015,6 +1033,8 @@ function App() {
               provider={provider}
               busy={running('recommend')}
               catalogBusy={running('catalog')}
+              jobs={jobs}
+              jobsReadError={jobsReadError}
               start={(extra: Row) => startAnalysis(true, extra)}
               run={run}
               report={report}
@@ -1095,7 +1115,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.14.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.14.2</span>
             </span>
           </footer>
         </div>
@@ -1485,6 +1505,8 @@ function PracticePage({
   provider,
   busy,
   catalogBusy,
+  jobs,
+  jobsReadError,
   start,
   run,
   report,
@@ -1498,6 +1520,39 @@ function PracticePage({
     [publishedAfter, setPublishedAfter] = useState(''),
     [catalog, setCatalog] = useState<Row>({ items: [] }),
     [removed, setRemoved] = useState<string[]>([])
+  const [catalogSyncJob, setCatalogSyncJob] = useState<Row | null>(null)
+  const [catalogStarting, setCatalogStarting] = useState(false)
+  const [catalogSyncError, setCatalogSyncError] = useState('')
+  const [catalogReadError, setCatalogReadError] = useState('')
+  const [catalogLoading, setCatalogLoading] = useState(true)
+  const [catalogQueryRevision, setCatalogQueryRevision] = useState(0)
+  const syncRequestPending = useRef(false)
+  const syncPanel = useRef<HTMLDivElement>(null)
+  const latestCatalogJob = catalogSyncJob
+    ? jobs.find((job: Row) => job.id === catalogSyncJob.id) || catalogSyncJob
+    : jobs.find((job: Row) => job.kind === 'catalog')
+  const catalogSyncBusy =
+    catalogStarting || catalogBusy || ['queued', 'running'].includes(latestCatalogJob?.status)
+  const syncCatalog = async () => {
+    syncPanel.current?.scrollIntoView({ block: 'start' })
+    if (syncRequestPending.current || catalogSyncBusy) return
+    syncRequestPending.current = true
+    setCatalogStarting(true)
+    setCatalogSyncError('')
+    try {
+      const created = await run('/catalog/refresh')
+      if (!created?.id) {
+        setCatalogSyncError(created?.error || '未能启动题库同步，请检查网络后重试。')
+        return
+      }
+      setCatalogSyncJob({ ...created, kind: 'catalog', created_at: Math.floor(Date.now() / 1000) })
+    } catch (e: any) {
+      setCatalogSyncError(e.message || '未能启动题库同步，请稍后重试。')
+    } finally {
+      syncRequestPending.current = false
+      setCatalogStarting(false)
+    }
+  }
   useEffect(() => {
     api('/training')
       .then((p) => {
@@ -1508,12 +1563,33 @@ function PracticePage({
       .catch((e) => onError(e.message))
   }, [])
   useEffect(() => {
+    let current = true
+    setCatalogReadError('')
+    setCatalogLoading(true)
+    if (minimum > maximum) {
+      setCatalog({ items: [] })
+      setCatalogReadError('最低练习难度高于最高难度，请先调整筛选范围。')
+      setCatalogLoading(false)
+      return
+    }
     api(
       `/catalog?minimum=${minimum}&maximum=${maximum}&tags=${encodeURIComponent(tag)}${publishedAfter ? `&published_after=${publishedAfter}` : ''}`,
     )
-      .then(setCatalog)
-      .catch((e) => onError(e.message))
-  }, [minimum, maximum, tag, publishedAfter, revision])
+      .then((data) => {
+        if (current) setCatalog(data)
+      })
+      .catch((e) => {
+        if (!current) return
+        setCatalogReadError(e.message)
+        setCatalog({ items: [] })
+      })
+      .finally(() => {
+        if (current) setCatalogLoading(false)
+      })
+    return () => {
+      current = false
+    }
+  }, [minimum, maximum, tag, publishedAfter, revision, catalogQueryRevision])
   const selected =
     report?.kind === 'recommend'
       ? report.data.selected_problems.filter((item: Row) =>
@@ -1547,51 +1623,54 @@ function PracticePage({
             <h2>给下一次突破，选一道好题</h2>
             <p>已提交的题目自动排除，AI 只会从下面的真实候选中选择。</p>
           </div>
-          <Button
-            className="secondary"
-            loading={catalogBusy}
-            onClick={() => run('/catalog/refresh')}
-          >
+          <Button className="secondary" loading={catalogSyncBusy} onClick={syncCatalog}>
             <RefreshCw size={15} />
             同步平台题库
           </Button>
         </div>
-        <div className="catalog-eligibility" aria-label="平台选题状态">
-          {(catalog.eligibility?.platforms || []).map((item: Row) => (
-            <article
-              className={`catalog-platform ${item.login_verified ? 'ready' : ''}`}
-              key={item.platform}
-            >
-              <strong>
-                {names[item.platform]} · {item.login_verified ? '已验证登录' : '待检测登录'}
-              </strong>
-              <p>
-                {item.login_verified
-                  ? `${item.date_eligible_count} 道符合日期要求`
-                  : '暂不参与推荐'}
-              </p>
-              <p>
-                缓存 {item.cached_count ?? 0} 题 · 日期未知 {item.unknown_publication_count ?? 0} 题
-              </p>
-              <p>{item.notice}</p>
-              {catalog.eligibility?.refresh?.find((row: Row) => row.platform === item.platform)
-                ?.status === 'failed' && <p>同步失败，已保留旧缓存；可重试或查看平台访问限制。</p>}
-              {item.updated_at && <p>最近同步：{date(item.updated_at)}</p>}
-            </article>
-          ))}
-        </div>
-        {!catalog.eligibility?.platforms?.some((item: Row) => item.login_verified) && (
-          <p className="social-note">
-            先到连接与设置绑定平台，再同步平台题库；点击 AI 选题时也会重新检测已保存的过期会话。
-            <button
-              className="text-button"
-              onClick={() => window.dispatchEvent(new Event('acm:open-settings'))}
-            >
-              管理连接
-            </button>
-          </p>
+        {!catalogLoading && !catalogReadError && (
+          <div className="catalog-eligibility" aria-label="平台选题状态">
+            {(catalog.eligibility?.platforms || []).map((item: Row) => (
+              <article
+                className={`catalog-platform ${item.login_verified ? 'ready' : ''}`}
+                key={item.platform}
+              >
+                <strong>
+                  {names[item.platform]} · {item.login_verified ? '已验证登录' : '待检测登录'}
+                </strong>
+                <p>
+                  {item.login_verified
+                    ? `${item.date_eligible_count} 道符合日期要求`
+                    : '暂不参与推荐'}
+                </p>
+                <p>
+                  缓存 {item.cached_count ?? 0} 题 · 日期未知 {item.unknown_publication_count ?? 0}{' '}
+                  题
+                </p>
+                <p>{item.notice}</p>
+                {catalog.eligibility?.refresh?.find((row: Row) => row.platform === item.platform)
+                  ?.status === 'failed' && (
+                  <p>同步失败，已保留旧缓存；可重试或查看平台访问限制。</p>
+                )}
+                {item.updated_at && <p>最近同步：{date(item.updated_at)}</p>}
+              </article>
+            ))}
+          </div>
         )}
-        {catalog.eligibility?.requires_publication_date && (
+        {!catalogLoading &&
+          !catalogReadError &&
+          !catalog.eligibility?.platforms?.some((item: Row) => item.login_verified) && (
+            <p className="social-note">
+              先到连接与设置绑定平台，再同步平台题库；点击 AI 选题时也会重新检测已保存的过期会话。
+              <button
+                className="text-button"
+                onClick={() => window.dispatchEvent(new Event('acm:open-settings'))}
+              >
+                管理连接
+              </button>
+            </p>
+          )}
+        {!catalogLoading && !catalogReadError && catalog.eligibility?.requires_publication_date && (
           <p className="social-note">
             {catalog.eligibility.notice}
             <button
@@ -1728,12 +1807,43 @@ function PracticePage({
       )}
       <div className="section-title">
         <h2>
-          真实候选题目 <span>{catalog.items.length}</span>
+          真实候选题目{' '}
+          <span>{catalogLoading ? '…' : catalogReadError ? '—' : catalog.items.length}</span>
         </h2>
         <span className="help">排除平台历史与已完成/跳过记录</span>
       </div>
+      <div ref={syncPanel} className="catalog-sync-anchor">
+        {jobsReadError &&
+          (catalogStarting || ['queued', 'running'].includes(latestCatalogJob?.status)) && (
+            <p className="alert" role="alert">
+              暂时无法读取题库同步进度：{jobsReadError}。系统会自动重试，请勿重复提交同步任务。
+            </p>
+          )}
+        <CatalogSyncPanel
+          job={latestCatalogJob}
+          eligibility={catalog.eligibility}
+          candidateCount={catalog.items.length}
+          busy={catalogStarting}
+          requestError={catalogSyncError}
+          candidateError={catalogReadError}
+          loadingCandidates={catalogLoading}
+          onSettings={() => window.dispatchEvent(new Event('acm:open-settings'))}
+        />
+      </div>
       <section className="card candidate-list">
-        {catalog.items.length ? (
+        {catalogLoading ? (
+          <Empty title="正在读取候选题目…" detail="正在检查平台登录与当前筛选条件，请稍候。" />
+        ) : catalogReadError ? (
+          <Empty
+            title="暂时无法读取候选题目"
+            detail={catalogReadError}
+            action={
+              <Button className="secondary" onClick={() => setCatalogQueryRevision((n) => n + 1)}>
+                重新读取候选
+              </Button>
+            }
+          />
+        ) : catalog.items.length ? (
           <div className="table-scroll">
             <table>
               <thead>
@@ -1780,13 +1890,9 @@ function PracticePage({
         ) : (
           <Empty
             title="还没有合适的候选题目"
-            detail="先同步官方题库，或调整难度与知识点筛选条件。"
+            detail="请查看上方同步状态与候选条件说明；同步完成后仍需验证平台登录，才能将该平台加入推荐。"
             action={
-              <Button
-                className="secondary"
-                loading={catalogBusy}
-                onClick={() => run('/catalog/refresh')}
-              >
+              <Button className="secondary" loading={catalogSyncBusy} onClick={syncCatalog}>
                 <RefreshCw size={15} />
                 同步平台题库
               </Button>

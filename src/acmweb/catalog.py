@@ -144,11 +144,45 @@ def _nowcoder(client):
 DISCOVERY = {'codeforces': _cf, 'atcoder': _atcoder, 'luogu': _luogu, 'nowcoder': _nowcoder}
 
 
-def refresh_catalog(database, platform=None):
-    """Partial failures retain each platform's previous catalog, never fake success."""
+def _sync_error(exc):
+    """Only structured, allowlisted upstream facts reach users; never exception text."""
+    message = str(exc)
+    http = re.search(r'\bHTTP (\d{3})\b', message)
+    if http:
+        code = int(http.group(1))
+        if code == 429: return 'rate_limited', '官方平台请求过于频繁（HTTP 429），请稍后重试；旧缓存仍可使用'
+        if code in (401, 403): return 'access_denied', f'官方平台拒绝访问（HTTP {code}），可能需要浏览器验证或服务器访问受限；旧缓存仍可使用'
+        if code >= 500: return 'upstream_unavailable', f'官方平台服务暂时异常（HTTP {code}）；请稍后重试'
+        return 'http_error', f'官方平台返回 HTTP {code}；已保留旧缓存'
+    if 'Timeout' in message: return 'timeout', '连接官方平台超时，请稍后重试或检查服务器到该平台的网络'
+    if 'SSLError' in message: return 'tls_error', '连接官方平台时证书校验失败，请检查服务器时间和证书环境'
+    if '网络请求失败' in message: return 'network_error', '无法连接官方平台，请检查服务器网络、DNS 或该平台的访问限制'
+    if 'JSON' in message: return 'unexpected_response', '官方平台返回登录页、验证页或非预期内容，未取得可用题库'
+    if '空内容' in message: return 'empty_catalog', '官方列表未返回支持的题目，可能存在访问验证或页面结构变化'
+    return 'source_changed', '官方题库数据结构不兼容或页面发生变化；已保留旧缓存，请反馈此平台同步问题'
+
+
+def refresh_catalog(database, platform=None, on_progress=None):
+    """Publish each platform's progress and retain its old cache on any source failure."""
     if platform is not None and platform not in PLATFORMS: raise AIError('无效题库平台')
-    results = []
-    for name in (platform,) if platform else PLATFORMS:
+    names = (platform,) if platform else PLATFORMS
+    started = int(time.time())
+    results = [{'platform': name, 'status': 'queued', 'count': 0} for name in names]
+
+    def snapshot():
+        return {'count': sum(row['count'] for row in results),
+                'platforms': [dict(row) for row in results],
+                'complete': all(row['status'] == 'updated' for row in results),
+                'completed_platforms': sum(row['status'] in ('updated', 'failed') for row in results),
+                'total_platforms': len(names), 'started_at': started, 'updated_at': int(time.time())}
+
+    def publish():
+        if on_progress: on_progress(snapshot())
+
+    publish()
+    for index, name in enumerate(names):
+        results[index]['status'] = 'running'
+        publish()
         client = Client(timeout=15, retries=0)
         try:
             rows = DISCOVERY[name](client)
@@ -159,22 +193,25 @@ def refresh_catalog(database, platform=None):
                     [(name, row['id'], json.dumps(row, ensure_ascii=False)) for row in rows])
             now = int(time.time()); database.set('catalog_updated_at:' + name, now)
             if name == 'codeforces': database.set('catalog_updated_at', now)
-            results.append({'platform': name, 'status': 'updated', 'count': len(rows),
-                'dated_count': sum(bool(row.get('published_at')) for row in rows)})
-        except (CrawlError, AIError, KeyError, ValueError, TypeError):
-            results.append({'platform': name, 'status': 'failed', 'count': 0,
-                'message': '官方题库获取失败、访问受限或结构变化；已保留原缓存，请稍后重试'})
+            results[index] = {'platform': name, 'status': 'updated', 'count': len(rows),
+                'dated_count': sum(bool(row.get('published_at')) for row in rows), 'updated_at': now,
+                'message': '已更新官方公开题库；是否参与 AI 选题还需满足登录验证与下方筛选条件'}
+        except (CrawlError, AIError, KeyError, ValueError, TypeError) as exc:
+            code, message = _sync_error(exc)
+            results[index] = {'platform': name, 'status': 'failed', 'count': 0,
+                'error_code': code, 'message': message, 'updated_at': int(time.time())}
         finally: client.close()
+        publish()
     database.set('catalog_refresh_status', results)
-    return {'count': sum(row['count'] for row in results), 'platforms': results,
-            'complete': all(row['status'] == 'updated' for row in results)}
+    database.set('catalog_refresh_at', int(time.time()))
+    return snapshot()
 
 
 def _canonical(platform, pid):
     return pid if pid.startswith(platform + ':') else platform + ':' + pid
 
 
-def _pool(database, platform):
+def _pool(database, platform, include_excluded=False):
     with database.connect() as db:
         rows = db.execute('SELECT data FROM problem_catalog WHERE platform=?', (platform,)).fetchall()
         cached = db.execute('SELECT data FROM wb_problems WHERE id LIKE ?', (platform + ':%',)).fetchall()
@@ -192,7 +229,7 @@ def _pool(database, platform):
         merged[pid] = _problem(platform, pid.split(':', 1)[1], statement['title'],
             published_at=statement.get('published_at'), published_at_source=statement.get('published_at_source'),
             candidate_source='用户已获取的官方题面缓存')
-    return [p for p in merged.values() if p['id'] not in excluded]
+    return list(merged.values()) if include_excluded else [p for p in merged.values() if p['id'] not in excluded]
 
 
 def _date_floor(value):
@@ -267,20 +304,51 @@ def recommendation_candidates(database, accounts, minimum=800, maximum=1600, tag
     return result
 
 
-def recommendation_status(database, accounts, published_after=None):
+def recommendation_status(database, accounts, published_after=None, minimum=800, maximum=3500, tags=None):
     prefs = database.get('training', {})
     requires_date = requires_publication_date(prefs)
     verified = set(verified_platforms(accounts)); floor = max(filter(None, (published_after, prefs.get('published_after'))), default=None)
-    _date_floor(floor)
+    floor_ts = _date_floor(floor)
+    avoided = set(prefs.get('avoid_tags', []))
     rows = []
     for platform in PLATFORMS:
+        raw = _pool(database, platform, include_excluded=True)
         pool = _pool(database, platform)
         unknown = sum(not publication_time(p.get('published_at')) or p.get('published_at_source') not in PUBLISHED_SOURCES for p in pool)
+        counts = {'attempted_or_reserved': len(raw) - len(pool), 'unknown_date': 0, 'before_date': 0,
+                  'difficulty': 0, 'tags': 0, 'avoided_tags': 0}
+        eligible = []
+        for problem in pool:
+            # Keep the same exclusive rejection order as candidates(): CF
+            # difficulty first, then date, requested tags, and avoided tags.
+            if platform == 'codeforces' and (not isinstance(problem.get('difficulty'), int) or not minimum <= problem['difficulty'] <= maximum):
+                counts['difficulty'] += 1; continue
+            if floor_ts is not None:
+                if not publication_time(problem.get('published_at')) or problem.get('published_at_source') not in PUBLISHED_SOURCES:
+                    counts['unknown_date'] += 1; continue
+                if problem['published_at'] < floor_ts:
+                    counts['before_date'] += 1; continue
+            if tags and not set(tags) & set(problem.get('tags', [])):
+                counts['tags'] += 1; continue
+            if problem.get('tags') and set(problem['tags']).issubset(avoided):
+                counts['avoided_tags'] += 1; continue
+            eligible.append(problem)
+        reasons = []
+        if platform not in verified: reasons.append('登录尚未通过检测或检测已过期：到连接与设置点击“检测登录状态”；仅保存 Cookie 不会参与选题')
+        if requires_date: reasons.append(LEGACY_DATE_NOTICE)
+        if not raw: reasons.append('本地尚无此平台的官方题库缓存：点击“同步平台题库”；同步公开列表不需要登录，也不会检测 Cookie')
+        labels = {'attempted_or_reserved': '题已提交、已完成、已跳过或被对战占用', 'unknown_date': '题缺少可靠发布日期，按日期限制排除',
+                  'before_date': '题早于最早发布日期', 'difficulty': '题不在 CF 难度区间内', 'tags': '题不匹配所选标签', 'avoided_tags': '题仅含已屏蔽标签'}
+        reasons.extend(f'{count} {labels[key]}' for key, count in counts.items() if count)
+        active_count = len(eligible) if platform in verified and not requires_date else 0
         rows.append({'platform': platform, 'login_verified': platform in verified,
-            'cached_count': len(pool), 'unknown_publication_count': unknown,
+            'cached_count': len(pool), 'total_cached_count': len(raw), 'unknown_publication_count': unknown,
             'date_eligible_count': 0 if requires_date else len(candidates(database, minimum=800, maximum=3500, limit=100000, platform=platform, published_after=floor)),
+            'eligible_count': active_count, 'filter_counts': counts, 'reasons': reasons,
             'updated_at': database.get('catalog_updated_at:' + platform),
             'notice': (LEGACY_DATE_NOTICE if requires_date else '') or ('需要重新检测登录状态，保存 Cookie 不代表登录成功' if platform not in verified else '') or
                       ('部分题目缺少可靠发布日期；设置日期下限后将排除这些题目' if unknown else '')})
     return {'platforms': rows, 'published_after': floor, 'requires_publication_date': requires_date,
-            'notice': LEGACY_DATE_NOTICE if requires_date else '', 'refresh': database.get('catalog_refresh_status', [])}
+            'candidate_count': sum(row['eligible_count'] for row in rows),
+            'notice': LEGACY_DATE_NOTICE if requires_date else '', 'refresh': database.get('catalog_refresh_status', []),
+            'last_refresh_at': database.get('catalog_refresh_at')}

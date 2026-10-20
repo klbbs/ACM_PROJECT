@@ -6,6 +6,7 @@ const StatementView = React.lazy(() =>
 import { EditorShell } from './editor-shell'
 import { SubmissionHistory, SubmissionForm } from './submission-history'
 import { SelfTestPanel } from './self-test-panel'
+import './editor-self-test.css'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
@@ -556,6 +557,12 @@ export function WorkbenchPage({
                   onSave={save}
                   onError={onError}
                 />
+                <SelfTestPanel
+                  key={pid}
+                  code={code}
+                  language={language}
+                  samples={statement?.samples || []}
+                />
                 <details className="wb-shortcuts">
                   <summary>编辑器快捷键与补全说明</summary>
                   <p>
@@ -600,14 +607,6 @@ export function WorkbenchPage({
                   最多 64 KiB；代码自动保存，自测由专用隔离服务执行。请在题目所属平台
                   选择相应语言提交同一份代码。
                 </p>
-              </section>
-              <section className="card wb-self-test">
-                <SelfTestPanel
-                  key={pid}
-                  code={code}
-                  language={language}
-                  samples={statement?.samples || []}
-                />
               </section>
               <section className="card wb-coach">
                 <h3>

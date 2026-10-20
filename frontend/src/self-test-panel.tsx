@@ -82,8 +82,14 @@ export function SelfTestPanel({
   const supported = !!capabilities?.languages[language]
   const passed = result?.status_id === 3 && result.matched !== false
   return (
-    <details className="wb-selftest">
-      <summary>代码自测 · 自定义输入</summary>
+    <details className="wb-selftest" open>
+      <summary>
+        <span>代码自测 · 自定义输入</span>
+        <span className="wb-selftest-badge">控制台</span>
+      </summary>
+      <p className="wb-selftest-intro muted">
+        在下方填入样例或自己的测试数据，运行后在此查看输出。
+      </p>
       <p className="muted">{capabilities?.message || '正在检查隔离自测服务…'}</p>
       {capabilities?.enabled && (
         <>
@@ -119,20 +125,38 @@ export function SelfTestPanel({
               </select>
             </label>
           )}
-          <label>
-            自测输入
-            <textarea
-              aria-label="自测输入"
-              rows={5}
-              maxLength={65536}
-              value={stdin}
-              onChange={(e) => {
-                setStdin(e.target.value)
-                setResult(null)
-              }}
-              spellCheck={false}
-            />
-          </label>
+          <div className={`wb-selftest-inputs ${compare ? 'has-expected' : ''}`}>
+            <label>
+              自测输入
+              <textarea
+                aria-label="自测输入"
+                rows={5}
+                maxLength={65536}
+                value={stdin}
+                onChange={(e) => {
+                  setStdin(e.target.value)
+                  setResult(null)
+                }}
+                spellCheck={false}
+              />
+            </label>
+            {compare && (
+              <label>
+                预期输出
+                <textarea
+                  aria-label="自测预期输出"
+                  rows={4}
+                  maxLength={65536}
+                  value={expected}
+                  onChange={(e) => {
+                    setExpected(e.target.value)
+                    setResult(null)
+                  }}
+                  spellCheck={false}
+                />
+              </label>
+            )}
+          </div>
           <label className="wb-consent">
             <input
               type="checkbox"
@@ -141,22 +165,6 @@ export function SelfTestPanel({
             />{' '}
             对照预期输出（忽略行尾空白与末尾空行）
           </label>
-          {compare && (
-            <label>
-              预期输出
-              <textarea
-                aria-label="自测预期输出"
-                rows={4}
-                maxLength={65536}
-                value={expected}
-                onChange={(e) => {
-                  setExpected(e.target.value)
-                  setResult(null)
-                }}
-                spellCheck={false}
-              />
-            </label>
-          )}
           <label className="wb-consent">
             <input
               type="checkbox"
@@ -176,7 +184,10 @@ export function SelfTestPanel({
       )}
       {error && <p role="alert">{error}</p>}
       {result && (
-        <div className={`wb-selftest-result ${passed ? 'selftest-pass' : 'selftest-fail'}`} aria-live="polite">
+        <div
+          className={`wb-selftest-result ${passed ? 'selftest-pass' : 'selftest-fail'}`}
+          aria-live="polite"
+        >
           <style>{`
             .wb-selftest-result { border-left: 4px solid; padding: 12px; animation: selftest-appear .25s ease-out; }
             .selftest-pass { border-color: #16834b; background: #edf9f1; color: #175337; }
@@ -186,10 +197,15 @@ export function SelfTestPanel({
             @media (prefers-reduced-motion: reduce) { .wb-selftest-result { animation: none; } }
           `}</style>
           <p>
-            <strong>{passed ? (result.matched === true ? 'PASS · 与预期输出一致' : '运行成功 · 尚未对照预期输出') : result.status_id === 3 ? 'FAIL · 与预期输出不一致' : `FAIL · ${result.status}`}</strong>
-            {result.matched !== null && (
-              <span> · {result.matched ? '与预期输出一致' : '与预期输出不一致'}</span>
-            )}
+            <strong>
+              {passed
+                ? result.matched === true
+                  ? 'PASS · 与预期输出一致'
+                  : '运行成功 · 尚未对照预期输出'
+                : result.status_id === 3
+                  ? 'FAIL · 与预期输出不一致'
+                  : `FAIL · ${result.status}`}
+            </strong>
           </p>
           <p className="muted">
             用时 {result.time || '—'} 秒 · 内存 {result.memory ?? '—'} KiB

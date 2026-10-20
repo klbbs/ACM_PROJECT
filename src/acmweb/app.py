@@ -95,7 +95,7 @@ def create_app(settings=None):
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.14.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.14.2",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     register_credential_checks(app,account_config)
     from .extension import register as register_extension
     from .announcements import register as register_announcements
@@ -138,7 +138,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.14.1"}
+    def health():return {"status":"ok","version":"0.14.2"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -235,7 +235,7 @@ def create_app(settings=None):
     @app.get("/api/catalog")
     def catalog(minimum:int=Query(default=800,ge=800,le=3500),maximum:int=Query(default=1600,ge=800,le=3500),tags:str="",published_after:PublicationDate=None):
         if minimum>maximum:raise HTTPException(400,"最低难度不能超过最高难度")
-        status = recommendation_status(database,account_config,published_after=published_after)
+        status = recommendation_status(database,account_config,published_after=published_after,minimum=minimum,maximum=maximum,tags=[t for t in tags.split(',') if t])
         with database.connect() as db:
             recent = db.execute("SELECT data FROM ai_reports WHERE kind='recommend' ORDER BY created_at DESC LIMIT 1").fetchone()
         preferred = [p['id'] for p in json.loads(recent['data']).get('selected_problems', [])] if recent else []

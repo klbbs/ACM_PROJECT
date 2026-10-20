@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+import threading
 import uuid
 from argparse import Namespace
 
@@ -54,7 +55,18 @@ class Jobs:
                 result=await asyncio.to_thread(self.crawl, payload['platform']) if payload.get('platform') else await asyncio.to_thread(self.crawl)
                 self.update(job_id,"completed" if result["complete"] else "partial",result)
             elif kind=="catalog":
-                result=await asyncio.to_thread(refresh_catalog,self.db)
+                # A cancelled to_thread keeps running until its current request returns.
+                # Close progress delivery before persisting "interrupted", otherwise a
+                # late source callback could resurrect a stopped job as "running".
+                progress_lock = threading.Lock()
+                progress_open = True
+                def publish_progress(progress):
+                    with progress_lock:
+                        if progress_open: self.update(job_id,"running",progress)
+                try:
+                    result=await asyncio.to_thread(refresh_catalog,self.db,on_progress=publish_progress)
+                finally:
+                    with progress_lock: progress_open = False
                 status = "completed" if result["complete"] else ("partial" if result["count"] else "failed")
                 self.update(job_id,status,result,error="所有平台题库同步失败；已保留原缓存，请查看分平台状态" if status == "failed" else None)
             elif kind=="ai_test":
@@ -86,7 +98,7 @@ class Jobs:
                 if kind=="recommend":
                     await refresh_recommendation_sessions(self.accounts)
                     selected=recommendation_candidates(self.db,self.accounts,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),60,published_after=payload.get("published_after"))
-                    context["candidate_constraints"]=recommendation_status(self.db,self.accounts,payload.get("published_after"))
+                    context["candidate_constraints"]=recommendation_status(self.db,self.accounts,payload.get("published_after"),minimum=payload.get("minimum",800),maximum=payload.get("maximum",1600),tags=payload.get("tags"))
                     if not selected:
                         raise AIError("没有满足条件的未做题，请先同步题库或调整筛选条件")
                 report=await self.ai.generate(payload["provider"],payload["model"],context,selected,payload.get("goal",""),task=kind)
