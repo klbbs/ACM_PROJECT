@@ -1,4 +1,4 @@
-# 平台 Cookie 油猴助手与更新公告（0.15.1 · 脚本1.0.1）
+# 平台 Cookie 油猴助手与更新公告（0.15.2 · 脚本1.0.1）
 
 在网站登录后打开「连接与设置」的 Cookie 助手与平台绑定教程。当前推荐油猴脚本，不再要求用户加载未签名 Firefox 扩展或每次重启临时安装。
 
@@ -7,8 +7,18 @@
 1. 从 [Tampermonkey 官方网站](https://www.tampermonkey.net/) 为当前浏览器安装 Tampermonkey 5.3+。
 2. 在 ACM Lab 教程中复制脚本源码；打开油猴管理面板，新建脚本，替换默认示例后保存。也可下载 `.user.js` 后在油猴中导入。主推复制源码，避免脚本管理器跨上下文获取时丢失 ACM Lab 登录态。
 3. 正常登录算法平台、完成平台验证，在官方 HTTPS 页面点击 ACM Lab Cookie 助手或油猴菜单命令。支持 `codeforces.com`、`www.luogu.com.cn`、`www.nowcoder.com`、`ac.nowcoder.com`、`atcoder.jp`。
-4. 复制成功后，回到「算法平台连接」选择平台、填写本人的 handle / UID，粘贴 Cookie，保存并检测。牛客建议在 `ac.nowcoder.com` 算法页面操作。
+4. 复制成功后，回到「算法平台连接」选择平台、填写本人的 handle / UID，粘贴 Cookie并保存；Codeforces、牛客、AtCoder再检测登录。洛谷使用UID同步公开资料，在官方网页交题。牛客建议在 `ac.nowcoder.com` 算法页面操作。
 5. 若未确认 HttpOnly 读取能力，可另点「复制当前可读 Cookie（可能不完整）」并回本站检测；API 为空/不可用时仅尝试当前页面可读部分，不称为完整凭据。需要完整 Cookie 或检测不通过时，使用 F12：Network → 刷新官方页面 → Document 请求 → Request Headers → Cookie 完整值。不要用 `document.cookie` 替代完整请求 Cookie。
+
+### CF优先：可选Firefox Beta获取完整会话
+
+1. 从 [Tampermonkey官方Firefox下载页](https://www.tampermonkey.net/?browser=firefox) 选择 **Tampermonkey BETA**。先备份原脚本，再停用稳定版；确保只有一个管理器运行助手，避免旧版弹窗和重复脚本干扰。安装由用户自行完成，不修改Firefox签名检查。
+2. 在Beta中导入ACM Lab助手1.0.1。需要排查权限时，打开 Settings → Config mode: Advanced → Security → Allow scripts to access cookies；读取HttpOnly需要All，本次真实隔离测试默认也是All；「All but protected cookies (HttpOnly)」仍会排除HttpOnly。若不开放该权限，可使用F12备选。不要仅凭版本名假设权限已允许。
+3. 在同一普通窗口登录CF，正常完成人机验证，确认 [设置页](https://codeforces.com/settings/general) 显示本人handle；验证码由本人处理。
+4. 刷新设置页，用助手获取Cookie并回本站保存。若显示「可能不完整」，请检查权限或使用F12实际请求Cookie。新版Beta不是绕过CF访问限制的工具。
+5. 点击「检测登录状态」，必须看到CF返回身份与本人handle匹配才算真实通过；若返回登录页、验证或受限，按实际原因处理。
+
+2026-10-20使用独立临时Firefox157.0.1实际安装官方Beta5.6.6239并导入助手1.0.1，在匿名AtCoder页设置合成HttpOnly Cookie，真实GM Cookie API及Firefox剪贴板验证读取成功；页面document.cookie无法读取该测试Cookie。没有修改日常Firefox或提交代码。此验收确认真实管理器的导出能力，不代表CF账号身份已验证，见[实机记录](acceptance/2026-10-20-v0.15.2/TAMPERMONKEY_BETA_REAL.md)。
 
 ### HttpOnly 限制
 
@@ -28,7 +38,7 @@
 
 遇到验证码或访问限制，平台连接卡片会给出原因、官方处理入口和下一步。先在当前浏览器进入官方页面，完成登录或验证，重新获取 Cookie 并保存，再执行「重新检测」。主动重新检测不会把 60 秒内的旧结果冒充新结果，仍受防刷间隔限制。
 
-官方浏览器通过验证不保证服务器 IP 也能访问。洛谷 HTTP 418 等限制不能直接判为 Cookie 过期。本站不把第三方挑战页原始 HTML、验证码会话或 CSRF 放到自己域名执行，也不声称能将服务器验证码原样搬到用户浏览器完成。持续受限时，应在官方页面完成读题/交题，本站可保留公开资料采集和手动导入题面流程。详见 [检测说明](CREDENTIAL_CHECK.md)。
+官方浏览器通过验证不保证服务器 IP 也能访问。洛谷连接页目前仅提供公开资料同步与官方网页交题，不提供登录检测或验证码重试引导。本站不把第三方挑战页原始 HTML、验证码会话或 CSRF 放到自己域名执行，也不声称能将服务器验证码原样搬到用户浏览器完成。持续受限时，应在官方页面完成读题/交题，本站可保留公开资料采集和手动导入题面流程。详见 [检测说明](CREDENTIAL_CHECK.md)。
 
 ## 分发与构建
 

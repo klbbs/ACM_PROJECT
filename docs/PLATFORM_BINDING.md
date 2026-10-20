@@ -13,6 +13,12 @@
 
 在连接与设置中复制 ACM Lab 脚本源码，在 Tampermonkey 新建脚本并保存，刷新算法平台后主动获取 Cookie。无需临时加载未签名 Firefox 扩展。脚本没有返回 HttpOnly 时，可明确选择复制当前可读部分，随后以本站登录检测为准；这不保证凭据完整。需要完整 Cookie 或检测失败时，使用下面的 F12 流程；不能把 `document.cookie` 当作完整凭据。具体安装与限制见 [油猴助手](BROWSER_EXTENSION.md)。
 
+## Codeforces：先核对当前会话
+
+可以选择官方Firefox Beta来获取HttpOnly，具体安装/权限步骤见 [油猴助手](BROWSER_EXTENSION.md)。先在同一浏览器普通窗口正常登录CF并打开设置页，再获取完整Cookie、保存与检测。不要同时运行稳定版和Beta中的两份助手。
+
+服务器检测会提示是否发现CF常见会话字段`JSESSIONID`，只用于检查导出完整性；出现该字段或HttpOnly不等于登录成功，缺失时也不直接覆盖官方返回的真实身份结论。最终标准是CF设置页返回的当前身份与配置handle匹配。现有本地Cookie如果仍返回登录跳转，需要更新当前会话，不能以旧数据或合成页面宣称已验证。
+
 ## Codeforces：完整的 F12 操作
 
 1. 在本人浏览器打开 [Codeforces 登录页](https://codeforces.com/enter)，正常完成登录和平台验证。右上角应出现本人 handle，再进入个人主页或 My submissions。
@@ -42,13 +48,13 @@ JSESSIONID、RCPC 与其他验证 Cookie 是否存在，以浏览器当前实际
 
 | 平台 | 采集标识 | 请求域名与注意事项 |
 | --- | --- | --- |
-| 洛谷 | `https://www.luogu.com.cn/user/数字UID` 的数字 UID | 复制 `www.luogu.com.cn` 已登录请求；昵称不能代替 UID |
+| 洛谷 | `https://www.luogu.com.cn/user/数字UID` 的数字 UID | 同步公开资料与提交记录；交题使用洛谷官方网页 |
 | 牛客 | 算法个人主页的数字 UID | 登录后进入 `ac.nowcoder.com` 算法页面，复制实际发送的 Cookie，避免只复制 `www.nowcoder.com` 登录页 |
 | AtCoder | `https://atcoder.jp/users/用户名` 的用户名 | 复制 `atcoder.jp` 已登录请求；公开成绩可匿名访问，不能证明会话有效 |
 
 浏览器网络面板见 [Firefox 官方说明](https://firefox-source-docs.mozilla.org/devtools-user/network_monitor/request_details/index.html) 与 [Chrome 官方请求标头说明](https://developer.chrome.com/docs/devtools/network/reference#headers)。
 
-牛客检测已支持官网当前会话字段，必须识别到与配置 UID 一致的真实会话身份；页面结构不匹配时仍显示“无法确认”，不能只凭 HTTP200 或公开主页判定成功。洛谷 418 和其他平台验证页按访问受限处理，不直接断言 Cookie 过期。状态解释见 [登录检测说明](CREDENTIAL_CHECK.md)。
+牛客检测已支持官网当前会话字段，必须识别到与配置 UID 一致的真实会话身份；页面结构不匹配时仍显示“无法确认”，不能只凭 HTTP200 或公开主页判定成功。洛谷连接页不提供登录检测或验证码重试引导，使用数字 UID 同步公开资料，并在官方网页交题。状态解释见 [登录检测说明](CREDENTIAL_CHECK.md)。
 
 ## 排查
 

@@ -73,11 +73,11 @@ test('release banner persists read state, retains history and rejects failed ack
   await expect(page.getByRole('region', { name: '历史更新公告' })).toContainText('已读')
 })
 
-test('Luogu verification explains browser handling and refreshes after a user completes it', async ({
+test('AtCoder verification explains browser handling and refreshes after a user completes it', async ({
   page,
 }) => {
   const blocked = {
-    platform: 'luogu',
+    platform: 'atcoder',
     handle: '42',
     status: 'blocked',
     reason: 'captcha',
@@ -88,7 +88,7 @@ test('Luogu verification explains browser handling and refreshes after a user co
   }
   await page.route('**/api/platforms', (route) =>
     route.fulfill({
-      json: { items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }] },
+      json: { items: [{ platform: 'atcoder', accounts: [{ handle: '42', has_cookie: true }] }] },
     }),
   )
   await page.route('**/api/accounts/checks', (route) =>
@@ -96,7 +96,7 @@ test('Luogu verification explains browser handling and refreshes after a user co
   )
   await page.route('**/api/accounts/check', (route) => {
     expect(route.request().postDataJSON()).toEqual({
-      platform: 'luogu',
+      platform: 'atcoder',
       handle: '42',
       force_refresh: true,
     })
@@ -117,7 +117,7 @@ test('Luogu verification explains browser handling and refreshes after a user co
   await expect(account).toContainText('需要在官方完成验证')
   await expect(account.getByRole('link', { name: '打开官方平台处理验证 ↗' })).toHaveAttribute(
     'href',
-    'https://www.luogu.com.cn/',
+    'https://atcoder.jp/login',
   )
   await expect(account).toContainText('不等于 Cookie 过期')
   await expect(account.locator('iframe')).toHaveCount(0)
@@ -126,6 +126,33 @@ test('Luogu verification explains browser handling and refreshes after a user co
   await account.getByRole('button', { name: '已处理，重新检测' }).click()
   await expect(account).toContainText('已验证登录')
   await expect(account.getByRole('button', { name: '已处理，重新检测' })).toHaveCount(0)
+})
+
+test('Luogu offers public sync and official submission without unusable verification controls', async ({ page }) => {
+  let loginChecks = 0
+  await page.route('**/api/platforms', route => route.fulfill({ json: {
+    items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }],
+  } }))
+  await page.route('**/api/accounts/checks', route => route.fulfill({ json: { items: [{
+    platform: 'luogu', handle: '42', status: 'blocked', reason: 'access_restricted',
+    upstream_status: 418, checked_at: Math.floor(Date.now() / 1000),
+    message: '旧缓存中的访问限制提示', browser_action_required: true,
+  }] } }))
+  await page.route('**/api/accounts/check', route => {
+    loginChecks++
+    return route.fulfill({ status: 500, json: { detail: 'Luogu should not request login verification' } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  const account = page.locator('.platform-account-check')
+  await expect(account).toContainText('公开资料同步')
+  await expect(account).not.toContainText(/访问限制|418|已验证登录|验证码/)
+  await expect(account.getByRole('button')).toHaveCount(0)
+  await expect(page.getByRole('link', { name: '打开洛谷官方网页 ↗' })).toHaveAttribute('href', 'https://www.luogu.com.cn/')
+  await expect(page.getByRole('button', { name: '同步此平台信息' })).toBeEnabled()
+  expect(loginChecks).toBe(0)
+  await account.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: test.info().outputPath('luogu-public-sync.png') })
 })
 
 test('mobile userscript guide keeps install controls and source within the viewport', async ({
@@ -153,4 +180,60 @@ test('mobile userscript guide keeps install controls and source within the viewp
   expect(widths.document).toBeLessThanOrEqual(widths.viewport)
   await guide.scrollIntoViewIfNeeded()
   await page.screenshot({ path: test.info().outputPath('userscript-mobile.png') })
+})
+
+test('CF verification checks the returned principal rather than just the session cookie marker', async ({
+  page,
+}) => {
+  const result = {
+    platform: 'codeforces',
+    handle: 'fixture',
+    checked_at: Math.floor(Date.now() / 1000),
+    status: 'unknown',
+    reason: 'page_changed',
+    message: '合成验收：尚未获得当前登录身份',
+    cookie_diagnostics: { cf_session_cookie_present: true },
+    browser_action_required: false,
+  }
+  await page.route('**/api/platforms', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ platform: 'codeforces', accounts: [{ handle: 'fixture', has_cookie: true }] }],
+      },
+    }),
+  )
+  await page.route('**/api/accounts/checks', (route) =>
+    route.fulfill({ json: { items: [result] } }),
+  )
+  await page.route('**/api/accounts/check', (route) =>
+    route.fulfill({
+      json: {
+        ...result,
+        status: 'authenticated',
+        reason: 'identity_verified',
+        matched_account: 'fixture',
+        message: '合成验收：官方当前身份与配置匹配',
+      },
+    }),
+  )
+  await page.goto('/')
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  const account = page.locator('.platform-account-check')
+  await expect(account).toContainText('JSESSIONID：已检测到')
+  await expect(account).toContainText('无法确认登录')
+  await expect(account).not.toContainText('已验证登录')
+  await account.getByRole('button', { name: '检测登录状态', exact: true }).click()
+  await expect(account).toContainText('已验证登录')
+  await expect(account).toContainText('平台返回账号：fixture')
+  await account.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: test.info().outputPath('cf-verification.png') })
+  await page.getByRole('button', { name: '安装油猴脚本与绑定教程', exact: true }).click()
+  await expect(page.getByRole('link', { name: 'Firefox Beta 官方下载页 ↗' })).toHaveAttribute(
+    'href',
+    'https://www.tampermonkey.net/?browser=firefox',
+  )
+  await expect(page.getByRole('link', { name: '打开 CF 设置页核对当前登录 ↗' })).toHaveAttribute(
+    'href',
+    'https://codeforces.com/settings/general',
+  )
 })

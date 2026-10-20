@@ -122,8 +122,8 @@ export function PlatformConnections({ revision, run, onError }: any) {
     <section className="card settings-card">
       <h2>平台信息、登录检测与交题</h2>
       <p className="help">
-        保存 Cookie
-        后，请逐个账号检测。公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
+        Codeforces、牛客和 AtCoder 保存 Cookie 后，请逐个账号检测。
+        洛谷目前提供公开资料同步与官方网页交题。公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
         本站目前通过官方页面交题，不支持用 Cookie 自动代提交。官方页仍需在你当前浏览器中登录。
       </p>
       <div className="platform-action-grid">
@@ -132,6 +132,16 @@ export function PlatformConnections({ revision, run, onError }: any) {
             <h3>{names[p.platform] || p.platform}</h3>
             {p.accounts?.map((a: any) => {
               const key = `${p.platform}:${a.handle}`
+              if (p.platform === 'luogu') {
+                return (
+                  <div key={a.handle} className="platform-account-check">
+                    <p><strong>{a.handle}</strong> · 公开资料同步</p>
+                    <p className="help">
+                      使用数字 UID 同步可公开访问的资料与提交记录。完成题目后，请在洛谷官方网页交题，再同步记录。
+                    </p>
+                  </div>
+                )
+              }
               const result = checks[key]
               const action = result ? browserAction(result) : null
               return (
@@ -155,6 +165,15 @@ export function PlatformConnections({ revision, run, onError }: any) {
                     <div role="status" aria-live="polite">
                       <p>{result.message}</p>
                       {result.matched_account && <p>平台返回账号：{result.matched_account}</p>}
+                      {p.platform === 'codeforces' && result.cookie_diagnostics && (
+                        <p className="help">
+                          CF 常见会话字段 JSESSIONID：
+                          {result.cookie_diagnostics.cf_session_cookie_present
+                            ? '已检测到'
+                            : '未检测到'}
+                          。 此项仅辅助检查 Cookie 导出完整性，登录以 CF 返回的当前身份为准。
+                        </p>
+                      )}
                       {(reasonLabels[result.reason] ||
                         result.upstream_status ||
                         result.retry_after_seconds > 0) && (
@@ -239,11 +258,18 @@ export function PlatformConnections({ revision, run, onError }: any) {
               同步此平台信息
             </button>
             <p>交题：打开工作台题目，复制代码后进入该平台官方提交页。</p>
+            {p.platform === 'luogu' && (
+              <p>
+                <a className="secondary" href={officialPages.luogu} target="_blank" rel="noreferrer">
+                  打开洛谷官方网页 ↗
+                </a>
+              </p>
+            )}
             <button
               className="secondary"
               onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
             >
-              查看登录与交题教程
+              {p.platform === 'luogu' ? '查看资料同步与交题教程' : '查看登录与交题教程'}
             </button>
           </article>
         ))}

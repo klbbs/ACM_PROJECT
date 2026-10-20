@@ -55,6 +55,26 @@ export function ExtensionGuide() {
           下载 .user.js 文件（备用）↓
         </a>
       </div>
+      <div className="cookie-helper-note">
+        <strong>CF 登录验证：可选 Firefox Beta</strong>
+        <p>
+          从 Tampermonkey 官方 Firefox 下载页选择「Tampermonkey BETA」。先备份脚本，再停用稳定版，
+          确保只有一个管理器运行 ACM Lab 助手；不要同时开启两份脚本。
+        </p>
+        <p>
+          在 Beta 中导入助手，检查 Settings → Config mode: Advanced → Security → Allow scripts to access cookies。
+          需要 HttpOnly 时应为 All；「All but protected cookies (HttpOnly)」仍会排除它。
+          本次临时环境默认是 All；不开放该权限时，可使用下方 F12 备选。
+          在同一普通窗口重新登录 CF，确认能打开设置页并显示自己的 handle，再获取
+          Cookie、回本站保存并检测。 安装 Beta 或复制成功都不能代替服务器身份验证。
+        </p>
+        <a href="https://www.tampermonkey.net/?browser=firefox" target="_blank" rel="noreferrer">
+          Firefox Beta 官方下载页 ↗
+        </a>{' '}
+        <a href="https://codeforces.com/settings/general" target="_blank" rel="noreferrer">
+          打开 CF 设置页核对当前登录 ↗
+        </a>
+      </div>
       {message && <p role="status">{message}</p>}
       {error && <p role="alert">{error}</p>}
       {source && (
@@ -104,7 +124,7 @@ export function ExtensionGuide() {
           没有适用结果时再读取当前页面的 document.cookie 可读部分；两者都不能保证包含完整登录凭据。
           仅在你明确选择后复制不含 HttpOnly 的结果，并标明「可能不完整」。需要完整 Cookie
           或检测未通过时，按下方 F12 教程获取实际请求 Cookie。支持 HttpOnly 的管理器版本还需允许
-          此脚本的 HttpOnly 权限；不必为此更换测试版。
+          此脚本的 HttpOnly 权限；Beta 是可选方式，也可继续用 F12 获取完整请求 Cookie。
         </p>
       </div>
       <p className="help">

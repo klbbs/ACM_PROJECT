@@ -156,6 +156,8 @@ def diagnostics(result):
     elif status=='unknown':
         result['guidance']=['可以在官方网页继续做题与交题；公开资料可采集不等于本站已验证登录，重新获取 Cookie 也不会强制把结果改为登录成功。']
     else:result['guidance']=[]
+    if result['platform']=='codeforces' and status!='authenticated' and not result.get('cookie_diagnostics',{}).get('cf_session_cookie_present'):
+        result['guidance'].insert(0,'本次未发现 CF 常见会话字段 JSESSIONID。它仅用于排查导出完整性，不单凭字段判断登录；请从当前已登录的 CF 页面用支持 HttpOnly 的油猴 Beta 或 F12 重新获取完整请求 Cookie。')
     return result
 
 
@@ -193,6 +195,8 @@ class CredentialChecks:
             self.last[key]=now
         result={'platform':platform,'handle':handle,'checked_at':int(now),'status':'missing','login_verified':False,'public_reachable':False,'auto_submit_supported':False,'submission_method':'official_page','reason':'missing_cookie','retry_after_seconds':10,'cached':False}
         identity=None
+        if platform=='codeforces':
+            result['cookie_diagnostics']={'cf_session_cookie_present':any(part.strip().partition('=')[0]=='JSESSIONID' and bool(part.strip().partition('=')[2]) for part in cookie.split(';'))}
         if cookie and not valid_cookie(cookie):
             result['status']='invalid';result['reason']='invalid_cookie'
         elif cookie:

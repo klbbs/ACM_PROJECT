@@ -21,6 +21,11 @@ it.each([true, false])(
     try {
       await act(async () => root.render(<ExtensionGuide />))
       expect(host.textContent).toContain('HttpOnly')
+      expect(
+        host.querySelector('a[href="https://www.tampermonkey.net/?browser=firefox"]')?.textContent,
+      ).toContain('Firefox Beta')
+      expect(host.querySelector('a[href="https://codeforces.com/settings/general"]')).not.toBeNull()
+      expect(host.textContent).toContain('只有一个管理器')
       expect(host.textContent).toContain('Firefox 容器标签页、隐私窗口和首方隔离不支持脚本复制')
       expect(host.querySelectorAll('a[href$=".zip"]')).toHaveLength(0)
       expect(api).not.toHaveBeenCalled()

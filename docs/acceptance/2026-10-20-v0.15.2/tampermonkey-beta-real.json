@@ -1,0 +1,18 @@
+{
+  "test": "real-tampermonkey-beta",
+  "official_login_verified": false,
+  "test_page": "https://atcoder.jp/",
+  "synthetic_cookie_only": true,
+  "real_submission_performed": false,
+  "manager_version": "5.6.6239",
+  "signature_files_present": true,
+  "firefox_version": "157.0.1",
+  "helper_version": "1.0.1",
+  "helper_installed_in_real_manager": true,
+  "cookie_permission": "Settings → Config mode: Advanced → Security → Allow scripts to access cookies: All",
+  "synthetic_hidden_from_document_cookie": true,
+  "assistant_status": "已复制 6 项（包含 HttpOnly；来源：油猴 API）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。",
+  "assistant_diagnostic": "Tampermonkey 5.6.6239 · API：可用 · 返回 6 项，适用 6 项；过滤域名 0、路径 0、分区 0、过期 0、无效 0；当前来源：油猴 API（6 项）。诊断不包含 Cookie 名称或值。",
+  "synthetic_httponly_in_real_clipboard": true,
+  "clipboard_cleared": true
+}

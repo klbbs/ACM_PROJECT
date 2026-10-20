@@ -14,7 +14,7 @@ const platforms = [
     profile: 'https://www.luogu.com.cn/user/数字UID',
     identity: '个人主页地址里的数字 UID，不是昵称',
     detail:
-      '复制 www.luogu.com.cn 已登录页面的完整请求 Cookie，包括实际发送的 HttpOnly 字段。实际 UID 必须与配置一致；418 或验证页表示访问受限，不能当作 Cookie 过期。在官方页面完成验证后，重新复制并保存，再检测。',
+      '配置个人主页里的数字 UID 后，同步可公开访问的资料与提交记录。本站当前提供洛谷公开资料同步，不提供洛谷登录检测；交题请在自己的浏览器登录洛谷官方网页，提交后回到本站同步记录。',
   },
   {
     name: '牛客',
@@ -41,7 +41,7 @@ export function PlatformGuide() {
         <p>
           推荐先使用上方 Cookie
           助手：安装油猴脚本，在已登录的平台点击获取，回到本页粘贴、保存并检测。若只读到非 HttpOnly
-          Cookie，脚本会标明完整性未知，由你选择是否复制；需要完整凭据时按下面的 F12 步骤手动完成。
+          Cookie，脚本会标明完整性未知，由你选择是否复制；需要完整凭据时按下面的 F12 步骤手动完成。洛谷同步公开资料只需配置数字 UID。
         </p>
         <p>
           油猴助手仅支持普通默认会话；Firefox 容器、隐私窗口或首方隔离请直接使用 F12，
@@ -58,7 +58,7 @@ export function PlatformGuide() {
           </li>
           <li>
             <strong>登录检测：</strong>需要会话时按下方步骤保存
-            Cookie，再点击对应账号的登录检测。核对检测返回的真实账号是否与你填写的一致；未确认身份时不要当作已登录。
+            Cookie，再点击对应账号的登录检测（Codeforces、牛客、AtCoder）。核对检测返回的真实账号是否与你填写的一致；洛谷使用数字 UID 同步公开资料，不提供登录检测。
           </li>
           <li>
             <strong>官方交题：</strong>
@@ -73,6 +73,12 @@ export function PlatformGuide() {
       </section>
       <section className="card">
         <h3>Codeforces：F12 详细复制步骤</h3>
+        <p>
+          如需一键获取 HttpOnly，可先按上方说明选择官方 Firefox Beta 并授权脚本。 获取前打开 CF
+          设置页，核对 handle；保存后以本站检测返回同一 handle 为准。 JSESSIONID
+          是常见会话字段，出现与否仅辅助排查，不能当作登录成功证明。
+          当前仍由用户在官方网页交题，本站关联判题结果。
+        </p>
         <ol>
           <li>
             在自己的浏览器打开 Codeforces 官方登录页，正常完成登录与验证，确认右上角显示你的
@@ -173,7 +179,7 @@ export function PlatformGuide() {
             Cookie，保存后再检测。旧 Cookie 不会自行更新。
           </li>
           <li>
-            <strong>403 / 418 / Cloudflare / 验证页面：</strong>可能是服务器
+            <strong>其他平台检测出现 403 / Cloudflare / 验证页面：</strong>可能是服务器
             IP、网络或平台验证限制。即使浏览器可访问，复制 Cookie
             也未必让服务器通过。先在官方完成正常验证，避免连续快速重试；仍受限就使用官方页面。
           </li>

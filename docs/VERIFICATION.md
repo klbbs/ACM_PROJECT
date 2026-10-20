@@ -1,5 +1,14 @@
 # 验证记录
 
+## 0.15.2（2026-10-20）
+
+- 本机全套410项Python、80项组件/脚本逻辑通过，TypeScript/Vite构建通过。44项Chromium浏览器用例中首次43项通过；将原洛谷验证回归迁移到AtCoder时官方入口期望误写为settings，修正为固定login后6项updates重跑全部通过，44项唯一用例均获通过结果。
+- 三个agent分别负责真实Firefox Beta、洛谷前端简化、CF独立验证。新增CF会话字段、身份不符、凭据变化使旧成功缓存失效及无敏感值回显回归。JSESSIONID存在不能替代官方身份。
+- 真实Firefox157.0.1+官方Tampermonkey Beta5.6.6239导入助手1.0.1，在匿名AtCoder页加入合成HttpOnly Cookie；document.cookie不可读，真实GM Cookie API及Firefox剪贴板读回成功。没有模拟GM API；未触碰日常浏览器配置，清空测试剪贴板并清理隔离profile。见[Beta实机记录](acceptance/2026-10-20-v0.15.2/TAMPERMONKEY_BETA_REAL.md)。
+- 经用户授权，从运行中Snap Firefox对应数据库复制只读快照，普通/非默认store分别导出CF Cookie，两组项目真实检测均HTTP302登录跳转，未获得当前匹配身份。未覆盖私有配置、未交题、未声明CF真实登录成功；磁盘结果不证明浏览器当前退出。见[CF真实会话记录](acceptance/2026-10-20-v0.15.2/cf-real-session.md)。
+- 洛谷仅提供公开资料同步与官方网页交题，前端隐藏历史418/验证码缓存及无效处理入口；后台仍准确判定，不伪装登录成功。
+- 截图：[真实Beta HttpOnly导出](acceptance/2026-10-20-v0.15.2/tampermonkey-beta-real-httponly.png)、[洛谷公开同步](acceptance/2026-10-20-v0.15.2/luogu-public-sync.png)、[CF身份验证合成流程](acceptance/2026-10-20-v0.15.2/cf-verification.png)。未部署、未连接服务器。
+
 ## 0.15.1（2026-10-20）
 
 - 本机通过74项组件/脚本逻辑、8项相关Python、8项相关Chromium浏览器测试，TypeScript/Vite构建成功。本次聚焦脚本静态资源、下载及教程，未重复无关采集/AI全套。

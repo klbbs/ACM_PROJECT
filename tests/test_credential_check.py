@@ -218,3 +218,33 @@ def test_force_refresh_requires_actual_boolean(value):
 
 def test_nowcoder_non_executing_script_data_is_not_a_principal():
  assert inspect_identity('nowcoder','<script type="text/plain">window.isLogin=true;window.globalInfo={ownerId:42};</script>')==('unknown',None)
+
+
+@pytest.mark.parametrize('cookie,present',[
+ ('only_public=synthetic',False),
+ ('JSESSIONID=private-session; RCPC=private-challenge',True),
+ ('JSESSIONID=',False),
+ ('other=JSESSIONID=private',False),
+])
+def test_cf_cookie_session_diagnostic_never_substitutes_for_identity(monkeypatch,cookie,present):
+ class Login(Session):
+  def get(self,*args,**kwargs):
+   return Response(status_code=302,headers={'Location':'/enter'},text='')
+ monkeypatch.setattr('acmweb.credential_check.requests.Session',Login)
+ account=SimpleNamespace(document=lambda:{'accounts':[{'platform':'codeforces','handle':'demo','cookie':cookie}]})
+ result=CredentialChecks(account).check('codeforces','demo')
+ assert result['cookie_diagnostics']=={'cf_session_cookie_present':present}
+ assert result['status']=='expired' and not result['login_verified']
+ assert 'private-session' not in str(result) and 'private-challenge' not in str(result)
+ if not present:assert '常见会话字段' in ' '.join(result['guidance'])
+
+
+def test_cf_identity_evidence_overrides_advisory_cookie_field_absence(monkeypatch):
+ class Verified(Session):
+  def get(self,*args,**kwargs):
+   return Response(status_code=200,headers={},text='<div class="lang-chooser"><a href="/profile/demo">demo</a><a href="/logout">exit</a></div><form action="/settings/general"></form>')
+ monkeypatch.setattr('acmweb.credential_check.requests.Session',Verified)
+ result=CredentialChecks(Accounts()).check('codeforces','demo')
+ assert result['status']=='authenticated' and result['login_verified']
+ assert not result['cookie_diagnostics']['cf_session_cookie_present']
+ assert not any('未发现 CF 常见' in item for item in result['guidance'])

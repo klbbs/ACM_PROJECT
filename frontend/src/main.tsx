@@ -1115,7 +1115,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.15.1</span>
+              数据有边界，进步有方向。 <span className="version">v0.15.2</span>
             </span>
           </footer>
         </div>

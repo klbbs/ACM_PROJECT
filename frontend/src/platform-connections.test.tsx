@@ -2,7 +2,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { PlatformConnections } from './platform-connections'
-vi.mock('./api', () => ({ api: vi.fn(), date: () => '刚刚', names: { codeforces: 'Codeforces' } }))
+vi.mock('./api', () => ({ api: vi.fn(), date: () => '刚刚', names: { codeforces: 'Codeforces', luogu: '洛谷' } }))
 import { api } from './api'
 
 it('checks saved credentials explicitly and discards successful status after configuration changes', async () => {
@@ -95,7 +95,7 @@ it('expires the displayed verification instead of leaving a stale green status',
   }
 })
 
-it('guides a blocked Luogu session to a fixed official page and forces a fresh check after user action', async () => {
+it('guides a blocked Codeforces session to a fixed official page and forces a fresh check after user action', async () => {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -103,14 +103,14 @@ it('guides a blocked Luogu session to a fixed official page and forces a fresh c
   vi.mocked(api).mockImplementation(async (path: string) => {
     if (path === '/platforms')
       return {
-        items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }],
+        items: [{ platform: 'codeforces', accounts: [{ handle: 'demo', has_cookie: true }] }],
       } as never
     if (path === '/accounts/checks')
       return {
         items: [
           {
-            platform: 'luogu',
-            handle: '42',
+            platform: 'codeforces',
+            handle: 'demo',
             status: 'blocked',
             reason: 'captcha',
             browser_action_required: true,
@@ -122,8 +122,8 @@ it('guides a blocked Luogu session to a fixed official page and forces a fresh c
       } as never
     if (path === '/accounts/check')
       return {
-        platform: 'luogu',
-        handle: '42',
+        platform: 'codeforces',
+        handle: 'demo',
         status: 'authenticated',
         checked_at: Math.floor(Date.now() / 1000),
         message: '账号已核实',
@@ -137,7 +137,7 @@ it('guides a blocked Luogu session to a fixed official page and forces a fresh c
     expect(host.textContent).toContain('需要在官方完成验证')
     expect(host.textContent).toContain('不等于 Cookie 过期')
     expect(host.querySelector<HTMLAnchorElement>('.platform-browser-action a')?.href).toBe(
-      'https://www.luogu.com.cn/',
+      'https://codeforces.com/enter',
     )
     expect(host.innerHTML).not.toContain('untrusted.example')
     const retry = [...host.querySelectorAll('button')].find(
@@ -145,8 +145,8 @@ it('guides a blocked Luogu session to a fixed official page and forces a fresh c
     )!
     await act(async () => retry.click())
     expect(api).toHaveBeenCalledWith('/accounts/check', 'POST', {
-      platform: 'luogu',
-      handle: '42',
+      platform: 'codeforces',
+      handle: 'demo',
       force_refresh: true,
     })
     expect(host.querySelector('.platform-browser-action')).toBeNull()
@@ -241,6 +241,49 @@ it('shows platform throttling and waiting time without asking for an unrelated C
     expect(host.textContent).toContain('平台 HTTP 429')
     expect(host.textContent).toContain('请至少等待 60 秒后重试')
     expect(host.querySelector('.platform-browser-action')).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+
+it.each([
+  ['blocked', 'access_restricted'],
+  ['blocked', 'captcha'],
+  ['blocked', 'browser_challenge'],
+  ['unknown', 'network_error'],
+  ['authenticated', 'identity_verified'],
+])('keeps Luogu on public synchronization and official submission regardless of cached %s / %s', async (status, reason) => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const run = vi.fn()
+  vi.mocked(api).mockReset().mockImplementation(async (path: string) => {
+    if (path === '/platforms') return { items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }] } as never
+    if (path === '/accounts/checks') return { items: [{
+      platform: 'luogu', handle: '42', status, reason,
+      browser_action_required: true, browser_action_url: 'https://untrusted.example/challenge',
+      checked_at: Math.floor(Date.now() / 1000), upstream_status: 418, retry_after_seconds: 10,
+      message: '旧的访问限制或登录诊断', guidance: ['请完成验证码并重新获取Cookie后重试'],
+    }] } as never
+    throw Error('unexpected request')
+  })
+  try {
+    await act(async () => root.render(<PlatformConnections revision={1} run={run} onError={vi.fn()} />))
+    const card = host.querySelector('article')!
+    expect(card.textContent).toContain('42 · 公开资料同步')
+    expect(card.textContent).toContain('洛谷官方网页交题，再同步记录')
+    for (const hidden of ['访问限制', '验证码', '重新检测', '检测登录状态', 'HTTP 418', '旧的', '已验证登录']) {
+      expect(card.textContent).not.toContain(hidden)
+    }
+    expect(card.querySelector('.platform-browser-action')).toBeNull()
+    expect(card.innerHTML).not.toContain('untrusted.example')
+    expect(card.querySelector<HTMLAnchorElement>('a')?.href).toBe('https://www.luogu.com.cn/')
+    const synchronize = [...card.querySelectorAll('button')].find(button => button.textContent === '同步此平台信息')!
+    await act(async () => synchronize.click())
+    expect(run).toHaveBeenCalledWith('/platforms/luogu/collect')
+    expect(vi.mocked(api).mock.calls.some(call => call[0] === '/accounts/check')).toBe(false)
   } finally {
     await act(async () => root.unmount())
     host.remove()

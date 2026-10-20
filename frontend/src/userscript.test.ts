@@ -293,3 +293,27 @@ it('exposes only filter counts, and rejects unsafe page fallback headers', async
   expect(panel!.textContent).not.toContain('private-测试-value')
   expect(panel!.querySelector('[role=status]')!.textContent).toContain('无法安全转换')
 })
+
+it('supports the official Firefox Beta version and a CF HttpOnly session without exposing it', async () => {
+  const { panel, capture, clipboard } = install({
+    url: 'https://codeforces.com/settings/general',
+    context: { version: '5.6.6239' },
+    cookies: [
+      synthetic({
+        name: 'JSESSIONID',
+        domain: 'codeforces.com',
+        hostOnly: true,
+        session: true,
+        expirationDate: null,
+      }),
+    ],
+  })
+  await capture()
+  expect(clipboard).toHaveBeenCalledWith(
+    'JSESSIONID=synthetic-secret',
+    'text',
+    expect.any(Function),
+  )
+  expect(panel!.querySelector('[role=status]')!.textContent).toContain('包含 HttpOnly')
+  expect(panel!.textContent).not.toContain('synthetic-secret')
+})
