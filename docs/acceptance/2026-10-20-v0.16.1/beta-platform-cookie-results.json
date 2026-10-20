@@ -1,0 +1,100 @@
+{
+  "test": "real-authenticated-platform-cookie-export",
+  "synthetic_cookie_only": false,
+  "real_submission_performed": false,
+  "manager_version": "5.6.6239",
+  "signature_files_present": true,
+  "firefox_version": "157.0.1",
+  "helper_version": "1.0.2",
+  "helper_installed_in_real_manager": true,
+  "cookie_permission": "Settings → Config mode: Advanced → Security → Allow scripts to access cookies: All",
+  "platforms": [
+    {
+      "platform": "codeforces",
+      "session_source": "previously_authenticated_in_app_browser",
+      "synthetic_cookies": false,
+      "imported_cookie_count": 11,
+      "imported_http_only_count": 2,
+      "browser_identity": {
+        "status": "authenticated",
+        "matches_configured_identity": true
+      },
+      "browser_location_is_expected_origin": true,
+      "assistant_status": "已复制 12 项（包含 HttpOnly；来源：油猴 API）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。",
+      "assistant_diagnostic": "Tampermonkey 5.6.6239 · API：可用 · 返回 12 项，适用 12 项；过滤域名 0、路径 0、分区 0、过期 0、无效 0；当前来源：油猴 API（12 项）。诊断不包含 Cookie 名称或值。",
+      "export_succeeded": true,
+      "clipboard_cleared": true,
+      "browser_cookie_count": 12,
+      "exported_cookie_count": 12,
+      "browser_http_only_count": 3,
+      "all_browser_http_only_exported": true,
+      "matches_browser_jar": true,
+      "missing_cookie_count": 0,
+      "extra_cookie_count": 0,
+      "acm_lab_login_check": {
+        "status": "authenticated",
+        "reason": "identity_verified",
+        "upstream_status": 200,
+        "login_verified": true
+      }
+    },
+    {
+      "platform": "atcoder",
+      "session_source": "previously_authenticated_in_app_browser",
+      "synthetic_cookies": false,
+      "imported_cookie_count": 5,
+      "imported_http_only_count": 2,
+      "browser_identity": {
+        "status": "authenticated",
+        "matches_configured_identity": true
+      },
+      "browser_location_is_expected_origin": true,
+      "assistant_status": "已复制 7 项（包含 HttpOnly；来源：油猴 API）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。",
+      "assistant_diagnostic": "Tampermonkey 5.6.6239 · API：可用 · 返回 7 项，适用 7 项；过滤域名 0、路径 0、分区 0、过期 0、无效 0；当前来源：油猴 API（7 项）。诊断不包含 Cookie 名称或值。",
+      "export_succeeded": true,
+      "clipboard_cleared": true,
+      "browser_cookie_count": 7,
+      "exported_cookie_count": 7,
+      "browser_http_only_count": 4,
+      "all_browser_http_only_exported": true,
+      "matches_browser_jar": true,
+      "missing_cookie_count": 0,
+      "extra_cookie_count": 0,
+      "acm_lab_login_check": {
+        "status": "authenticated",
+        "reason": "identity_verified",
+        "upstream_status": 200,
+        "login_verified": true
+      }
+    },
+    {
+      "platform": "luogu",
+      "session_source": "previously_authenticated_in_app_browser",
+      "synthetic_cookies": false,
+      "imported_cookie_count": 3,
+      "imported_http_only_count": 2,
+      "browser_identity": {
+        "status": "unknown",
+        "matches_configured_identity": false
+      },
+      "browser_location_is_expected_origin": true,
+      "assistant_status": "已复制 4 项（包含 HttpOnly；来源：油猴 API）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。",
+      "assistant_diagnostic": "Tampermonkey 5.6.6239 · API：可用 · 返回 4 项，适用 4 项；过滤域名 0、路径 0、分区 0、过期 0、无效 0；当前来源：油猴 API（4 项）。诊断不包含 Cookie 名称或值。",
+      "export_succeeded": true,
+      "clipboard_cleared": true,
+      "browser_cookie_count": 4,
+      "exported_cookie_count": 4,
+      "browser_http_only_count": 2,
+      "all_browser_http_only_exported": true,
+      "matches_browser_jar": true,
+      "missing_cookie_count": 0,
+      "extra_cookie_count": 0,
+      "acm_lab_login_check": {
+        "status": "blocked",
+        "reason": "access_restricted",
+        "upstream_status": 418,
+        "login_verified": false
+      }
+    }
+  ]
+}

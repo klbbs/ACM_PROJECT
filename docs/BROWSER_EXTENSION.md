@@ -1,4 +1,4 @@
-# 平台 Cookie 油猴助手与更新公告（0.15.2 · 脚本1.0.1）
+# 平台 Cookie 油猴助手与更新公告（0.16.1 · 脚本1.0.2）
 
 在网站登录后打开「连接与设置」的 Cookie 助手与平台绑定教程。当前推荐油猴脚本，不再要求用户加载未签名 Firefox 扩展或每次重启临时安装。
 
@@ -13,12 +13,16 @@
 ### CF优先：可选Firefox Beta获取完整会话
 
 1. 从 [Tampermonkey官方Firefox下载页](https://www.tampermonkey.net/?browser=firefox) 选择 **Tampermonkey BETA**。先备份原脚本，再停用稳定版；确保只有一个管理器运行助手，避免旧版弹窗和重复脚本干扰。安装由用户自行完成，不修改Firefox签名检查。
-2. 在Beta中导入ACM Lab助手1.0.1。需要排查权限时，打开 Settings → Config mode: Advanced → Security → Allow scripts to access cookies；读取HttpOnly需要All，本次真实隔离测试默认也是All；「All but protected cookies (HttpOnly)」仍会排除HttpOnly。若不开放该权限，可使用F12备选。不要仅凭版本名假设权限已允许。
+2. 在Beta中导入ACM Lab助手1.0.2。需要排查权限时，打开 Settings → Config mode: Advanced → Security → Allow scripts to access cookies；读取HttpOnly需要All，本次真实隔离测试默认也是All；「All but protected cookies (HttpOnly)」仍会排除HttpOnly。若不开放该权限，可使用F12备选。不要仅凭版本名假设权限已允许。
 3. 在同一普通窗口登录CF，正常完成人机验证，确认 [设置页](https://codeforces.com/settings/general) 显示本人handle；验证码由本人处理。
 4. 刷新设置页，用助手获取Cookie并回本站保存。若显示「可能不完整」，请检查权限或使用F12实际请求Cookie。新版Beta不是绕过CF访问限制的工具。
 5. 点击「检测登录状态」，必须看到CF返回身份与本人handle匹配才算真实通过；若返回登录页、验证或受限，按实际原因处理。
 
 2026-10-20使用独立临时Firefox157.0.1实际安装官方Beta5.6.6239并导入助手1.0.1，在匿名AtCoder页设置合成HttpOnly Cookie，真实GM Cookie API及Firefox剪贴板验证读取成功；页面document.cookie无法读取该测试Cookie。没有修改日常Firefox或提交代码。此验收确认真实管理器的导出能力，不代表CF账号身份已验证，见[实机记录](acceptance/2026-10-20-v0.15.2/TAMPERMONKEY_BETA_REAL.md)。
+
+2026-10-20 后续使用真实登录会话导入隔离 Firefox，再运行未模拟的 Beta 和助手1.0.2：CF导出12项（3项HttpOnly）、AtCoder导出7项（4项HttpOnly），逐项与浏览器当前页面Cookie集合比对一致，ACM Lab后台均HTTP200、当前身份匹配。洛谷导出4项（2项HttpOnly）一致，但后台HTTP418，不能声称服务器已登录。详见[真实平台验收](acceptance/2026-10-20-v0.16.1/COOKIE_EXPORT.md)。
+
+1.0.2分别查询未分区Cookie与当前站点分区Cookie；只合并相同站点，不查询所有分区，不读取其他站点分区。分区读取失败，即使已有HttpOnly，也只在本人再次明确确认后复制并标明可能不完整。导出范围是当前页面适用的Cookie，不是平台所有路径或全部子域Cookie；无法替代服务器访问授权。
 
 ### HttpOnly 限制
 
@@ -30,9 +34,9 @@
 
 ### 更新已安装脚本与诊断
 
-在油猴编辑原脚本，全部替换为本版源码并保存，再刷新所有相关平台标签页；标题应显示 **ACM Lab 1.0.1**。无需另外安装一份并保留旧版同时运行。本站不部署服务器，下载更新需维护者自行更新代码；也可直接从仓库版本获取新脚本源码。
+在油猴编辑原脚本，全部替换为本版源码并保存，再刷新所有相关平台标签页；标题应显示 **ACM Lab 1.0.2**。无需另外安装一份并保留旧版同时运行。本站不部署服务器，下载更新需维护者自行更新代码；也可直接从仓库版本获取新脚本源码。
 
-诊断显示 Tampermonkey 版本、API 返回数量、适用数量、被过滤的域名/路径/分区/过期数量及当前来源，不显示 Cookie 名称或值。会话 Cookie 的 `session=true` 与空到期时间不再误判为过期。真正过期、其他域/路径、分区凭据、无效标头字符和超过16 KiB仍拒绝复制。
+诊断显示 Tampermonkey 版本、API 返回数量、适用数量、被过滤的域名/路径/分区/过期数量及当前来源，不显示 Cookie 名称或值。会话 Cookie 的 `session=true` 与空到期时间不再误判为过期。真正过期、其他域/路径、其他站点分区凭据、无效标头字符和超过16 KiB仍拒绝复制。
 
 ## 验证码与访问限制
 

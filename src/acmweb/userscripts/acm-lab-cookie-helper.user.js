@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ACM Lab · 平台 Cookie 助手
 // @namespace    https://github.com/klbbs/ACM_PROJECT
-// @version      1.0.1
+// @version      1.0.2
 // @updateURL    none
 // @downloadURL  none
 // @description  点击后仅复制当前算法平台 Cookie；不上传，不读取其他网站。不支持完整读取时提供 F12 备选。
@@ -33,6 +33,15 @@
   if (window.top !== window.self || current.protocol !== 'https:' || current.port || !Object.hasOwn(platforms, current.hostname)) return
   // Strip query/fragment tokens. Page-readable fallback never claims HttpOnly access.
   const cookieUrl = current.origin + current.pathname
+  // Fixed schemeful sites for the exact supported top-level hosts. Never query
+  // all partitions: only this page's site may contribute partitioned cookies.
+  const cookieSite = 'https://' + ({
+    'codeforces.com': 'codeforces.com',
+    'www.luogu.com.cn': 'luogu.com.cn',
+    'www.nowcoder.com': 'nowcoder.com',
+    'ac.nowcoder.com': 'nowcoder.com',
+    'atcoder.jp': 'atcoder.jp',
+  })[current.hostname]
   const fallback = '请按 F12 → 网络，刷新并选中平台自己的已登录请求，在请求标头中复制完整 Cookie；回到 ACM Lab 手动粘贴并检测登录。不要复制密码或 Authorization。'
   const host = document.createElement('aside')
   host.id = 'acm-lab-cookie-helper'
@@ -43,7 +52,7 @@
   const section = document.createElement('section')
   const header = document.createElement('header')
   const title = document.createElement('strong')
-  title.textContent = 'ACM Lab 1.0.1 · ' + platforms[current.hostname]
+  title.textContent = 'ACM Lab 1.0.2 · ' + platforms[current.hostname]
   const close = document.createElement('button')
   close.className = 'close'
   close.textContent = '×'
@@ -82,7 +91,8 @@
       throw Error('当前是无痕、容器或隔离会话，无法可靠确认 Cookie 所属会话，已停止读取。')
   }
 
-  function readCookies() {
+  function readCookies(partitioned = false) {
+    const request = partitioned ? { url: cookieUrl, partitionKey: { topLevelSite: cookieSite } } : { url: cookieUrl }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(Error('油猴 API 读取超时')), 10000)
       const done = (cookies, error) => {
@@ -92,12 +102,24 @@
       }
       try {
         if (typeof GM !== 'undefined' && GM.cookie && typeof GM.cookie.list === 'function')
-          Promise.resolve(GM.cookie.list({ url: cookieUrl })).then(cookies => done(cookies), () => done(null, true))
+          Promise.resolve(GM.cookie.list(request)).then(cookies => done(cookies), () => done(null, true))
         else if (typeof GM_cookie !== 'undefined' && typeof GM_cookie.list === 'function')
-          GM_cookie.list({ url: cookieUrl }, done)
+          GM_cookie.list(request, done)
         else done(null, true)
       } catch { done(null, true) }
     })
+  }
+
+  function mergeCookies(first, second) {
+    const unique = new Map()
+    for (const cookie of [...first, ...second]) {
+      if (!cookie || typeof cookie !== 'object') continue
+      const key = JSON.stringify([cookie.name, cookie.domain, cookie.path || '/', cookie.firstPartyDomain || '',
+        cookie.partitionKey ? ['partitioned', cookie.partitionKey.topLevelSite ?? null,
+          cookie.partitionKey.hasCrossSiteAncestor ?? false] : null])
+      unique.set(key, cookie)
+    }
+    return [...unique.values()]
   }
 
   function filter(cookies) {
@@ -110,7 +132,10 @@
       if (!correctDomain) { counts.domain++; return false }
       const path = cookie.path || '/'
       if (typeof path !== 'string' || !(current.pathname === path || current.pathname.startsWith(path.endsWith('/') ? path : path + '/'))) { counts.path++; return false }
-      if (cookie.firstPartyDomain || cookie.partitionKey) { counts.partition++; return false }
+      if (cookie.firstPartyDomain || (cookie.partitionKey &&
+          (cookie.partitionKey.topLevelSite !== cookieSite || cookie.partitionKey.hasCrossSiteAncestor === true))) {
+        counts.partition++; return false
+      }
       // Managers may serialize session-cookie expiration as null/0/-1.
       // Only an explicit session flag overrides a numeric expired timestamp.
       const expiry = cookie.expirationDate
@@ -170,8 +195,14 @@
     try {
       samePage()
       assertContext()
-      let cookies = [], apiState = '可用'
-      try { cookies = await readCookies() } catch (error) { apiState = error.message }
+      let cookies = [], apiState = '可用', partitionChecked = false
+      try {
+        cookies = await readCookies()
+        try {
+          cookies = mergeCookies(cookies, await readCookies(true))
+          partitionChecked = true
+        } catch { apiState = '当前站点分区读取失败，完整性未知' }
+      } catch (error) { apiState = error.message }
       samePage()
       const { eligible, counts } = filter(cookies)
       let selected = eligible, source = '油猴 API'
@@ -181,15 +212,16 @@
       if (!selected.length)
         throw Error('油猴和当前页面都没有返回可用 Cookie；可能是 HttpOnly 权限/版本限制，也可能尚未登录，不能仅据此断言你未登录。')
       const captured = serialize(selected)
-      if (!captured.httpOnly && !allowPartial) {
+      const incomplete = !captured.httpOnly || !partitionChecked || source !== '油猴 API'
+      if (incomplete && !allowPartial) {
         partial.hidden = false
-        status.textContent = '读到 ' + captured.count + ' 项可读 Cookie，未确认 HttpOnly 读取能力，完整性未知；不是登录失败结论。可另点「复制当前可读 Cookie」明确复制这些结果，再到 ACM Lab 检测；需要完整 Cookie 时使用 F12。'
+        status.textContent = '读到 ' + captured.count + ' 项可读 Cookie，' + (!partitionChecked && source === '油猴 API' ? '当前站点分区未核对' : '未确认 HttpOnly 读取能力') + '，完整性未知；不是登录失败结论。可另点「复制当前可读 Cookie」明确复制这些结果，再到 ACM Lab 检测；需要完整 Cookie 时使用 F12。'
         details.open = true
         return
       }
       samePage()
       await copy(captured.header)
-      status.textContent = '已复制 ' + captured.count + ' 项（' + (captured.httpOnly ? '包含 HttpOnly' : '仅当前可读 Cookie，可能不完整') + '；来源：' + source + '）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。' + (captured.httpOnly ? '' : '检测不通过时，请用 F12 复制完整请求 Cookie。')
+      status.textContent = '已复制 ' + captured.count + ' 项（' + (captured.httpOnly ? '包含 HttpOnly' : '仅当前可读 Cookie') + (incomplete ? '，可能不完整' : '') + '；来源：' + source + '）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。' + (incomplete ? '检测不通过时，请用 F12 复制完整请求 Cookie。' : '')
     } catch (error) {
       // API errors are sanitized at their boundary; no credential values enter UI.
       status.textContent = error.message + ' ' + fallback

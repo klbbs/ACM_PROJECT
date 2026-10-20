@@ -20,6 +20,8 @@ afterEach(() => {
 function install(
   options: {
     cookies?: any[]
+    partitionCookies?: any[]
+    partitionAPIError?: boolean
     url?: string
     manager?: string
     missingAPI?: boolean
@@ -43,17 +45,23 @@ function install(
   })
   const list = vi
     .fn()
-    .mockImplementation(() =>
-      options.apiError
+    .mockImplementation((details) =>
+      options.apiError || (details.partitionKey && options.partitionAPIError)
         ? Promise.reject(Error('secret-session-must-not-leak'))
-        : Promise.resolve(options.cookies || [synthetic()]),
+        : Promise.resolve(
+            (details.partitionKey ? options.partitionCookies : undefined) ||
+              options.cookies || [synthetic()],
+          ),
     )
   const callback = vi
     .fn()
-    .mockImplementation((_details, done) =>
+    .mockImplementation((details, done) =>
       done(
-        options.cookies || [synthetic()],
-        options.apiError ? 'secret-session-must-not-leak' : undefined,
+        (details.partitionKey ? options.partitionCookies : undefined) ||
+          options.cookies || [synthetic()],
+        options.apiError || (details.partitionKey && options.partitionAPIError)
+          ? 'secret-session-must-not-leak'
+          : undefined,
       ),
     )
   vi.stubGlobal('GM', options.missingAPI || options.callbackAPI ? {} : { cookie: { list } })
@@ -81,6 +89,10 @@ it('reads only after a user click and copies HttpOnly using stripped current off
   expect(menu).toHaveBeenCalledTimes(1)
   await capture()
   expect(list).toHaveBeenCalledWith({ url: 'https://www.luogu.com.cn/problem/P1000' })
+  expect(list).toHaveBeenCalledWith({
+    url: 'https://www.luogu.com.cn/problem/P1000',
+    partitionKey: { topLevelSite: 'https://luogu.com.cn' },
+  })
   expect(clipboard).toHaveBeenCalledWith('session=synthetic-secret', 'text', expect.any(Function))
   expect(panel!.querySelector('[role=status]')!.textContent).toContain('包含 HttpOnly')
   expect(panel!.textContent).not.toContain('synthetic-secret')
@@ -102,6 +114,11 @@ it.each([
     expect(list).not.toHaveBeenCalled()
     await capture()
     expect(list).toHaveBeenCalledWith({ url: `https://${host}/` })
+    expect(list).toHaveBeenCalledWith({
+      url: `https://${host}/`,
+      partitionKey: { topLevelSite: `https://${domain}` },
+    })
+    expect(list).toHaveBeenCalledTimes(2)
     expect(clipboard).toHaveBeenCalledWith('session=synthetic-secret', 'text', expect.any(Function))
     expect(panel!.querySelector('[role=status]')!.textContent).toContain('包含 HttpOnly')
   },
@@ -144,8 +161,8 @@ it('supports the legacy callback Cookie API and filters unrelated, expired and p
       synthetic({ value: 'root' }),
       synthetic({ value: 'specific', path: '/problem' }),
       synthetic({ value: 'foreign', domain: 'evil.test' }),
-      synthetic({ value: 'expired', expirationDate: 1 }),
-      synthetic({ value: 'expired-epoch', expirationDate: 0 }),
+      synthetic({ name: 'expired', value: 'expired', expirationDate: 1 }),
+      synthetic({ name: 'expired-epoch', value: 'expired-epoch', expirationDate: 0 }),
       synthetic({ value: 'partitioned', partitionKey: { topLevelSite: 'https://elsewhere.test' } }),
       synthetic({ value: 'unknown-partition', partitionKey: {} }),
       synthetic({ value: 'other-path', path: '/user' }),
@@ -200,7 +217,7 @@ it('never exposes secrets on clipboard failure and refuses captures after SPA na
   expect(panel!.textContent).not.toContain('secret-clipboard-error')
   vi.stubGlobal('location', new URL('https://www.luogu.com.cn/user/123'))
   await capture()
-  expect(list).toHaveBeenCalledTimes(1)
+  expect(list).toHaveBeenCalledTimes(2)
   expect(clipboard).toHaveBeenCalledTimes(1)
   expect(panel!.querySelector('[role=status]')!.textContent).toContain('地址已变化')
 })
@@ -316,4 +333,75 @@ it('supports the official Firefox Beta version and a CF HttpOnly session without
   )
   expect(panel!.querySelector('[role=status]')!.textContent).toContain('包含 HttpOnly')
   expect(panel!.textContent).not.toContain('synthetic-secret')
+})
+
+it.each([false, true])(
+  'includes the current site partition, without reading all partitions (callback: %s)',
+  async (callbackAPI) => {
+    const currentPartition = { topLevelSite: 'https://codeforces.com' }
+    const { list, callback, panel, capture, clipboard } = install({
+      url: 'https://codeforces.com/settings/general?private=removed',
+      callbackAPI,
+      cookies: [synthetic({ domain: 'codeforces.com' })],
+      partitionCookies: [
+        synthetic({
+          domain: 'codeforces.com',
+          name: 'current',
+          value: 'current-secret',
+          partitionKey: currentPartition,
+        }),
+        synthetic({
+          domain: 'codeforces.com',
+          name: 'foreign',
+          value: 'foreign-secret',
+          partitionKey: { topLevelSite: 'https://other.test' },
+        }),
+        synthetic({
+          domain: 'codeforces.com',
+          name: 'ancestor',
+          partitionKey: { ...currentPartition, hasCrossSiteAncestor: true },
+        }),
+        synthetic({ domain: 'codeforces.com', name: 'unknown', partitionKey: {} }),
+      ],
+    })
+    await capture()
+    const api = callbackAPI ? callback : list
+    expect(api.mock.calls.map(([details]) => details)).toEqual([
+      { url: 'https://codeforces.com/settings/general' },
+      { url: 'https://codeforces.com/settings/general', partitionKey: currentPartition },
+    ])
+    expect(clipboard).toHaveBeenCalledWith(
+      'session=synthetic-secret; current=current-secret',
+      'text',
+      expect.any(Function),
+    )
+    expect(panel!.textContent).not.toContain('current-secret')
+    expect(panel!.textContent).not.toContain('foreign-secret')
+    expect(panel!.querySelector('[role=note]')!.textContent).toContain('分区 3')
+  },
+)
+
+it('does not conflate partitioned and unpartitioned cookies with the same name and value', async () => {
+  const { capture, clipboard } = install({
+    cookies: [synthetic()],
+    partitionCookies: [synthetic({ partitionKey: { topLevelSite: 'https://luogu.com.cn' } })],
+  })
+  await capture()
+  expect(clipboard).toHaveBeenCalledWith(
+    'session=synthetic-secret; session=synthetic-secret',
+    'text',
+    expect.any(Function),
+  )
+})
+
+it('requires explicit partial confirmation when partition reading fails, even with HttpOnly', async () => {
+  const { panel, capture, clipboard } = install({ partitionAPIError: true })
+  await capture()
+  expect(clipboard).not.toHaveBeenCalled()
+  expect(panel!.querySelector('[role=status]')!.textContent).toContain('当前站点分区未核对')
+  expect(panel!.textContent).not.toContain('secret-session-must-not-leak')
+  panel!.querySelectorAll<HTMLButtonElement>('button')[2].click()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(clipboard).toHaveBeenCalledWith('session=synthetic-secret', 'text', expect.any(Function))
+  expect(panel!.querySelector('[role=status]')!.textContent).toContain('包含 HttpOnly，可能不完整')
 })

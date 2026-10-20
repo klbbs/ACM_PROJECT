@@ -29,7 +29,7 @@ export function ExtensionGuide() {
   }
   return (
     <section className="card extension-guide" id="cookie-helper">
-      <span className="eyebrow">BROWSER COMPANION · USERSCRIPT 1.0.1</span>
+      <span className="eyebrow">BROWSER COMPANION · USERSCRIPT 1.0.2</span>
       <h2>油猴脚本：获取平台 Cookie</h2>
       <p>
         使用 Tampermonkey 用户脚本管理器，在已登录的平台页面获取 Cookie，再回到本站粘贴。
@@ -62,9 +62,9 @@ export function ExtensionGuide() {
           确保只有一个管理器运行 ACM Lab 助手；不要同时开启两份脚本。
         </p>
         <p>
-          在 Beta 中导入助手，检查 Settings → Config mode: Advanced → Security → Allow scripts to access cookies。
-          需要 HttpOnly 时应为 All；「All but protected cookies (HttpOnly)」仍会排除它。
-          本次临时环境默认是 All；不开放该权限时，可使用下方 F12 备选。
+          在 Beta 中导入助手，检查 Settings → Config mode: Advanced → Security → Allow scripts to
+          access cookies。 需要 HttpOnly 时应为 All；「All but protected cookies
+          (HttpOnly)」仍会排除它。 本次临时环境默认是 All；不开放该权限时，可使用下方 F12 备选。
           在同一普通窗口重新登录 CF，确认能打开设置页并显示自己的 handle，再获取
           Cookie、回本站保存并检测。 安装 Beta 或复制成功都不能代替服务器身份验证。
         </p>
@@ -90,7 +90,7 @@ export function ExtensionGuide() {
       )}
       <p className="help">
         已安装旧版？请在油猴中编辑原脚本，全选替换为本站新版源码、保存，并刷新平台标签页。
-        助手标题应显示 1.0.1；不要同时启用多份旧脚本。诊断只显示版本、来源与数量，不包含 Cookie
+        助手标题应显示 1.0.2；不要同时启用多份旧脚本。诊断只显示版本、来源与数量，不包含 Cookie
         名称或值。
       </p>
       <ol>
@@ -129,7 +129,8 @@ export function ExtensionGuide() {
       </div>
       <p className="help">
         脚本仅支持普通窗口的默认会话。Firefox 容器标签页、隐私窗口和首方隔离不支持脚本复制，
-        请在同一个已登录会话的 F12「网络」中复制官方请求的完整 Cookie，避免误取其他会话。
+        请在同一个已登录会话的 F12「网络」中复制官方请求的完整 Cookie，避免误取其他会话。 1.0.2
+        会合并当前站点的分区 Cookie；分区读取失败时也会提示完整性未知，需再次确认才复制。
       </p>
       <p className="help">
         助手仅在支持的官方域名运行，主动点击后读取、复制，不自动向 ACM Lab 上传。 Cookie

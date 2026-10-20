@@ -1,0 +1,75 @@
+{
+  "test": "real-authenticated-platform-cookie-export",
+  "synthetic_cookie_only": false,
+  "real_submission_performed": false,
+  "manager_version": "5.6.6239",
+  "signature_files_present": true,
+  "firefox_version": "157.0.1",
+  "helper_version": "1.0.1",
+  "helper_installed_in_real_manager": true,
+  "cookie_permission": "Settings → Config mode: Advanced → Security → Allow scripts to access cookies: All",
+  "platforms": [
+    {
+      "platform": "codeforces",
+      "session_source": "previously_authenticated_in_app_browser",
+      "synthetic_cookies": false,
+      "imported_cookie_count": 11,
+      "imported_http_only_count": 2,
+      "browser_identity": {
+        "status": "authenticated",
+        "matches_configured_identity": true
+      },
+      "browser_location_is_expected_origin": true,
+      "assistant_status": "已复制 12 项（包含 HttpOnly；来源：油猴 API）。请手动粘贴到 ACM Lab 并检测登录；复制成功不代表服务器已通过平台验证。",
+      "assistant_diagnostic": "Tampermonkey 5.6.6239 · API：可用 · 返回 12 项，适用 12 项；过滤域名 0、路径 0、分区 0、过期 0、无效 0；当前来源：油猴 API（12 项）。诊断不包含 Cookie 名称或值。",
+      "export_succeeded": true,
+      "clipboard_cleared": true,
+      "browser_cookie_count": 13,
+      "exported_cookie_count": 12,
+      "browser_http_only_count": 3,
+      "all_browser_http_only_exported": false,
+      "matches_browser_jar": false,
+      "missing_cookie_count": 1,
+      "extra_cookie_count": 0,
+      "browser_jar_changed_during_capture": false,
+      "matches_browser_jar_before_click": false,
+      "missing_cookie_metadata": [
+        {
+          "http_only": true,
+          "path": "/",
+          "secure": true,
+          "same_site": "None",
+          "was_present_before_click": true
+        }
+      ],
+      "settled_repeat": {
+        "exported_cookie_count": 12,
+        "browser_cookie_count": 13,
+        "browser_http_only_count": 3,
+        "matches_browser_jar": false,
+        "all_browser_http_only_exported": false,
+        "matches_before_click": false,
+        "jar_changed": false
+      },
+      "missing_cookie_storage_metadata": [
+        {
+          "http_only": true,
+          "secure": true,
+          "path": "/",
+          "partition_key": "(https,codeforces.com)",
+          "first_party_domain_present": false,
+          "user_context_id": 0,
+          "private_browsing_id": 0,
+          "session": false,
+          "expired": false
+        }
+      ],
+      "acm_lab_login_check": {
+        "status": "authenticated",
+        "reason": "identity_verified",
+        "upstream_status": 200,
+        "login_verified": true
+      }
+    }
+  ]
+}
