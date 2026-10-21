@@ -1,5 +1,6 @@
 """Check the optional sandboxed runtime without visiting external websites."""
 import asyncio
+import re
 import tempfile
 
 from playwright.async_api import async_playwright
@@ -15,8 +16,12 @@ async def main():
             try:
                 context = await browser.new_context()
                 page = await context.new_page()
-                await page.goto('about:blank')
-                print('Sandboxed Chromium runtime available; no external requests.')
+                await page.goto('chrome://sandbox')
+                status = await page.locator('body').inner_text()
+                for label in ('PID namespaces', 'Network namespaces', 'Seccomp-BPF sandbox'):
+                    if not re.search(re.escape(label) + r'\s+Yes\b', status):
+                        raise RuntimeError('Chromium sandbox verification failed: ' + label)
+                print('Chromium PID/network namespaces and Seccomp-BPF enabled; no external requests.')
             finally:
                 await browser.close()
 

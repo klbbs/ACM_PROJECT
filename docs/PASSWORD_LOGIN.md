@@ -29,7 +29,7 @@ Docker 使用可选 `server-browser` 构建目标和 `compose.browser.yaml`，�
 docker compose -f compose.yaml -f compose.browser.yaml build web
 ```
 
-`deploy/chromium-seccomp.json` 来自 Microsoft Playwright 官方仓库 `utils/docker/seccomp_profile.json`；获取时 SHA256 为 `cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849`。保留默认拒绝策略，按官方建议允许命名空间相关调用。不使用 `seccomp=unconfined`、privileged 或关闭 Chromium 沙箱来掩盖启动失败。
+`deploy/chromium-seccomp.json` 基于 [Moby 当前默认 seccomp 策略](https://github.com/moby/profiles/blob/main/seccomp/default.json)，保留默认拒绝；按 Playwright 建议允许 clone / setns / unshare，另允许非特权浏览器在自身用户命名空间中使用 chroot，适配 cap-drop ALL。clone3 仍拒绝并返回 ENOSYS，沿用 Moby 的现代 glibc 回退规则。来源摘要及变更见 [策略说明](../deploy/chromium-seccomp.README.md)。不使用 seccomp=unconfined、privileged 或关闭 Chromium 沙箱来掩盖启动失败。CI额外读取 chrome://sandbox，确认PID/网络命名空间与Seccomp-BPF实际启用。
 
 ## 验证与实际边界
 
