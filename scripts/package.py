@@ -38,8 +38,8 @@ def package(output,skip_build=False):
             target=base/relative;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
             manifest.append(hashlib.sha256(data).hexdigest()+'  '+relative.as_posix())
         (base/'MANIFEST.sha256').write_text('\n'.join(manifest)+'\n')
-        (base/'BUILD_INFO.json').write_text(json.dumps({'version':'0.18.1','commit':commit,'built_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
-        prefix='acm-lab-0.18.1'
+        (base/'BUILD_INFO.json').write_text(json.dumps({'version':'0.18.2','commit':commit,'built_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
+        prefix='acm-lab-0.18.2'
         with tarfile.open(output/(prefix+'.tar.gz'),'w:gz') as archive:
             for path in sorted(base.rglob('*')):
                 if path.is_file():archive.add(path,arcname=prefix+'/'+path.relative_to(base).as_posix())

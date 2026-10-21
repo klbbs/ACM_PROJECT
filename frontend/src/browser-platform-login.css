@@ -58,7 +58,87 @@
   }
 }
 
-/* An active official page uses the full platform row instead of a narrow account card. */
-.platform-action-grid > article:has(.browser-login-session) {
-  grid-column: 1 / -1;
+/* Native top-layer placement keeps the account grid unchanged while signing in. */
+.browser-login-dialog {
+  box-sizing: border-box;
+  width: min(1120px, calc(100vw - 40px));
+  max-width: none;
+  max-height: calc(100dvh - 40px);
+  margin: auto;
+  padding: 24px;
+  border: 1px solid #dce4ed;
+  border-radius: 20px;
+  background: #fff;
+  color: #253426;
+  box-shadow: 0 24px 80px #17251d3d;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.browser-login-dialog::backdrop {
+  background: #17251d99;
+}
+.browser-login-dialog[open] {
+  animation: browser-login-appear 140ms ease-out;
+}
+.browser-login-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.browser-login-dialog-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+.browser-login-dialog-header h2:focus {
+  outline: none;
+}
+.browser-login-dialog-header button {
+  flex: 0 0 auto;
+}
+.browser-login-dialog [role='status'] {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #eff9e7;
+}
+.browser-login-dialog [role='alert'] {
+  color: #a32121;
+}
+.browser-login-dialog .browser-login-viewport {
+  max-height: 54dvh;
+}
+.browser-login-loading {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  border: 1px dashed #dce4ed;
+  border-radius: 12px;
+  color: #69758a;
+}
+@keyframes browser-login-appear {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (max-width: 600px) {
+  .browser-login-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    padding: 16px;
+    border-radius: 14px;
+  }
+  .browser-login-dialog-header {
+    gap: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-login-dialog[open] {
+    animation: none;
+  }
 }

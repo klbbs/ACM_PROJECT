@@ -20,6 +20,9 @@ const names: Record<Platform, string> = {
   luogu: '洛谷',
 }
 const route = '/platform-login/browser'
+// Keep the no-id recovery deadline aligned with BrowserLogin.MAX_SECONDS.
+const maxSessionMs = 300_000
+type PendingStart = { promise: Promise<LoginResponse>; cancelRequested: boolean; expiresAt: number }
 
 export function BrowserPlatformLogin({
   platform,
@@ -30,8 +33,13 @@ export function BrowserPlatformLogin({
 }) {
   const fieldId = useId()
   const [expected, setExpected] = useState('')
+  const [modalOpen, setModalOpen] = useState(false)
+  const dialog = useRef<HTMLDialogElement>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Session | null>(null)
+  const [uncertainUntil, setUncertainUntil] = useState<number | null>(null)
   const [image, setImage] = useState('')
   const [text, setText] = useState('')
   const [masked, setMasked] = useState(true)
@@ -44,10 +52,10 @@ export function BrowserPlatformLogin({
   const current = useRef<Session | null>(null)
   const mounted = useRef(true)
   const submitting = useRef(false)
+  const cancelling = useRef(false)
+  const dismissAfterCancel = useRef(false)
   const imageRequest = useRef(0)
-  const pendingStart = useRef<{ promise: Promise<LoginResponse>; cancelRequested: boolean } | null>(
-    null,
-  )
+  const pendingStart = useRef<PendingStart | null>(null)
   const bound = useRef(onBound)
   bound.current = onBound
   const alive = (version: number) => mounted.current && generation.current === version
@@ -57,30 +65,72 @@ export function BrowserPlatformLogin({
   useEffect(() => {
     mounted.current = true
     submitting.current = false
+    cancelling.current = false
+    dismissAfterCancel.current = false
     setSession(null)
     setCancelTarget(null)
+    setUncertainUntil(null)
     setImage('')
     setText('')
     setStatus('')
     setMessage('')
     setError('')
     setBusy(false)
+    setModalOpen(false)
     return () => {
       mounted.current = false
       generation.current++
       const previous = current.current
       current.current = null
+      pendingStart.current = null
       if (previous) discard(previous.id)
     }
   }, [platform])
+
+  useEffect(() => {
+    if (!modalOpen) return
+    const element = dialog.current!
+    if (!element.open) element.showModal()
+    heading.current?.focus()
+    const page = document.documentElement
+    const previousOverflow = page.style.overflow
+    const previousGutter = page.style.scrollbarGutter
+    if (window.innerWidth > page.clientWidth) page.style.scrollbarGutter = 'stable'
+    page.style.overflow = 'hidden'
+    return () => {
+      page.style.overflow = previousOverflow
+      page.style.scrollbarGutter = previousGutter
+      if (element.open) element.close()
+      if (mounted.current) trigger.current?.focus()
+    }
+  }, [modalOpen])
+
+  function closeWindow() {
+    // Closing a live window must confirm remote cancellation before dismissing it.
+    if (
+      current.current ||
+      pendingStart.current ||
+      uncertainUntil ||
+      status === 'starting' ||
+      status === 'cancelling'
+    ) {
+      dismissAfterCancel.current = true
+      void cancelExplicitly()
+    } else {
+      setModalOpen(false)
+    }
+  }
 
   const clearSession = (nextStatus: string, nextMessage: string, cancelRemote = true) => {
     const previous = current.current
     generation.current++
     current.current = null
+    pendingStart.current = null
     submitting.current = false
+    cancelling.current = false
     setSession(null)
     setCancelTarget(null)
+    setUncertainUntil(null)
     setImage('')
     setText('')
     setMasked(true)
@@ -93,7 +143,9 @@ export function BrowserPlatformLogin({
   }
 
   async function cancelExplicitly() {
-    if (status === 'cancelling') return
+    if (cancelling.current) return
+    if (uncertainUntil && !current.current && !pendingStart.current) return
+    cancelling.current = true
     const pending = pendingStart.current
     if (pending) pending.cancelRequested = true
     const previous = current.current || cancelTarget
@@ -102,6 +154,7 @@ export function BrowserPlatformLogin({
     current.current = target
     setSession(null)
     setCancelTarget(target)
+    if (!target && pending) setUncertainUntil(pending.expiresAt)
     setImage('')
     setText('')
     setMasked(true)
@@ -127,6 +180,7 @@ export function BrowserPlatformLogin({
             expiresAt: Date.now() + Math.max(0, response.expires_in ?? 300) * 1000,
           }
           current.current = target
+          setUncertainUntil(null)
           setCancelTarget(target)
         }
       }
@@ -134,20 +188,48 @@ export function BrowserPlatformLogin({
       if (!alive(version)) return
       current.current = null
       setCancelTarget(null)
+      setUncertainUntil(null)
       setStatus('cancelled')
       setMessage('本次安全登录已取消，服务器窗口已关闭。')
+      if (dismissAfterCancel.current) {
+        dismissAfterCancel.current = false
+        setModalOpen(false)
+      }
     } catch (cause) {
       if (!alive(version)) return
       setStatus('cancel_failed')
-      setMessage('尚未确认服务器窗口已关闭。请重试取消，或等待本次窗口的有效期结束后重新打开。')
+      if (!target && pending) {
+        // A transport failure can hide a server-created window. With no id we
+        // cannot cancel it, so wait for the server's absolute maximum lifetime.
+        setUncertainUntil(pending.expiresAt)
+        setMessage(
+          '启动响应中断，未取得窗口标识，尚未确认服务器窗口已关闭。请等待本次登录最长 5 分钟的有效期结束，届时会自动恢复。',
+        )
+      } else {
+        setMessage('尚未确认服务器窗口已关闭。请重试取消，或等待本次窗口的有效期结束后重新打开。')
+      }
       setError(cause instanceof Error ? cause.message : '取消请求未完成，请重试。')
     } finally {
       if (alive(version)) {
         submitting.current = false
+        cancelling.current = false
         setBusy(false)
       }
     }
   }
+
+  useEffect(() => {
+    if (uncertainUntil === null) return
+    const version = generation.current
+    const timer = setTimeout(
+      () => {
+        if (alive(version))
+          clearSession('expired', '本次登录已超过最长有效期；可重新打开安全登录窗口。')
+      },
+      Math.max(0, uncertainUntil - Date.now()),
+    )
+    return () => clearTimeout(timer)
+  }, [uncertainUntil])
 
   useEffect(() => {
     if (!cancelTarget) return
@@ -286,6 +368,8 @@ export function BrowserPlatformLogin({
       )
       return
     }
+    dismissAfterCancel.current = false
+    setModalOpen(true)
     const version = ++generation.current
     submitting.current = true
     setBusy(true)
@@ -294,13 +378,15 @@ export function BrowserPlatformLogin({
     setText('')
     setStatus('starting')
     setMessage('正在打开官方登录页面…')
+    let request: PendingStart | null = null
     try {
-      const request = {
+      request = {
         promise: api<LoginResponse>(`${route}/start`, 'POST', {
           platform,
           ...(target ? { expected_handle: target } : {}),
         }),
         cancelRequested: false,
+        expiresAt: Date.now() + maxSessionMs,
       }
       pendingStart.current = request
       const response = await request.promise
@@ -333,8 +419,10 @@ export function BrowserPlatformLogin({
         }
       }
     } finally {
+      // Always release the settled promise, including when cancellation changed
+      // the generation; an old response must never clear a newer start.
+      if (pendingStart.current === request) pendingStart.current = null
       if (alive(version)) {
-        pendingStart.current = null
         submitting.current = false
         setBusy(false)
       }
@@ -405,132 +493,208 @@ export function BrowserPlatformLogin({
       <p className="help">
         在服务器的同一个官方登录窗口中操作，可亲自完成验证码。只有验证官方当前身份后才会保存会话并绑定账号。
       </p>
-      {!session && !cancelTarget && status !== 'starting' && status !== 'cancelling' && (
-        <div className="browser-login-start">
-          <label htmlFor={`${fieldId}-expected`}>
-            绑定目标{platform === 'luogu' ? ' UID' : ' handle / 用户名'}（可选）
-          </label>
-          <input
-            id={`${fieldId}-expected`}
-            value={expected}
-            maxLength={100}
-            inputMode={platform === 'luogu' ? 'numeric' : 'text'}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder={platform === 'luogu' ? '数字 UID；留空自动识别' : '留空使用官方验证的账号'}
-            onChange={(event) => setExpected(event.target.value)}
-          />
-          <button type="button" className="primary" disabled={busy} onClick={() => void start()}>
-            打开安全登录窗口
-          </button>
-        </div>
-      )}
-      {message && (
-        <p role="status" aria-live="polite">
-          {message}
-        </p>
-      )}
-      {error && <p role="alert">{error}</p>}
-      {session && (
-        <div className="browser-login-session">
-          <p className="help">
-            点击图片中的输入框，再在下方发送文字。图片来自 {names[platform]}{' '}
-            官方页面；可放大并横向滚动，输入和截图仅用于本次登录。
-          </p>
-          <button
-            type="button"
-            className="text-button"
-            aria-pressed={zoomed}
-            onClick={() => setZoomed(!zoomed)}
-          >
-            {zoomed ? '适应窗口宽度' : '放大登录页面'}
-          </button>
-          <div
-            className="browser-login-viewport"
-            tabIndex={0}
-            aria-label={`${names[platform]} 官方登录页面，可横向滚动`}
-          >
-            {image ? (
-              <img
-                className={zoomed ? 'zoomed' : ''}
-                src={image}
-                alt={`${names[platform]} 官方登录窗口截图`}
-                width={session.width}
-                height={session.height}
-                draggable={false}
-                onClick={clickImage}
-                style={zoomed ? { width: session.width } : undefined}
-              />
-            ) : (
-              <p>正在读取登录页面；若没有显示，请刷新窗口。</p>
-            )}
-          </div>
-          <form onSubmit={sendText} aria-label={`${names[platform]} 登录窗口输入`}>
-            <label htmlFor={`${fieldId}-text`}>向选中位置输入</label>
-            <input
-              id={`${fieldId}-text`}
-              type={masked ? 'password' : 'text'}
-              value={text}
-              autoComplete="off"
-              maxLength={512}
-              disabled={busy}
-              onChange={(event) => setText(event.target.value)}
-            />
-            <div className="browser-login-controls">
+      <div className="browser-login-start">
+        <label htmlFor={`${fieldId}-expected`}>
+          绑定目标{platform === 'luogu' ? ' UID' : ' handle / 用户名'}（可选）
+        </label>
+        <input
+          id={`${fieldId}-expected`}
+          value={expected}
+          maxLength={100}
+          inputMode={platform === 'luogu' ? 'numeric' : 'text'}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={modalOpen}
+          placeholder={platform === 'luogu' ? '数字 UID；留空自动识别' : '留空使用官方验证的账号'}
+          onChange={(event) => setExpected(event.target.value)}
+        />
+        <button
+          ref={trigger}
+          type="button"
+          className="primary"
+          disabled={modalOpen || busy}
+          onClick={() => void start()}
+        >
+          {modalOpen ? '安全登录窗口已打开' : '打开安全登录窗口'}
+        </button>
+      </div>
+      {!modalOpen && message && <p role="status">{message}</p>}
+      {!modalOpen && error && <p role="alert">{error}</p>}
+      <dialog
+        ref={dialog}
+        className="browser-login-dialog"
+        aria-labelledby={`${fieldId}-title`}
+        aria-describedby={`${fieldId}-description`}
+        onCancel={(event) => {
+          event.preventDefault()
+          closeWindow()
+        }}
+        onClose={() => {
+          if (!mounted.current) return
+          if (
+            current.current ||
+            pendingStart.current ||
+            uncertainUntil ||
+            status === 'starting' ||
+            status === 'cancelling'
+          ) {
+            // Also guard against a programmatic/native close while a session is live.
+            if (dialog.current && !dialog.current.open) dialog.current.showModal()
+            dismissAfterCancel.current = true
+            void cancelExplicitly()
+          } else {
+            setModalOpen(false)
+          }
+        }}
+      >
+        {modalOpen && (
+          <>
+            <div className="browser-login-dialog-header">
+              <h2 id={`${fieldId}-title`} ref={heading} tabIndex={-1}>
+                {names[platform]} 安全登录窗口
+              </h2>
               <button
                 type="button"
                 className="text-button"
-                aria-pressed={!masked}
-                onClick={() => setMasked(!masked)}
+                aria-label="关闭安全登录窗口"
+                disabled={status === 'cancelling'}
+                onClick={closeWindow}
               >
-                {masked ? '显示输入文字' : '隐藏输入文字'}
-              </button>
-              <button type="submit" disabled={busy || !text}>
-                发送文字
+                关闭
               </button>
             </div>
-          </form>
-          <div className="browser-login-controls" role="group" aria-label="登录窗口按键">
-            {['Tab', 'Enter', 'Backspace', 'Control+A'].map((key) => (
+            <p id={`${fieldId}-description`} className="help">
+              在本窗口完成官方登录和验证。关闭或按 Escape 会取消本次登录，并确认服务器窗口已关闭。
+            </p>
+            {message && (
+              <p role="status" aria-live="polite">
+                {message}
+              </p>
+            )}
+            {error && <p role="alert">{error}</p>}
+            {status === 'starting' && (
+              <div className="browser-login-loading" aria-hidden="true">
+                正在启动登录窗口…
+              </div>
+            )}
+            {session && (
+              <div className="browser-login-session">
+                <p className="help">
+                  点击图片中的输入框，再在下方发送文字。图片来自 {names[platform]}{' '}
+                  官方页面；可放大并横向滚动，输入和截图仅用于本次登录。
+                </p>
+                <button
+                  type="button"
+                  className="text-button"
+                  aria-pressed={zoomed}
+                  onClick={() => setZoomed(!zoomed)}
+                >
+                  {zoomed ? '适应窗口宽度' : '放大登录页面'}
+                </button>
+                <div
+                  className="browser-login-viewport"
+                  tabIndex={0}
+                  aria-label={`${names[platform]} 官方登录页面，可横向滚动`}
+                >
+                  {image ? (
+                    <img
+                      className={zoomed ? 'zoomed' : ''}
+                      src={image}
+                      alt={`${names[platform]} 官方登录窗口截图`}
+                      width={session.width}
+                      height={session.height}
+                      draggable={false}
+                      onClick={clickImage}
+                      style={zoomed ? { width: session.width } : undefined}
+                    />
+                  ) : (
+                    <p>正在读取登录页面；若没有显示，请刷新窗口。</p>
+                  )}
+                </div>
+                <form onSubmit={sendText} aria-label={`${names[platform]} 登录窗口输入`}>
+                  <label htmlFor={`${fieldId}-text`}>向选中位置输入</label>
+                  <input
+                    id={`${fieldId}-text`}
+                    type={masked ? 'password' : 'text'}
+                    value={text}
+                    autoComplete="off"
+                    maxLength={512}
+                    disabled={busy}
+                    onChange={(event) => setText(event.target.value)}
+                  />
+                  <div className="browser-login-controls">
+                    <button
+                      type="button"
+                      className="text-button"
+                      aria-pressed={!masked}
+                      onClick={() => setMasked(!masked)}
+                    >
+                      {masked ? '显示输入文字' : '隐藏输入文字'}
+                    </button>
+                    <button type="submit" disabled={busy || !text}>
+                      发送文字
+                    </button>
+                  </div>
+                </form>
+                <div className="browser-login-controls" role="group" aria-label="登录窗口按键">
+                  {['Tab', 'Enter', 'Backspace', 'Control+A'].map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void action('input', { kind: 'key', key })}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+                <div className="browser-login-controls">
+                  <button type="button" disabled={busy} onClick={() => void action('image')}>
+                    刷新窗口截图
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => void action('confirm')}
+                  >
+                    {busy ? '正在处理…' : '检测登录并绑定'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {(session ||
+              cancelTarget ||
+              status === 'starting' ||
+              status === 'cancelling' ||
+              status === 'cancel_failed') && (
               <button
-                key={key}
                 type="button"
-                disabled={busy}
-                onClick={() => void action('input', { kind: 'key', key })}
+                className="text-button"
+                disabled={status === 'cancelling' || uncertainUntil !== null}
+                onClick={() => void cancelExplicitly()}
               >
-                {key}
+                {status === 'cancelling'
+                  ? '正在取消安全登录…'
+                  : uncertainUntil !== null
+                    ? '等待窗口自动过期'
+                    : status === 'cancel_failed'
+                      ? '重试取消安全登录'
+                      : '取消安全登录'}
               </button>
-            ))}
-          </div>
-          <div className="browser-login-controls">
-            <button type="button" disabled={busy} onClick={() => void action('image')}>
-              刷新窗口截图
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy}
-              onClick={() => void action('confirm')}
-            >
-              {busy ? '正在处理…' : '检测登录并绑定'}
-            </button>
-          </div>
-        </div>
-      )}
-      {(session || cancelTarget || status === 'starting' || status === 'cancelling') && (
-        <button
-          type="button"
-          className="text-button"
-          disabled={status === 'cancelling'}
-          onClick={() => void cancelExplicitly()}
-        >
-          {status === 'cancelling'
-            ? '正在取消安全登录…'
-            : status === 'cancel_failed'
-              ? '重试取消安全登录'
-              : '取消安全登录'}
-        </button>
-      )}
+            )}
+            {!session &&
+              !cancelTarget &&
+              status !== 'starting' &&
+              status !== 'cancelling' &&
+              status !== 'cancel_failed' && (
+                <button type="button" className="primary" onClick={closeWindow}>
+                  返回账号卡片
+                </button>
+              )}
+          </>
+        )}
+      </dialog>
     </div>
   )
 }

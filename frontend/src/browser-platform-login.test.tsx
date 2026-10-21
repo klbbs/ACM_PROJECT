@@ -59,6 +59,14 @@ beforeEach(() => {
   document.body.append(host)
   root = createRoot(host)
   backend()
+  // jsdom does not implement the browser's native dialog top layer.
+  HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
+    this.setAttribute('open', '')
+  })
+  HTMLDialogElement.prototype.close = vi.fn(function (this: HTMLDialogElement) {
+    this.removeAttribute('open')
+    this.dispatchEvent(new Event('close'))
+  })
 })
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -217,6 +225,7 @@ it('cancels promptly, ignores a late successful confirmation and cleans orphan s
         finish = resolve
       }),
   )
+  await click('返回账号卡片')
   await click('打开安全登录窗口')
   await click('取消安全登录')
   await act(async () => finish(pending({ login_id: 'orphan' })))
@@ -247,6 +256,7 @@ it('cleans sessions on unmount and stops work after the local expiry deadline', 
   await act(async () => vi.advanceTimersByTimeAsync(2000))
   expect(host.querySelector('img')).toBeNull()
   expect(host.textContent).toContain('已过期')
+  await click('返回账号卡片')
   await click('打开安全登录窗口')
   await act(async () => root.unmount())
   root = createRoot(host)
@@ -315,6 +325,7 @@ it('preserves the cancellation id on failure, blocks restarting and ignores a la
     login_id: 'session-1',
   })
   expect(host.textContent).toContain('服务器窗口已关闭')
+  await click('返回账号卡片')
   expect(
     [...host.querySelectorAll('button')].some(
       (button) => button.textContent === '打开安全登录窗口',
@@ -352,6 +363,7 @@ it('retains the failed cancellation until its deadline, then allows another logi
   await act(async () => vi.advanceTimersByTimeAsync(2000))
   expect(host.textContent).toContain('已超过有效期')
   expect(host.textContent).not.toContain('重试取消安全登录')
+  await click('返回账号卡片')
   expect(
     [...host.querySelectorAll('button')].some(
       (button) => button.textContent === '打开安全登录窗口',
@@ -377,4 +389,211 @@ it('matches the server input limit and rejects oversized text without clearing t
   await fill('text', 'x'.repeat(512))
   await click('发送文字')
   expect(input.value).toBe('')
+})
+
+it('opens a named modal with initial focus and loading before startup settles, then shows failure', async () => {
+  await render('atcoder')
+  let rejectStart!: (reason: Error) => void
+  vi.mocked(api).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectStart = reject
+      }),
+  )
+  const opener = host.querySelector<HTMLButtonElement>('.browser-login-start button')!
+  opener.focus()
+  const originalOverflow = document.documentElement.style.overflow
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  expect(modal.open).toBe(true)
+  expect(modal.showModal).toHaveBeenCalledOnce()
+  expect(modal.querySelector('h2')!.textContent).toBe('AtCoder 安全登录窗口')
+  expect(document.activeElement).toBe(modal.querySelector('h2'))
+  expect(modal.querySelector('[role="status"]')!.textContent).toContain('正在打开')
+  expect(modal.querySelector('.browser-login-loading')).not.toBeNull()
+  expect(host.querySelector('.browser-login-start')).not.toBeNull()
+  expect(opener.disabled).toBe(true)
+  expect(document.documentElement.style.overflow).toBe('hidden')
+  await act(async () => rejectStart(new Error('浏览器启动失败')))
+  expect(modal.open).toBe(true)
+  expect(modal.querySelector('[role="alert"]')!.textContent).toContain('浏览器启动失败')
+  await click('返回账号卡片')
+  expect(modal.open).toBe(false)
+  expect(document.activeElement).toBe(opener)
+  expect(document.documentElement.style.overflow).toBe(originalOverflow)
+  expect(host.querySelector('[role="alert"]')!.closest('dialog')).toBeNull()
+})
+
+it('Escape during startup waits for confirmed cancellation before dismissing and restores focus', async () => {
+  const bound = await render()
+  let finishStart!: (value: unknown) => void
+  let finishCancel!: (value: unknown) => void
+  vi.mocked(api).mockImplementation(
+    (path) =>
+      new Promise((resolve) => {
+        if (path.endsWith('/start')) finishStart = resolve
+        if (path.endsWith('/cancel')) finishCancel = resolve
+      }),
+  )
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  const escape = new Event('cancel', { cancelable: true })
+  await act(async () => {
+    modal.dispatchEvent(escape)
+    modal.dispatchEvent(new Event('cancel', { cancelable: true }))
+  })
+  expect(escape.defaultPrevented).toBe(true)
+  expect(modal.open).toBe(true)
+  expect(modal.textContent).toContain('正在取消')
+  await act(async () => finishStart(pending({ login_id: 'late-start' })))
+  expect(api).toHaveBeenLastCalledWith('/platform-login/browser/cancel', 'POST', {
+    login_id: 'late-start',
+  })
+  expect(vi.mocked(api).mock.calls.filter(([path]) => path.endsWith('/cancel'))).toHaveLength(1)
+  expect(modal.open).toBe(true)
+  expect(host.querySelector('img')).toBeNull()
+  await act(async () => finishCancel({ status: 'cancelled' }))
+  expect(modal.open).toBe(false)
+  expect(host.textContent).toContain('服务器窗口已关闭')
+  expect(document.activeElement).toBe(host.querySelector('.browser-login-start button'))
+  expect(bound).not.toHaveBeenCalled()
+})
+
+it('keeps a failed close visible and retryable until cancellation succeeds', async () => {
+  await render()
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  vi.mocked(api).mockRejectedValueOnce(new Error('cancel offline'))
+  await click('关闭')
+  expect(modal.open).toBe(true)
+  expect(modal.querySelector('[role="alert"]')!.textContent).toContain('cancel offline')
+  expect(modal.textContent).toContain('重试取消安全登录')
+  expect(host.querySelector('img')).toBeNull()
+  await click('重试取消安全登录')
+  expect(modal.open).toBe(false)
+  expect(host.textContent).toContain('服务器窗口已关闭')
+  expect(document.activeElement).toBe(host.querySelector('.browser-login-start button'))
+})
+
+it('allows a verified result to be dismissed while retaining the account result on its card', async () => {
+  const bound = await render()
+  await click('打开安全登录窗口')
+  backend({ confirm: { status: 'authenticated', account: { handle: 'fixture' } } })
+  await click('检测登录并绑定')
+  const modal = host.querySelector('dialog')!
+  expect(modal.open).toBe(true)
+  expect(bound).toHaveBeenCalledOnce()
+  await click('关闭')
+  expect(modal.open).toBe(false)
+  expect(host.querySelector('[role="status"]')!.textContent).toContain('已绑定账号：fixture')
+  expect(vi.mocked(api).mock.calls.some(([path]) => path.endsWith('/cancel'))).toBe(false)
+})
+
+it('guards an unexpected native close so an active server session cannot remain hidden', async () => {
+  await render()
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  let finishCancel!: (value: unknown) => void
+  vi.mocked(api).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishCancel = resolve
+      }),
+  )
+  await act(async () => modal.close())
+  expect(modal.open).toBe(true)
+  expect(modal.textContent).toContain('正在取消')
+  expect(api).toHaveBeenLastCalledWith('/platform-login/browser/cancel', 'POST', {
+    login_id: 'session-1',
+  })
+  await act(async () => finishCancel({ status: 'cancelled' }))
+  expect(modal.open).toBe(false)
+})
+
+it('restores page scrolling on unmount and cancels a late startup without reopening UI', async () => {
+  await render()
+  let finish!: (value: unknown) => void
+  vi.mocked(api).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const originalOverflow = document.documentElement.style.overflow
+  await click('打开安全登录窗口')
+  await act(async () => root.unmount())
+  root = createRoot(host)
+  expect(document.documentElement.style.overflow).toBe(originalOverflow)
+  await act(async () => finish(pending({ login_id: 'unmounted-start' })))
+  expect(api).toHaveBeenLastCalledWith('/platform-login/browser/cancel', 'POST', {
+    login_id: 'unmounted-start',
+  })
+  expect(host.querySelector('dialog')).toBeNull()
+})
+
+it('bounds a startup rejection during cancellation by the original maximum lifetime', async () => {
+  await render()
+  let rejectStart!: (reason: Error) => void
+  vi.mocked(api).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectStart = reject
+      }),
+  )
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  await act(async () => modal.dispatchEvent(new Event('cancel', { cancelable: true })))
+  await act(async () => vi.advanceTimersByTimeAsync(120000))
+  await act(async () => rejectStart(new Error('network disconnected')))
+  expect(modal.open).toBe(true)
+  expect(modal.textContent).toContain('未取得窗口标识')
+  expect(modal.textContent).not.toContain('已取消')
+  expect(modal.textContent).toContain('等待窗口自动过期')
+  await click('关闭')
+  await act(async () => modal.dispatchEvent(new Event('cancel', { cancelable: true })))
+  await act(async () => vi.advanceTimersByTimeAsync(179999))
+  expect(modal.textContent).toContain('等待窗口自动过期')
+  await act(async () => vi.advanceTimersByTimeAsync(1))
+  expect(modal.textContent).toContain('已超过最长有效期')
+  await click('返回账号卡片')
+  expect(modal.open).toBe(false)
+  expect(document.activeElement).toBe(host.querySelector('.browser-login-start button'))
+  await click('打开安全登录窗口')
+  expect(host.querySelector('img')).not.toBeNull()
+})
+
+it('bounds a startup that never settles and safely discards its late id after a newer start', async () => {
+  await render()
+  let finishOld!: (value: unknown) => void
+  vi.mocked(api).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishOld = resolve
+      }),
+  )
+  await click('打开安全登录窗口')
+  await click('关闭')
+  await act(async () => vi.advanceTimersByTimeAsync(300000))
+  expect(host.textContent).toContain('已超过最长有效期')
+  await click('返回账号卡片')
+  let finishNew!: (value: unknown) => void
+  vi.mocked(api).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishNew = resolve
+      }),
+  )
+  await click('打开安全登录窗口')
+  await act(async () => finishOld(pending({ login_id: 'old-id' })))
+  expect(api).toHaveBeenLastCalledWith('/platform-login/browser/cancel', 'POST', {
+    login_id: 'old-id',
+  })
+  expect(host.querySelector('dialog')!.open).toBe(true)
+  expect(host.textContent).toContain('正在打开官方登录页面')
+  await click('关闭')
+  await act(async () => finishNew(pending({ login_id: 'new-id' })))
+  expect(api).toHaveBeenLastCalledWith('/platform-login/browser/cancel', 'POST', {
+    login_id: 'new-id',
+  })
+  expect(host.querySelector('dialog')!.open).toBe(false)
 })

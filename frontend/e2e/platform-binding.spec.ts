@@ -94,11 +94,13 @@ test('browser login reports unavailable honestly and keeps manual Cookie binding
   await expect(panel.getByRole('alert')).toContainText('合成环境没有浏览器运行时')
   await expect(panel.locator('img')).toHaveCount(0)
   await expect(panel.locator('a[href*="unsafe"]')).toHaveCount(0)
+  await panel.getByRole('button', { name: '返回账号卡片', exact: true }).click()
+  await expect(panel.getByRole('dialog')).not.toBeVisible()
   await page.getByRole('button', { name: '配置平台账号', exact: true }).click()
   await expect(page.getByLabel('Cookie（可选）', { exact: true })).toBeVisible()
 })
 
-test('mobile official browser window expands, clears sent text and cancels without overflow or false success', async ({
+test('mobile official browser dialog clears sent text and cancels without overflow or false success', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 })
@@ -132,7 +134,10 @@ test('mobile official browser window expands, clears sent text and cancels witho
     .locator('.platform-action-grid article')
     .filter({ has: page.getByRole('heading', { name: 'AtCoder', exact: true }) })
   await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
-  await expect(panel.getByRole('img')).toBeVisible()
+  const dialog = panel.getByRole('dialog', { name: 'AtCoder 安全登录窗口', exact: true })
+  await expect(dialog).toBeVisible()
+  expect(await dialog.evaluate((element) => element.matches(':modal'))).toBeTruthy()
+  await expect(dialog.getByRole('img')).toBeVisible()
   const input = panel.getByLabel('向选中位置输入', { exact: true })
   await expect(input).toHaveAttribute('type', 'password')
   await input.fill('synthetic-password')
@@ -155,4 +160,64 @@ test('mobile official browser window expands, clears sent text and cancels witho
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
     'synthetic-password',
   )
+})
+
+test('opening an official login shows a modal immediately without navigation or moving platform cards', async ({
+  page,
+}) => {
+  let releaseStart!: () => void
+  const waiting = new Promise<void>((resolve) => {
+    releaseStart = resolve
+  })
+  let cancelCalls = 0
+  await page.route('**/api/platform-login/browser/start', async (route) => {
+    await waiting
+    await route.fulfill({ json: browserSession })
+  })
+  await page.route('**/api/platform-login/browser/image', (route) =>
+    route.fulfill({ json: { image: browserImage } }),
+  )
+  await page.route('**/api/platform-login/browser/cancel', async (route) => {
+    cancelCalls++
+    await route.fulfill({ json: { status: 'cancelled' } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  const panel = page.locator('.platform-action-grid article').filter({
+    has: page.getByRole('heading', { name: 'AtCoder', exact: true }),
+  })
+  const launch = panel.getByRole('button', { name: '打开安全登录窗口', exact: true })
+  await launch.scrollIntoViewIfNeeded()
+  const before = await panel.boundingBox()
+  const url = page.url()
+  let navigations = 0
+  let popups = 0
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) navigations++
+  })
+  page.on('popup', () => {
+    popups++
+  })
+  await launch.click()
+  const dialog = panel.getByRole('dialog', { name: 'AtCoder 安全登录窗口', exact: true })
+  await expect(dialog).toBeVisible()
+  expect(await dialog.evaluate((element) => element.matches(':modal'))).toBeTruthy()
+  await expect(dialog.getByRole('status')).toContainText('正在')
+  expect(page.url()).toBe(url)
+  expect(navigations).toBe(0)
+  expect(popups).toBe(0)
+  const opening = await panel.boundingBox()
+  expect(opening!.width).toBeCloseTo(before!.width, 0)
+  expect(opening!.height).toBeCloseTo(before!.height, 0)
+  releaseStart()
+  await expect(dialog.getByRole('img')).toBeVisible()
+  const ready = await panel.boundingBox()
+  expect(ready!.width).toBeCloseTo(before!.width, 0)
+  expect(ready!.height).toBeCloseTo(before!.height, 0)
+  await page.keyboard.press('Escape')
+  await expect(dialog).not.toBeVisible()
+  await expect.poll(() => cancelCalls).toBe(1)
+  await expect(launch).toBeFocused()
+  expect(navigations).toBe(0)
+  expect(page.url()).toBe(url)
 })
