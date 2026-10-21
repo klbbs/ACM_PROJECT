@@ -1,6 +1,6 @@
 # 四平台登录与 Cookie 验收（2026-10-21）
 
-本轮仅本地开发和隔离验收，没有部署、连接服务器、代提交代码或自动求解验证码。用户此前授权读取本人平台会话及测试登录；凭据没有进入仓库、日志、截图或 AI。
+本轮仅开发和隔离验收，没有部署、连接用户服务器或代提交代码。产品不集成验证码自动识别服务；测试中处理验证码均取得当次操作确认。用户此前授权读取本人平台会话及测试登录；凭据没有进入仓库、日志、截图或 AI。
 
 ## 已确认的真实结果
 
@@ -28,7 +28,7 @@
 
 ## 最终自动化检查
 
-- Python：628 passed，1 skipped，1个已知 Starlette 测试客户端弃用警告；本机通过 env -u PYTHONPATH 排除 ROS 全局测试插件干扰。
+- 最终 GitHub CI（Python3.12）：630 passed，1 skipped，1个已知 Starlette 测试客户端弃用警告。本机初次全量628项通过，追加运行时及关闭循环回归后相关97项通过；本机通过 env -u PYTHONPATH 排除 ROS 全局测试插件干扰。
 - 前端组件：19个文件、130项通过；TypeScript 与 Vite 生产构建通过。
 - Playwright：52项端到端通过，包含平台绑定、取消、移动端、草稿保留、WA提示、历史提交回看。长练习流程涉及多轮独立后台轮询，单独给60秒总时限。
 - 浏览器传输：15项真实本地网络探针通过，受禁止目的地请求数为0。
@@ -42,8 +42,8 @@ HTTP采集头统一为桌面浏览器常见 User-Agent、Accept 和语言；这�
 
 可选浏览器镜像和 Compose 文件已编写；本机没有 Docker CLI，未进行容器构建或部署，不能将源码检查写成镜像运行验收。维护者可按 PASSWORD_LOGIN.md 使用官方沙箱profile自行构建。
 
-GitHub 容器补充验收：[fbe5346 流水线](https://github.com/klbbs/ACM_PROJECT/actions/runs/39523345487)的浏览器目标已实际构建并运行，chrome://sandbox 的 PID namespace、Network namespace、Seccomp-BPF 均通过。此前两轮暴露只读主目录 / Crashpad 和旧 seccomp 示例不适配现代运行库，已分别分配私有临时 XDG 目录、采用 Moby 当前默认策略加命名空间与 chroot 规则，保留默认拒绝及非特权沙箱；没有部署服务器。
+GitHub 最终验收：[f4d5bc6 流水线](https://github.com/klbbs/ACM_PROJECT/actions/runs/39524027742)的 validate、runtime、server-codex、server-browser、server-browser-codex 全部成功。浏览器目标已实际构建并运行，chrome://sandbox 的 PID namespace、Network namespace、Seccomp-BPF 均通过。此前两轮暴露只读主目录 / Crashpad 和旧 seccomp 示例不适配现代运行库，已分别分配私有临时 XDG 目录、采用 Moby 当前默认策略加命名空间与 chroot 规则，保留默认拒绝及非特权沙箱；没有部署服务器。
 
-随后修复 Python 3.12+ 在 gather 已完成任务时无需让出事件循环、导致清理回调迟迟不能执行的关闭循环。对已完成清理任务显式移除，补充立即返回的 gather 回归；本机相关测试97 passed、1 skipped。CI测试步骤增加8分钟上限和60秒线程堆栈诊断，完整新版本流水线继续核对。
+随后修复 Python 3.12+ 在 gather 已完成任务时无需让出事件循环、导致清理回调迟迟不能执行的关闭循环。对已完成清理任务显式移除，补充立即返回的 gather 回归；本机相关测试97 passed、1 skipped。CI测试步骤增加8分钟上限和60秒线程堆栈诊断；超时测试按真实经过时长构造，不再假定机器启动已超过空闲时限。最终上述流水线已全部通过，发布记录仅追加文档，不改变已验收源码。
 
 本轮后续 AtCoder 窗口的验证尚未操作时，控制浏览器连接断开、可用浏览器列表为空。已经停止本轮临时 loopback 验收服务器，登录浏览器随服务回收；没有继续使用旧截图、过期验证码或保存密码。
