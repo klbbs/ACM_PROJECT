@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from acmweb.app import create_app
+from acmweb.accounts import AccountList
 from acmweb.settings import Settings
 from acmweb.daily import Settings as DailySettings
 from acmweb.codex_bridge import AIError
@@ -673,3 +674,41 @@ def test_layout_preferences_validate_and_persist_across_app_instances(workspace,
     from acmweb.app import create_app
     with TestClient(create_app(Settings(data_dir=tmp_path, config_path=tmp_path/'account.toml', enable_codex=False))) as second:
         assert second.get(path).json() == saved
+
+
+def test_linking_accounts_are_available_without_recommendation_login_eligibility(workspace):
+    client, service, _ = workspace
+    service.accounts.save(AccountList(items=[
+        {'platform': 'codeforces', 'handle': 'fresh_demo'},
+        {'platform': 'luogu', 'handle': '12345'},
+    ]))
+    assert client.get('/api/workbench/problem/4-A').json()['capabilities']['handles'] == ['fresh_demo']
+    assert client.get('/api/workbench/problem/luogu:P1001').json()['capabilities']['handles'] == ['12345']
+    assert client.get('/api/workbench/problem/atcoder:abc001_1').json()['capabilities']['handles'] == []
+
+
+@pytest.mark.parametrize('draft_age,submission_age,passes', [
+    (1200, 600, True),       # Saved before submitting, returned ten minutes later.
+    (1200, 1501, False),     # Official record predates the saved code window.
+    (90000, 89000, False),   # Stale draft cannot be used to backfill old history.
+    (1200, -301, False),     # Impossible future record.
+])
+def test_direct_link_window_uses_recent_saved_code_without_accepting_history(workspace, monkeypatch, draft_age, submission_age, passes):
+    from acmweb.workbench import SubmissionLink
+    client, service, _ = workspace
+    now = int(time.time())
+    service.draft('4-A', Draft(code='confirmed submitted code', revision=0))
+    with service.db.connect() as conn:
+        conn.execute('UPDATE wb_drafts SET updated_at=?', (now - draft_age,))
+    body = SubmissionLink(handle='demo', submission_id=12345, revision=1, code_matches_submission=True)
+    aid, _, _ = service.prepare_submission('4-A', body)
+    mock_judge(monkeypatch, creationTimeSeconds=now - submission_age)
+    if passes:
+        assert service.sync(aid, Link(handle='demo', submission_id=12345))['verdict'] == 'WA'
+    else:
+        with pytest.raises(AIError, match='早于|时间异常'):
+            service.sync(aid, Link(handle='demo', submission_id=12345))
+
+
+def test_link_handle_limit_matches_account_configuration():
+    assert Link(handle='a' * 100, submission_id=123).handle == 'a' * 100

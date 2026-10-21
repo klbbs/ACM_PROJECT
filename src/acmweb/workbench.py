@@ -148,7 +148,7 @@ def official_judge(judge):
 
 
 class Link(Strict):
-    handle: str = Field(min_length=1, max_length=50, pattern=r'^[A-Za-z0-9_.-]+$')
+    handle: str = Field(min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_.-]+$')
     submission_id: int = Field(gt=0, le=10**12)
     review: Coach | None = None
 
@@ -267,7 +267,10 @@ class Workbench:
             draft = conn.execute('SELECT * FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
             hints = conn.execute('SELECT data FROM wb_hints WHERE problem_id=? ORDER BY seq', (pid,)).fetchall()
             attempts = conn.execute('SELECT * FROM wb_attempts WHERE problem_id=? ORDER BY created_at DESC,id DESC LIMIT 30', (pid,)).fetchall()
-        caps = capabilities(pid, self.accounts.document().get('accounts', []))
+        accounts = self.accounts.document().get('accounts', [])
+        caps = capabilities(pid, accounts)
+        # Linking is independent of recommendation eligibility and login-check expiry.
+        caps['handles'] = [a['handle'] for a in accounts if a.get('platform') == caps['platform']]
         checker = getattr(self.accounts, 'credential_checks', None)
         checks = [r for r in checker.statuses()['items'] if r['platform'] == caps['platform']] if checker else []
         caps['credential_checks'] = checks
@@ -340,8 +343,13 @@ class Workbench:
             if conn.execute('SELECT COUNT(*) FROM wb_attempts').fetchone()[0] >= 2000:
                 raise HTTPException(409, '提交代码记录达到 2000 上限，请联系管理员归档')
             aid = uuid.uuid4().hex
+            now = int(time.time())
+            # A user can submit on the official page and return later. Bind only
+            # recently saved code; stale drafts cannot claim arbitrary history.
+            saved_at = draft['updated_at']
+            created_at = saved_at if now - 86400 <= saved_at <= now else now
             conn.execute('INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,handle,submission_id) VALUES(?,?,?,?,?,?,?,?)',
-                         (aid, pid, draft['language'], draft['code'], digest, int(time.time()), handle, data.submission_id))
+                         (aid, pid, draft['language'], draft['code'], digest, created_at, handle, data.submission_id))
         return aid, True, handle
 
     def history(self, pid):
@@ -460,6 +468,8 @@ class Workbench:
             raise AIError('提交账号或题号不匹配（暂不支持团队提交）')
         if found.get('creationTimeSeconds', 0) < attempt['created_at'] - 300:
             raise AIError('此提交早于代码记录，请关联本次练习提交')
+        if found.get('creationTimeSeconds', 0) > int(time.time()) + 300:
+            raise AIError('提交时间异常，请确认官方判题记录后重试')
         status = codeforces_judge_verdict(found.get('verdict'))
         now = int(time.time())
         judge = {k: found.get(k) for k in ('verdict', 'passedTestCount', 'timeConsumedMillis', 'memoryConsumedBytes', 'creationTimeSeconds', 'programmingLanguage')}

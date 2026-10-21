@@ -10,6 +10,7 @@ import './editor-self-test.css'
 import { WorkbenchSplit } from './workbench-split'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
+import { ProblemRecordEditor } from './problem-records'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
@@ -136,6 +137,7 @@ export function WorkbenchPage({
     dirty = useRef(false),
     saving = useRef(false),
     currentPid = useRef('')
+  const saveRequest = useRef<Promise<boolean> | null>(null)
   const active = jobs.some(
     (j) => j.kind.startsWith('wb_') && ['running', 'queued'].includes(j.status),
   )
@@ -162,37 +164,43 @@ export function WorkbenchPage({
     currentPid.current = pid
   }, [pid])
 
-  const save = async () => {
-    if (!currentPid.current || saving.current) return false
+  const save = async (): Promise<boolean> => {
+    if (!currentPid.current) return false
+    if (saveRequest.current) return saveRequest.current
     if (!dirty.current) return true
     saving.current = true
     setSaved('正在保存…')
     const id = currentPid.current,
       text = code,
       lang = language
-    try {
-      const result = await api(`/workbench/problem/${encodeURIComponent(id)}/draft`, 'PUT', {
-        code: text,
-        language: lang,
-        revision: draftRevision.current,
-      })
-      draftRevision.current = result.revision
-      // Edits may continue while the request is pending. Never mark newer edits as saved.
-      if (editor.current.code === text && editor.current.language === lang) {
-        dirty.current = false
-        setSaved('已保存到个人数据库')
-      } else {
-        setSaved('还有未保存修改')
-        setSaveTick((n) => n + 1)
+    const pending = (async () => {
+      try {
+        const result = await api(`/workbench/problem/${encodeURIComponent(id)}/draft`, 'PUT', {
+          code: text,
+          language: lang,
+          revision: draftRevision.current,
+        })
+        draftRevision.current = result.revision
+        // Edits may continue while the request is pending. Never mark newer edits as saved.
+        if (editor.current.code === text && editor.current.language === lang) {
+          dirty.current = false
+          setSaved('已保存到个人数据库')
+        } else {
+          setSaved('还有未保存修改')
+          setSaveTick((n) => n + 1)
+        }
+        return !dirty.current
+      } catch (e) {
+        setSaved('自动保存失败 · 请保留当前页面并使用 Ctrl/Cmd+S 重试')
+        fail(e)
+        return false
+      } finally {
+        saving.current = false
+        saveRequest.current = null
       }
-      return !dirty.current
-    } catch (e) {
-      setSaved('自动保存失败 · 请保留当前页面并使用 Ctrl/Cmd+S 重试')
-      fail(e)
-      return false
-    } finally {
-      saving.current = false
-    }
+    })()
+    saveRequest.current = pending
+    return pending
   }
   const editor = useRef({ code, language })
   editor.current = { code, language }
@@ -223,10 +231,12 @@ export function WorkbenchPage({
 
   const choose = async (value: string) => {
     if (busy || saving.current) return
+    if (!window.dispatchEvent(new Event('acm:before-problem-change', { cancelable: true }))) return
     if (dirty.current && !(await save())) return
     setBusy(true)
     try {
       const state = await api(`/workbench/resolve?problem=${encodeURIComponent(value)}`)
+      if (!window.dispatchEvent(new Event('acm:before-problem-change', { cancelable: true }))) return
       currentPid.current = state.id
       setPid(state.id)
       setData(state)
@@ -247,11 +257,15 @@ export function WorkbenchPage({
     if (initialSelection?.problem_id) void choose(initialSelection.problem_id)
   }, [initialSelection])
   const submit = async (values: Row) => {
-    if (await save())
-      await run(`/workbench/problem/${encodeURIComponent(pid)}/submission`, {
-        ...values,
-        revision: draftRevision.current,
-      })
+    const target = currentPid.current
+    if (!(await save())) throw new Error('代码尚未保存完成，请等待保存成功后重试关联')
+    if (currentPid.current !== target) throw new Error('题目已切换，请在当前题目重新关联')
+    const result = await run(`/workbench/problem/${encodeURIComponent(target)}/submission`, {
+      ...values,
+      revision: draftRevision.current,
+    })
+    if (result?.error) throw new Error(result.error)
+    return result
   }
   const coach = (path: string) => {
     if (!model) {
@@ -430,6 +444,7 @@ export function WorkbenchPage({
                       <RefreshCw size={14} /> 刷新题面
                     </button>
                   </div>
+                  <ProblemRecordEditor key={pid} problemId={pid} title={statement?.title} />
                   {!statement ? (
                     <p>
                       题面尚未获取。任务状态见页面底部；平台要求浏览器验证时，可先打开原题阅读并继续写代码。
@@ -677,7 +692,10 @@ export function WorkbenchPage({
                   平台账号、题号和时间可核验；当次代码仅在你明确确认并关联结果时保存，用于错因复盘，无法核验与平台实际源码相同。
                 </p>
                 <SubmissionForm
+                  key={pid}
+                  platform={pid.split(':')[0]}
                   handles={
+                    data?.capabilities?.handles ||
                     choices.handles_by_platform?.[pid.split(':')[0]] ||
                     (pid.startsWith('codeforces:') ? choices.handles : [])
                   }
@@ -685,6 +703,16 @@ export function WorkbenchPage({
                   language={language}
                   active={active || busy}
                   onSubmit={submit}
+                  onRefreshAccounts={async () => {
+                    await refresh()
+                    await loadChoices()
+                  }}
+                  onSyncPlatform={async () => {
+                    const result = await run(`/platforms/${pid.split(':')[0]}/collect`, {})
+                    if (result?.error) throw new Error(result.error)
+                    return result
+                  }}
+                  onError={onError}
                 />
                 <SubmissionHistory
                   problemId={pid}
@@ -697,6 +725,7 @@ export function WorkbenchPage({
                     key={attempt.id}
                     attempt={attempt}
                     handles={
+                      data?.capabilities?.handles ||
                       choices.handles_by_platform?.[pid.split(':')[0]] ||
                       (pid.startsWith('codeforces:') ? choices.handles : [])
                     }

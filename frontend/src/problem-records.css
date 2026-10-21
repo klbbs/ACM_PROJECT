@@ -1,0 +1,95 @@
+.problem-record-editor {
+  padding: 1rem;
+  border: 1px solid var(--border, #dce2eb);
+  border-radius: 16px;
+  background: var(--card, #fff);
+  margin-bottom: 1rem;
+}
+.problem-record-heading,
+.problem-record-actions,
+.problem-record-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.problem-record-heading {
+  justify-content: space-between;
+}
+.problem-record-heading h3,
+.problem-records-page h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.problem-record-note {
+  display: grid;
+  gap: 0.4rem;
+}
+.problem-record-note textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 100px;
+  max-height: 70vh;
+  font: inherit;
+}
+.problem-record-actions {
+  margin-top: 0.7rem;
+}
+.problem-record-filters {
+  margin: 1.2rem 0;
+}
+.problem-record-filters label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.problem-record-filters label:first-child {
+  flex: 1;
+  min-width: 180px;
+}
+.problem-record-filters input:not([type='checkbox']) {
+  width: 100%;
+}
+.problem-record-error {
+  color: #a42227;
+  overflow-wrap: anywhere;
+}
+.problem-record-success {
+  color: #087e50;
+}
+.record-favorite {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.record-favorite.selected {
+  color: #7153d9;
+  background: #f1ecff;
+  border-color: #b4a1f1;
+}
+.problem-record-list {
+  display: grid;
+  gap: 1rem;
+}
+.problem-record-list article {
+  padding: 1rem;
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #dce2eb);
+  border-radius: 16px;
+  min-width: 0;
+}
+.problem-record-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+@media (max-width: 600px) {
+  .problem-record-editor,
+  .problem-record-list article {
+    padding: 0.8rem;
+  }
+}

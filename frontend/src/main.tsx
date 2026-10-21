@@ -38,6 +38,7 @@ import { ExtensionGuide } from './extension-guide'
 import { AnnouncementBanner, AnnouncementPage, useAnnouncements } from './announcements'
 import { UserLogin, MemberPage } from './members'
 import { WorkbenchPage } from './workbench'
+import { ProblemRecordsList } from './problem-records'
 import { OnlineUsers } from './online-users'
 import { PlatformConnections } from './platform-connections'
 import { AccountCookieField } from './account-cookie-field'
@@ -702,6 +703,7 @@ function App() {
             'social',
             'practice',
             'workbench',
+            'records',
             'announcements',
           ].includes(page) && (
             <div className="filter-row">
@@ -1057,6 +1059,7 @@ function App() {
             />
           )}
           {page === 'announcements' && <AnnouncementPage state={announcements} />}
+          {page === 'records' && <ProblemRecordsList onOpenProblem={openProblem} />}
           {page === 'workbench' && (
             <WorkbenchPage
               initialSelection={workbenchSelection}
@@ -1121,7 +1124,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.18.5</span>
+              数据有边界，进步有方向。 <span className="version">v0.19.0</span>
             </span>
           </footer>
         </div>

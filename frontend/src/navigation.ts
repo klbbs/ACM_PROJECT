@@ -7,6 +7,7 @@ import {
   Megaphone,
   Settings2,
   ShieldCheck,
+  Star,
   Target,
   Trophy,
 } from 'lucide-react'
@@ -15,6 +16,7 @@ export type Page =
   | 'home'
   | 'overview'
   | 'submissions'
+  | 'records'
   | 'workbench'
   | 'practice'
   | 'settings'
@@ -67,6 +69,14 @@ export const nav = [
     group: 'records',
     description: '筛选历史提交，回到工作台查看对应题目。',
     keywords: '历史 AC WA 错题',
+  },
+  {
+    id: 'records',
+    name: '收藏与备注',
+    icon: Star,
+    group: 'records',
+    description: '收藏好题、记录个人备注，随时回到工作台复习。',
+    keywords: '题目 笔记 记录 收藏 备注 复习',
   },
   {
     id: 'social',

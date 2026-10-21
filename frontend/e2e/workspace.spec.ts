@@ -56,8 +56,9 @@ test('AtCoder statement and submission links use platform-specific judge control
   )
   await expect(page.getByLabel('本次平台提交号')).toHaveAttribute(
     'placeholder',
-    '官方平台返回的数字提交号',
+    '数字提交号或官方提交记录链接',
   )
+  await expect(page.getByRole('button', { name: '同步此平台提交记录', exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: '前往官方提交页 ↗', exact: true })).toHaveAttribute(
     'href',
     'https://atcoder.jp/contests/abc001/submit?taskScreenName=abc001_1',
