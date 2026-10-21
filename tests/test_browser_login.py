@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -267,8 +268,8 @@ def test_every_public_flow_operation_rechecks_authorization_and_state(tmp_path, 
                 manager.accounts.save(AccountList(items=[AccountInput(platform='luogu', handle='42')]))
             elif change == 'revoked': manager.owner_valid = lambda _: False
             elif change == 'crawl': manager.jobs.tasks['crawl'] = ('crawl', SimpleNamespace(done=lambda: False))
-            elif change == 'expired': manager.flow.deadline = 0
-            elif change == 'idle': manager.flow.touched = 0
+            elif change == 'expired': manager.flow.deadline = time.monotonic() - 1
+            elif change == 'idle': manager.flow.touched = time.monotonic() - IDLE_SECONDS - 1
             args = ('owner', started['login_id'])
             if operation == 'interact': args += ('key',)
             with pytest.raises(HTTPException) as error:
@@ -329,7 +330,9 @@ def test_status_and_screenshot_polling_do_not_keep_abandoned_flow_alive(tmp_path
             await manager.status('owner', flow.id)
             await manager.screenshot('owner', flow.id)
             assert flow.touched == touched and flow.deadline - touched <= MAX_SECONDS + 10
-            flow.touched = 0
+            # monotonic's epoch is arbitrary; a freshly booted CI runner can
+            # legitimately have an uptime below the inactivity limit.
+            flow.touched = time.monotonic() - IDLE_SECONDS - 1
             manager._expire(flow)
             assert manager.flow is None
             expired = await manager.status('owner', started['login_id'])
