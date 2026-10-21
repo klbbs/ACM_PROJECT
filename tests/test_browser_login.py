@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,12 @@ class Factory:
         if self.failure: raise self.failure
         return self
     async def launch(self, **kwargs):
+        env = kwargs.pop('env')
+        self.runtime_dir = Path(env['XDG_CONFIG_HOME']).parent
+        assert env['CHROME_CONFIG_HOME'] == env['XDG_CONFIG_HOME']
+        assert env['XDG_CACHE_HOME'] == str(self.runtime_dir / 'cache')
+        assert self.runtime_dir.stat().st_mode & 0o777 == 0o700
+        assert Path(env['XDG_CONFIG_HOME']).is_dir()
         assert kwargs == {'headless': True, 'channel': 'chromium', 'chromium_sandbox': True}
         return self.browser
     async def stop(self): self.stopped = True
@@ -161,6 +168,7 @@ def test_human_page_then_same_context_verified_binding_without_secret_response(t
         finally:
             await manager.aclose()
         assert factory.stopped and factory.browser.closed and factory.browser.context.closed
+        assert not factory.runtime_dir.exists()
     asyncio.run(run())
 
 
@@ -400,6 +408,26 @@ def test_missing_runtime_and_launch_failures_are_explicit_and_do_not_expose_erro
             assert error.value.status_code == 503 and PASSWORD not in error.value.detail
             assert manager.flow is None
         finally: await manager.aclose()
+    asyncio.run(run())
+
+
+def test_private_runtime_is_removed_after_failed_browser_launch(tmp_path):
+    async def run():
+        manager, factory = setup_manager(tmp_path)
+        original_launch = factory.launch
+        async def failed_launch(**kwargs):
+            await original_launch(**kwargs)
+            raise RuntimeError(PASSWORD)
+        factory.launch = failed_launch
+        try:
+            with pytest.raises(HTTPException) as error:
+                await manager.start('owner', 'atcoder')
+            assert error.value.status_code == 503
+            assert PASSWORD not in error.value.detail
+        finally:
+            await manager.aclose()
+        assert not factory.runtime_dir.exists()
+        assert factory.stopped and not manager.cleanup_failed
     asyncio.run(run())
 
 

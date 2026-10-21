@@ -40,3 +40,5 @@ docker compose -f compose.yaml -f compose.browser.yaml build web
 ## 隔离与回收
 
 每用户一条、每进程全局最多一条活跃浏览器流程。每次新建临时上下文，不复用用户浏览器 profile。所有截图、输入、状态、确认和取消请求均核对 ACM 用户及登录会话；截图与输入不缓存，不进入 AI。固定平台、HTTPS、域名白名单、逐跳检查与有限输入词汇限制浏览器用途。账号修订号与会话撤销检查防止旧流程覆盖新配置。
+
+Linux Chromium 的 XDG 配置 / Crashpad 与浏览器 user-data-dir 不完全相同（参见 [Chromium 官方说明](https://chromium.googlesource.com/experimental/chromium/src/+/HEAD/docs/linux/debugging_minidump.md)）。每条流程为浏览器子进程分配独立0700临时配置与缓存目录，进程确认停止后清除，服务自身 HOME 不变；只读容器也无需写入用户主目录。

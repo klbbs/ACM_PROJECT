@@ -9,6 +9,8 @@ import json
 import inspect
 import math
 import secrets
+import shutil
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,6 +19,7 @@ from urllib.parse import urljoin, urlsplit
 from fastapi import HTTPException
 
 from .codex_bridge import AIError
+from .browser_runtime import browser_environment
 from .cookie_validation import valid_cookie
 from .credential_check import URLS, inspect_identity
 
@@ -222,6 +225,7 @@ class _Flow:
     end_reason: str | None = None
     timer: object = None
     driver: object = None
+    runtime_dir: str | None = None
     browser: object = None
     context: object = None
     page: object = None
@@ -308,6 +312,14 @@ class BrowserLogin:
                             pass
             finally:
                 flow.page = flow.verification_page = flow.context = flow.browser = flow.driver = None
+                if stopped and flow.runtime_dir:
+                    try:
+                        shutil.rmtree(flow.runtime_dir)
+                        flow.runtime_dir = None
+                    except FileNotFoundError:
+                        flow.runtime_dir = None
+                    except OSError:
+                        stopped = False
                 if flow.slot and stopped:
                     flow.slot = False
                     _SLOT.release()
@@ -586,8 +598,10 @@ class BrowserLogin:
             self._ensure(flow)
             flow.driver = await self.playwright_factory().start()
             self._ensure(flow)
+            flow.runtime_dir = tempfile.mkdtemp(prefix='acm-login-')
             flow.browser = await flow.driver.chromium.launch(
-                headless=True, channel='chromium', chromium_sandbox=True)
+                headless=True, channel='chromium', chromium_sandbox=True,
+                env=browser_environment(flow.runtime_dir))
             self._ensure(flow)
             flow.context = await flow.browser.new_context(
                 viewport={'width': WIDTH, 'height': HEIGHT}, accept_downloads=False,
