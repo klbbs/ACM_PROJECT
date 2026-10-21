@@ -630,8 +630,13 @@ export function BrowserPlatformLogin({
             {session && (
               <div className="browser-login-session">
                 <p className="help">
-                  点击图片中的输入框，再在下方发送文字。图片来自 {names[platform]}{' '}
-                  官方页面；可放大并横向滚动，输入和截图仅用于本次登录。
+                  下方是服务器上 {names[platform]} 官方页面的实时截图，可放大并横向滚动。
+                  点击截图中的输入框，再在下方逐次发送文字；每次点击和发送文字都会立即传到该官方页面，输入仅用于本次登录。
+                </p>
+                <p className="help">
+                  发送文字后，仍需点击截图中的官方登录按钮，或按下方
+                  Enter。完成官方登录和验证后，再点“检测登录并绑定”。
+                  页面仍在加载时，可点“刷新窗口截图”。
                 </p>
                 <button
                   type="button"
@@ -662,7 +667,7 @@ export function BrowserPlatformLogin({
                   )}
                 </div>
                 <form onSubmit={sendText} aria-label={`${names[platform]} 登录窗口输入`}>
-                  <label htmlFor={`${fieldId}-text`}>向选中位置输入</label>
+                  <label htmlFor={`${fieldId}-text`}>发送到官方页面当前选中的输入框</label>
                   <input
                     id={`${fieldId}-text`}
                     type={masked ? 'password' : 'text'}

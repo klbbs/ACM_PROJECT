@@ -138,7 +138,7 @@ test('mobile official browser dialog clears sent text and cancels without overfl
   await expect(dialog).toBeVisible()
   expect(await dialog.evaluate((element) => element.matches(':modal'))).toBeTruthy()
   await expect(dialog.getByRole('img')).toBeVisible()
-  const input = panel.getByLabel('向选中位置输入', { exact: true })
+  const input = panel.getByLabel('发送到官方页面当前选中的输入框', { exact: true })
   await expect(input).toHaveAttribute('type', 'password')
   await input.fill('synthetic-password')
   await panel.getByRole('button', { name: '发送文字', exact: true }).click()

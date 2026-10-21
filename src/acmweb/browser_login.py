@@ -620,7 +620,10 @@ class BrowserLogin:
             flow.context.on('page', lambda page: self._close_uncontrolled_page(flow, page))
             await self._install_response_guard(flow, flow.page)
             self._ensure(flow)
-            await flow.page.goto(LOGIN_URLS[flow.platform], wait_until='domcontentloaded')
+            # Hand control to the human once the official document commits.
+            # Slow scripts may delay DOMContentLoaded while the page is already
+            # visible; screenshots can refresh as it continues loading.
+            await flow.page.goto(LOGIN_URLS[flow.platform], wait_until='commit')
             self._ensure(flow)
             if not allowed_url(flow.platform, flow.page.url, top_level=True):
                 raise HTTPException(502, '官方页面返回了不支持的跳转，登录已停止')

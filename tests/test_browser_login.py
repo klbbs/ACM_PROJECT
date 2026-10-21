@@ -53,7 +53,8 @@ class Page:
     def set_default_navigation_timeout(self, value): assert value <= 20000
     def on(self, name, callback): self.events[name] = callback
     async def goto(self, url, **kwargs):
-        assert kwargs == {'wait_until': 'domcontentloaded'}
+        wait_until = 'commit' if url == LOGIN_URLS[self.platform] else 'domcontentloaded'
+        assert kwargs == {'wait_until': wait_until}
         assert url in {LOGIN_URLS[self.platform], URLS[self.platform]}
         self.url = url
         self.visits.append(url)
@@ -191,6 +192,68 @@ def test_challenge_and_unverified_identity_keep_exact_browser_available(tmp_path
             assert factory.browser.context.page.mouse.events == [(100, 200)]
         finally:
             await manager.aclose()
+    asyncio.run(run())
+
+
+def test_slow_domcontentloaded_keeps_committed_login_page_available(tmp_path):
+    async def run():
+        manager, factory = setup_manager(tmp_path, 'luogu')
+        page = factory.browser.context.page
+        dom_loaded = asyncio.Event()
+        async def slow_dom_navigation(url, **kwargs):
+            page.url = url
+            page.visits.append(url)
+            if kwargs['wait_until'] == 'domcontentloaded':
+                await asyncio.wait_for(dom_loaded.wait(), timeout=0.01)
+        page.goto = slow_dom_navigation
+        try:
+            started = await manager.start('owner', 'luogu')
+            flow = manager.flow
+            assert started['status'] == 'human_required' and not dom_loaded.is_set()
+            assert await manager.screenshot('owner', started['login_id'])
+            await manager.interact('owner', started['login_id'], 'click', x=100, y=200)
+            assert page.mouse.events == [(100, 200)]
+            assert manager.flow is flow and not page.closed
+            assert (await manager.status('owner', started['login_id']))['status'] == 'human_required'
+            assert not manager.accounts.path.exists()
+        finally:
+            await manager.aclose()
+    asyncio.run(run())
+
+
+def test_navigation_timeout_before_commit_cleans_browser_without_binding(tmp_path):
+    async def run():
+        manager, factory = setup_manager(tmp_path, 'luogu')
+        async def stalled_navigation(url, **kwargs):
+            raise asyncio.TimeoutError('synthetic private navigation failure')
+        factory.browser.context.page.goto = stalled_navigation
+        try:
+            with pytest.raises(HTTPException) as error:
+                await manager.start('owner', 'luogu')
+            assert error.value.status_code == 503
+            assert 'synthetic private' not in error.value.detail
+            assert manager.flow is None and not manager.accounts.path.exists()
+        finally:
+            await manager.aclose()
+        assert factory.stopped and factory.browser.closed and factory.browser.context.closed
+        assert not factory.runtime_dir.exists() and not manager.cleanup_failed
+    asyncio.run(run())
+
+
+def test_committed_navigation_outside_official_site_still_fails_closed(tmp_path):
+    async def run():
+        manager, factory = setup_manager(tmp_path, 'luogu')
+        async def unsafe_navigation(url, **kwargs):
+            factory.browser.context.page.url = 'https://evil.invalid/'
+        factory.browser.context.page.goto = unsafe_navigation
+        try:
+            with pytest.raises(HTTPException) as error:
+                await manager.start('owner', 'luogu')
+            assert error.value.status_code == 502
+            assert manager.flow is None and not manager.accounts.path.exists()
+        finally:
+            await manager.aclose()
+        assert factory.stopped and factory.browser.closed
     asyncio.run(run())
 
 
