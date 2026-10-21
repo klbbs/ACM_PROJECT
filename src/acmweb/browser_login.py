@@ -345,7 +345,12 @@ class BrowserLogin:
         # Also lets a thread-safe disposal callback enter this event loop.
         await asyncio.sleep(0)
         while self.cleanup_tasks:
-            await asyncio.gather(*tuple(self.cleanup_tasks), return_exceptions=True)
+            tasks = tuple(self.cleanup_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Python 3.12+ can finish gather(already_done_tasks) without
+            # yielding. Their scheduled discard callbacks may not have run;
+            # remove drained tasks explicitly instead of spinning forever.
+            self.cleanup_tasks.difference_update(task for task in tasks if task.done())
 
     def _arm_timer(self, flow):
         if flow.timer:

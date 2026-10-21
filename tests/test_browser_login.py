@@ -431,6 +431,27 @@ def test_private_runtime_is_removed_after_failed_browser_launch(tmp_path):
     asyncio.run(run())
 
 
+def test_shutdown_drains_done_tasks_when_gather_returns_without_yielding(tmp_path, monkeypatch):
+    async def run():
+        manager, _ = setup_manager(tmp_path)
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        # Reproduce a completed disposal whose scheduled discard callback has
+        # not run, with Python 3.12+'s immediate completed-gather behavior.
+        manager.cleanup_tasks.add(done)
+        calls = 0
+        async def immediate_gather(*tasks, **kwargs):
+            nonlocal calls
+            calls += 1
+            assert calls <= 2, 'shutdown spun without yielding for discard callbacks'
+            assert all(task.done() for task in tasks)
+            return [task.result() for task in tasks]
+        monkeypatch.setattr(asyncio, 'gather', immediate_gather)
+        await manager.aclose()
+        assert manager.closed and not manager.cleanup_tasks and calls == 1
+    asyncio.run(run())
+
+
 def test_cookie_export_excludes_challenge_and_foreign_domain_secrets():
     cookies = [
         {'name': 'session', 'value': SECRET, 'domain': '.atcoder.jp'},
