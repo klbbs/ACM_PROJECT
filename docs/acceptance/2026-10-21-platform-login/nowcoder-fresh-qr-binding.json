@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-21",
+  "platform": "nowcoder",
+  "environment": "loopback temporary empty account configuration",
+  "existing_cookies_imported": false,
+  "official_wechat_account_link_confirmed_by_user": true,
+  "qr_creation": {"http_status": 200, "code": 0, "cookie_count": 4},
+  "status_success": {"http_status": 200, "code": 0, "data_type": "null", "set_cookie_present": true, "cookie_count": 5},
+  "fixed_official_homepage": {"http_status": 200, "identity_status": "authenticated", "expected_identity_matches": true},
+  "account_saved": {"platform": "nowcoder", "has_cookie": true, "expected_identity_matches": true},
+  "credential_check": {"status": "authenticated", "reason": "identity_verified", "login_verified": true},
+  "user_confirmed_frontend_binding_success": true,
+  "callback_exchange_used": false,
+  "code_submission_tested": false,
+  "deployed": false
+}

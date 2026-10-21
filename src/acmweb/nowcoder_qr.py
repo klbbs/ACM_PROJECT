@@ -33,13 +33,26 @@ class FlowID(BaseModel):
     login_id: str = Field(min_length=20, max_length=100)
 
 
+def _request_timeout(session):
+    guard = getattr(session, '_acm_qr_guard', None)
+    remaining = guard() if guard else None
+    return (5, 12) if remaining is None else (min(5, remaining), min(12, remaining))
+
+
+def _check_network_flow(session):
+    guard = getattr(session, '_acm_qr_guard', None)
+    if guard:
+        guard()
+
+
 def _body(session, url, maximum, **kwargs):
     headers = {**browser_headers(), **kwargs.pop('headers', {})}
-    with session.get(url, headers=headers, timeout=(5, 12), allow_redirects=False, stream=True, **kwargs) as response:
+    with session.get(url, headers=headers, timeout=_request_timeout(session), allow_redirects=False, stream=True, **kwargs) as response:
         if response.status_code != 200:
             raise ValueError('upstream')
         chunks = []; size = 0
         for part in response.iter_content(16384):
+            _check_network_flow(session)
             size += len(part)
             if size > maximum:
                 raise ValueError('size')
@@ -90,13 +103,19 @@ def _poll(session, ticket):
         return 'waiting', None, None
     if value.get('code') != 0:
         return 'failed', None, None
+    if 'data' not in value:
+        return 'failed', None, None
     data = value.get('data')
+    # Some successful official responses complete login via Set-Cookie and
+    # return JSON null. They still need the fixed homepage identity check.
+    if data is None:
+        data = {}
     if not isinstance(data, dict):
         return 'failed', None, None
     if data.get('needComplete'):
         return 'incomplete', None, None
-    # Never follow a callback supplied by the upstream. Only the current ACM
-    # homepage's authenticated bootstrap can authorize credential persistence.
+    # Only the fixed ACM homepage's authenticated bootstrap authorizes binding.
+    # Upstream callBack URLs are never requested.
     page, _ = _body(session, ORIGIN + '/', 1048576)
     status, uid = inspect_identity('nowcoder', page.decode('utf-8'))
     if status != 'authenticated' or not uid:
@@ -162,13 +181,22 @@ class NowcoderQR:
         return flow
 
     async def _network(self, flow, function, *args):
+        def guard():
+            with self.lock:
+                remaining = flow['deadline'] - time.monotonic()
+                if flow.get('cancelled') or remaining <= 0:
+                    raise ValueError('inactive flow')
+                return remaining
         def run():
             try:
                 if not NETWORK.acquire(blocking=False):
                     raise ValueError('busy')
                 try:
+                    flow['session']._acm_qr_guard = guard
                     return function(flow['session'], *args)
                 finally:
+                    if getattr(flow['session'], '_acm_qr_guard', None) is guard:
+                        del flow['session']._acm_qr_guard
                     NETWORK.release()
             finally:
                 # A cancelled coroutine must not close a Session still in use.
@@ -308,7 +336,7 @@ class NowcoderQR:
                 return dict(self._result(login_id, 'verified', '牛客当前登录身份已验证并绑定'), verified_uid=uid, accounts=accounts)
             self._discard()
             message = {'incomplete': '请前往牛客官方页面完善账号后重新扫码，或使用 Cookie 绑定',
-                       'unverified': '扫码已完成，但尚未验证牛客当前身份；请使用官方页面登录后 Cookie 绑定'}.get(status,
+                       'unverified': '扫码已完成，但尚未验证牛客当前身份；可确认微信已绑定牛客账号后重试，或使用 Cookie 绑定'}.get(status,
                        '牛客未确认本次登录，请重新获取二维码或使用 Cookie 绑定')
             return self._result(login_id, 'failed', message)
 
