@@ -221,3 +221,44 @@ test('opening an official login shows a modal immediately without navigation or 
   expect(navigations).toBe(0)
   expect(page.url()).toBe(url)
 })
+
+test('rate-limited login displays its reason and waits for an explicit retry', async ({ page }) => {
+  let starts = 0
+  await page.route('**/api/platform-login/browser/start', async (route) => {
+    starts++
+    await route.fulfill(
+      starts === 1
+        ? {
+            status: 429,
+            headers: { 'Retry-After': '2' },
+            json: { detail: '请稍后重新开始浏览器登录' },
+          }
+        : { json: browserSession },
+    )
+  })
+  await page.route('**/api/platform-login/browser/image', (route) =>
+    route.fulfill({ json: { image: browserImage } }),
+  )
+  await page.route('**/api/platform-login/browser/cancel', (route) =>
+    route.fulfill({ json: { status: 'cancelled' } }),
+  )
+  await page.goto('/')
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  const panel = page.locator('.platform-action-grid article').filter({
+    has: page.getByRole('heading', { name: 'AtCoder', exact: true }),
+  })
+  const url = page.url()
+  await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
+  const dialog = panel.getByRole('dialog', { name: 'AtCoder 安全登录窗口', exact: true })
+  await expect(dialog.getByRole('status')).toContainText('请稍后重新开始浏览器登录')
+  const retry = dialog.getByRole('button', { name: /重试打开登录窗口/ })
+  await expect(retry).toBeDisabled()
+  await expect(retry).toBeEnabled({ timeout: 6000 })
+  expect(starts).toBe(1)
+  expect(page.url()).toBe(url)
+  await retry.click()
+  await expect(dialog.getByRole('img')).toBeVisible()
+  expect(starts).toBe(2)
+  await page.keyboard.press('Escape')
+  await expect(dialog).not.toBeVisible()
+})

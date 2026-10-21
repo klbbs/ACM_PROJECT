@@ -416,12 +416,12 @@ it('opens a named modal with initial focus and loading before startup settles, t
   expect(document.documentElement.style.overflow).toBe('hidden')
   await act(async () => rejectStart(new Error('浏览器启动失败')))
   expect(modal.open).toBe(true)
-  expect(modal.querySelector('[role="alert"]')!.textContent).toContain('浏览器启动失败')
+  expect(modal.querySelector('[role="status"]')!.textContent).toContain('浏览器启动失败')
   await click('返回账号卡片')
   expect(modal.open).toBe(false)
   expect(document.activeElement).toBe(opener)
   expect(document.documentElement.style.overflow).toBe(originalOverflow)
-  expect(host.querySelector('[role="alert"]')!.closest('dialog')).toBeNull()
+  expect(host.querySelector('[role="status"]')!.closest('dialog')).toBeNull()
 })
 
 it('Escape during startup waits for confirmed cancellation before dismissing and restores focus', async () => {
@@ -597,3 +597,108 @@ it('bounds a startup that never settles and safely discards its late id after a 
   })
   expect(host.querySelector('dialog')!.open).toBe(false)
 })
+
+it('shows the specific startup failure as the main status and retries only on explicit action', async () => {
+  await render('atcoder')
+  vi.mocked(api).mockRejectedValueOnce(new Error('服务器尚未安装 Chromium，请联系管理员'))
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  expect(modal.open).toBe(true)
+  expect(modal.querySelector('[role="status"]')!.textContent).toBe(
+    '服务器尚未安装 Chromium，请联系管理员',
+  )
+  expect(modal.textContent).not.toContain('安全登录窗口未能打开')
+  expect(modal.querySelector('[role="alert"]')).toBeNull()
+  const retry = [...modal.querySelectorAll('button')].find(
+    (button) => button.textContent === '重试打开登录窗口',
+  )!
+  expect(retry.disabled).toBe(false)
+  await act(async () => vi.advanceTimersByTimeAsync(60000))
+  expect(api).toHaveBeenCalledTimes(1)
+  await click('重试打开登录窗口')
+  expect(modal.open).toBe(true)
+  expect(modal.showModal).toHaveBeenCalledOnce()
+  expect(document.activeElement).toBe(modal.querySelector('h2'))
+  expect(modal.querySelector('img')).not.toBeNull()
+})
+
+it('honors the server 429 cooldown without automatically retrying when it expires', async () => {
+  const bound = await render('luogu')
+  vi.mocked(api).mockRejectedValueOnce(
+    Object.assign(new Error('请稍后重新开始浏览器登录'), {
+      status: 429,
+      retryAfterSeconds: 10,
+    }),
+  )
+  await click('打开安全登录窗口')
+  const modal = host.querySelector('dialog')!
+  expect(modal.querySelector('[role="status"]')!.textContent).toBe('请稍后重新开始浏览器登录')
+  const retry = [...modal.querySelectorAll('button')].find(
+    (button) => button.textContent === '重试打开登录窗口',
+  )!
+  expect(retry.disabled).toBe(true)
+  expect(modal.textContent).toContain('请等待 10 秒后重试')
+  await click('重试打开登录窗口')
+  expect(api).toHaveBeenCalledTimes(1)
+  await act(async () => vi.advanceTimersByTimeAsync(9000))
+  expect(retry.disabled).toBe(true)
+  expect(modal.textContent).toContain('请等待 1 秒后重试')
+  await act(async () => vi.advanceTimersByTimeAsync(1000))
+  expect(retry.disabled).toBe(false)
+  expect(api).toHaveBeenCalledTimes(1)
+  await act(async () => vi.advanceTimersByTimeAsync(60000))
+  expect(api).toHaveBeenCalledTimes(1)
+  await click('重试打开登录窗口')
+  expect(vi.mocked(api).mock.calls.filter(([path]) => path.endsWith('/start'))).toHaveLength(2)
+  expect(modal.querySelector('img')).not.toBeNull()
+  expect(bound).not.toHaveBeenCalled()
+})
+
+it('keeps a 429 cooldown after closing the dialog and restores focus without permitting early restart', async () => {
+  await render()
+  vi.mocked(api).mockRejectedValueOnce(
+    Object.assign(new Error('浏览器登录服务繁忙'), {
+      status: 429,
+      retryAfterSeconds: 3,
+    }),
+  )
+  await click('打开安全登录窗口')
+  await click('返回账号卡片')
+  const opener = host.querySelector<HTMLButtonElement>('.browser-login-start button')!
+  expect(document.activeElement).toBe(opener)
+  expect(opener.getAttribute('aria-disabled')).toBe('true')
+  expect(opener.textContent).toBe('请等待 3 秒后再打开')
+  await act(async () => opener.click())
+  expect(api).toHaveBeenCalledTimes(1)
+  expect(host.querySelector('dialog')!.open).toBe(false)
+  await act(async () => vi.advanceTimersByTimeAsync(3000))
+  expect(opener.getAttribute('aria-disabled')).toBeNull()
+  expect(api).toHaveBeenCalledTimes(1)
+  await click('打开安全登录窗口')
+  expect(host.querySelector('dialog')!.open).toBe(true)
+  expect(host.querySelector('img')).not.toBeNull()
+})
+
+it.each([0, undefined, -1, Number.NaN])(
+  'handles a 429 retry interval of %s conservatively',
+  async (retryAfterSeconds) => {
+    await render()
+    vi.mocked(api).mockRejectedValueOnce(
+      Object.assign(new Error('请稍后重试'), {
+        status: 429,
+        retryAfterSeconds,
+      }),
+    )
+    await click('打开安全登录窗口')
+    const retry = [...host.querySelectorAll('button')].find(
+      (button) => button.textContent === '重试打开登录窗口',
+    )!
+    expect(retry.disabled).toBe(retryAfterSeconds !== 0)
+    if (retryAfterSeconds !== 0) {
+      expect(host.textContent).toContain('请等待 10 秒后重试')
+      await act(async () => vi.advanceTimersByTimeAsync(10000))
+    }
+    expect(retry.disabled).toBe(false)
+    expect(api).toHaveBeenCalledTimes(1)
+  },
+)

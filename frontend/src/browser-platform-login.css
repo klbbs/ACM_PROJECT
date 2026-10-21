@@ -142,3 +142,11 @@
     animation: none;
   }
 }
+
+.browser-login-retry {
+  margin: 16px 0;
+}
+.browser-login-start button[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

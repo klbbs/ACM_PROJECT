@@ -48,6 +48,8 @@ export function BrowserPlatformLogin({
   const [status, setStatus] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [retryAt, setRetryAt] = useState(0)
+  const [retryRemaining, setRetryRemaining] = useState(0)
   const generation = useRef(0)
   const current = useRef<Session | null>(null)
   const mounted = useRef(true)
@@ -86,6 +88,20 @@ export function BrowserPlatformLogin({
       if (previous) discard(previous.id)
     }
   }, [platform])
+
+  useEffect(() => {
+    if (!retryAt) return
+    const update = () => {
+      const remaining = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000))
+      setRetryRemaining(remaining)
+      return remaining
+    }
+    if (!update()) return
+    const timer = setInterval(() => {
+      if (!update()) clearInterval(timer)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [retryAt])
 
   useEffect(() => {
     if (!modalOpen) return
@@ -354,7 +370,14 @@ export function BrowserPlatformLogin({
   }, [session?.id])
 
   async function start() {
-    if (submitting.current) return
+    if (
+      submitting.current ||
+      current.current ||
+      cancelTarget ||
+      uncertainUntil ||
+      Date.now() < retryAt
+    )
+      return
     const target = expected.trim()
     if (
       target &&
@@ -370,6 +393,7 @@ export function BrowserPlatformLogin({
     }
     dismissAfterCancel.current = false
     setModalOpen(true)
+    heading.current?.focus()
     const version = ++generation.current
     submitting.current = true
     setBusy(true)
@@ -412,10 +436,31 @@ export function BrowserPlatformLogin({
       await refreshImage(active)
     } catch (cause) {
       if (alive(version)) {
-        setError(cause instanceof Error ? cause.message : '安全登录窗口暂时无法打开。')
+        const detail =
+          cause instanceof Error && cause.message
+            ? cause.message
+            : '安全登录窗口暂时无法打开，请稍后重试。'
         if (!current.current) {
+          // Present the actual server explanation as the main result, including
+          // service cooldowns, instead of obscuring it behind a generic failure.
           setStatus('unavailable')
-          setMessage('安全登录窗口未能打开，尚未绑定账号。')
+          setMessage(detail)
+          setError('')
+          const failure = cause as { status?: number; retryAfterSeconds?: number } | null
+          if (failure?.status === 429) {
+            const seconds = failure.retryAfterSeconds
+            const delay =
+              typeof seconds === 'number' &&
+              Number.isInteger(seconds) &&
+              seconds >= 0 &&
+              seconds <= 86400
+                ? seconds
+                : 10
+            setRetryAt(Date.now() + delay * 1000)
+            setRetryRemaining(delay)
+          }
+        } else {
+          setError(detail)
         }
       }
     } finally {
@@ -513,9 +558,14 @@ export function BrowserPlatformLogin({
           type="button"
           className="primary"
           disabled={modalOpen || busy}
+          aria-disabled={retryRemaining > 0 || undefined}
           onClick={() => void start()}
         >
-          {modalOpen ? '安全登录窗口已打开' : '打开安全登录窗口'}
+          {modalOpen
+            ? '安全登录窗口已打开'
+            : retryRemaining > 0
+              ? `请等待 ${retryRemaining} 秒后再打开`
+              : '打开安全登录窗口'}
         </button>
       </div>
       {!modalOpen && message && <p role="status">{message}</p>}
@@ -682,6 +732,24 @@ export function BrowserPlatformLogin({
                       ? '重试取消安全登录'
                       : '取消安全登录'}
               </button>
+            )}
+            {status === 'unavailable' && !session && !cancelTarget && !uncertainUntil && (
+              <div className="browser-login-retry">
+                {retryRemaining > 0 && (
+                  <p id={`${fieldId}-retry`} className="help" aria-live="off">
+                    请等待 {retryRemaining} 秒后重试。
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || retryRemaining > 0}
+                  aria-describedby={retryRemaining > 0 ? `${fieldId}-retry` : undefined}
+                  onClick={() => void start()}
+                >
+                  重试打开登录窗口
+                </button>
+              </div>
             )}
             {!session &&
               !cancelTarget &&

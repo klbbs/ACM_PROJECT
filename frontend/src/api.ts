@@ -1,4 +1,21 @@
 let csrfToken = ''
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly retryAfterSeconds?: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+function retryAfterSeconds(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value.trim())) return undefined
+  const seconds = Number(value)
+  return Number.isSafeInteger(seconds) && seconds <= 86400 ? seconds : undefined
+}
+
 export async function api<T = any>(path: string, method = 'GET', data?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
@@ -10,12 +27,19 @@ export async function api<T = any>(path: string, method = 'GET', data?: unknown)
     },
     body: data === undefined ? undefined : JSON.stringify(data),
   })
-  const body = await res.json()
-  if (path === '/auth/status') csrfToken = body.csrf_token || ''
   if (res.status === 401 && !path.startsWith('/auth/'))
     window.dispatchEvent(new Event('acm:session-expired'))
+  const body = await res.json().catch((error: unknown) => {
+    if (res.ok) throw error
+    return undefined
+  })
+  if (path === '/auth/status') csrfToken = body?.csrf_token || ''
   if (!res.ok)
-    throw new Error(typeof body.detail === 'string' ? body.detail : '请求未完成，请检查输入或连接')
+    throw new ApiError(
+      typeof body?.detail === 'string' ? body.detail : '请求未完成，请检查输入或连接',
+      res.status,
+      retryAfterSeconds(res.headers.get('Retry-After')),
+    )
   return body
 }
 export const names: Record<string, string> = {
