@@ -124,16 +124,49 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
     <section className="card settings-card">
       <h2>平台信息、登录检测与交题</h2>
       <p className="help">
-        可以在本站的官方登录窗口绑定 Codeforces、AtCoder、洛谷，牛客支持微信扫码；也可以手动保存
-        Cookie 并检测。 公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
+        Codeforces、AtCoder 使用油猴助手获取 Cookie，按提示确认完整性后保存检测；洛谷支持官方登录窗口，牛客支持微信扫码。
+        公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
         本站目前通过官方页面交题，不支持用 Cookie 自动代提交。官方页仍需在你当前浏览器中登录。
       </p>
       <div className="platform-action-grid">
         {items.map((p) => (
           <article key={p.platform}>
             <h3>{names[p.platform] || p.platform}</h3>
-            {['codeforces', 'atcoder', 'luogu'].includes(p.platform) && (
-              <BrowserPlatformLogin platform={p.platform} onBound={onBound || (() => {})} />
+            {['codeforces', 'atcoder'].includes(p.platform) && (
+              <div className="platform-cookie-login cookie-helper-note">
+                <strong>通过油猴助手绑定 Cookie</strong>
+                <ol>
+                  <li>在自己的浏览器打开 {names[p.platform]} 官方网站，正常登录并完成验证。</li>
+                  <li>用 ACM Lab 油猴助手获取 Cookie，并按提示确认是否完整。</li>
+                  <li>回到本站，在下方配置同一个账号、粘贴 Cookie，保存并检测登录状态。</li>
+                </ol>
+                <div className="platform-browser-actions">
+                  <a
+                    className="secondary"
+                    href={officialPages[p.platform]}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    在自己的浏览器登录 {names[p.platform]} ↗
+                  </a>
+                  <a
+                    className="secondary"
+                    href="/api/browser-userscript/acm-lab-cookie-helper.user.js"
+                    download
+                  >
+                    下载油猴 Cookie 助手 ↓
+                  </a>
+                  <button
+                    className="text-button"
+                    onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
+                  >
+                    查看油猴安装与 Cookie 教程
+                  </button>
+                </div>
+              </div>
+            )}
+            {p.platform === 'luogu' && (
+              <BrowserPlatformLogin platform="luogu" onBound={onBound || (() => {})} />
             )}
             {p.platform === 'nowcoder' && (
               <NowcoderQrLogin

@@ -10,9 +10,9 @@ from .browser_login import BrowserLogin
 
 class Start(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    platform: Literal['codeforces', 'atcoder', 'luogu']
+    platform: Literal['luogu']
     expected_handle: str | None = Field(default=None, max_length=100,
-                                       pattern=r'^[A-Za-z0-9_.-]+$')
+                                       pattern=r'^[1-9][0-9]*$')
 
 
 class Flow(BaseModel):
@@ -33,7 +33,7 @@ def register(app, accounts):
     app.state.browser_login = manager
 
     def owner(request):
-        value = request.scope.get('state', {}).get('platform_login_owner')
+        value = request.scope.get('state', {}).get('browser_login_owner')
         if getattr(app.state, 'multi_child', False) and not value:
             raise HTTPException(401, '请重新登录 ACM Lab')
         return value or 'local-workspace'

@@ -6,7 +6,7 @@ const platforms = [
     profile: 'https://codeforces.com/profile/你的用户名',
     identity: 'handle 用户名，不是昵称或数字题号',
     detail:
-      '在 codeforces.com 登录后进入个人主页或 My submissions，再复制同站请求。公开题面、公开提交或 HTTP 200 均不能证明 Cookie 已登录。',
+      '在自己的浏览器正常登录 codeforces.com 并完成验证，用 ACM Lab 油猴助手获取 Cookie 并按提示确认完整性，再回到本站粘贴、保存并检测。公开题面、公开提交或 HTTP 200 均不能证明 Cookie 已登录。',
   },
   {
     name: '洛谷',
@@ -30,7 +30,7 @@ const platforms = [
     profile: 'https://atcoder.jp/users/你的用户名',
     identity: 'users 后面的用户名',
     detail:
-      '复制 atcoder.jp 已登录页面的同站请求。公开比赛成绩可匿名读取，与可提交代码的登录状态是两回事。',
+      '在自己的浏览器正常登录 atcoder.jp 并完成验证，用 ACM Lab 油猴助手获取 Cookie 并按提示确认完整性，再回到本站粘贴、保存并检测。公开比赛成绩可匿名读取，与可提交代码的登录状态是两回事。',
   },
 ]
 export function PlatformGuide() {
@@ -39,8 +39,9 @@ export function PlatformGuide() {
       <section className="card">
         <h2>平台绑定与提交教程</h2>
         <p>
-          推荐先使用上方 Cookie
-          助手：安装油猴脚本，在已登录的平台点击获取，回到本页粘贴、保存并检测。若只读到非 HttpOnly
+          Codeforces、AtCoder 统一使用油猴 Cookie 助手：先在自己的浏览器登录官方站，再获取 Cookie 并确认完整性，
+          回到本页粘贴、保存并检测。洛谷可使用上方官方登录窗口，牛客可微信扫码。
+          若助手只读到非 HttpOnly
           Cookie，脚本会标明完整性未知，由你选择是否复制；需要完整凭据时按下面的 F12
           步骤手动完成。洛谷同步公开资料只需配置数字 UID。
         </p>
@@ -58,9 +59,11 @@ export function PlatformGuide() {
             UID，保存后同步公开提交和资料；公开采集成功不等于登录成功。
           </li>
           <li>
-            <strong>登录检测：</strong>需要会话时按下方步骤保存
-            Cookie，再点击对应账号的登录检测（Codeforces、牛客、AtCoder）。核对返回的真实账号是否与你填写的一致；洛谷可在上方官方登录窗口完成验证码并检测绑定，也可仅使用数字
-            UID 同步公开资料。
+            <strong>登录检测：</strong>Codeforces、AtCoder
+            在自己的浏览器正常登录官方站后，使用油猴助手获取完整
+            Cookie，回到本站粘贴、保存并检测，核对返回的真实账号是否与你填写的一致；牛客使用微信扫码绑定，也可使用
+            Cookie 检测。洛谷可在上方官方登录窗口完成验证码并检测绑定，也可仅使用数字 UID
+            同步公开资料。
           </li>
           <li>
             <strong>官方交题：</strong>
@@ -72,6 +75,28 @@ export function PlatformGuide() {
             AC。
           </li>
         </ol>
+      </section>
+      <section className="card">
+        <h3>Codeforces / AtCoder：油猴 Cookie 绑定</h3>
+        <ol>
+          <li>在自己的浏览器打开对应官方登录页，正常登录并亲自完成平台验证，确认当前用户名。</li>
+          <li>
+            安装 Tampermonkey 和本站 ACM Lab Cookie 助手，在已登录的官方标签页获取并复制完整
+            Cookie。
+          </li>
+          <li>回到「连接与设置」，配置相同的 handle / 用户名，粘贴 Cookie，保存后检测登录状态。</li>
+        </ol>
+        <p>
+          助手若提示无法读取 HttpOnly 或完整性未知，请按下方 F12 步骤复制实际请求中的完整 Cookie。
+          只有检测返回的真实账号与配置一致，才表示本次会话验证成功。
+        </p>
+        <p>
+          <a href="/api/browser-userscript/acm-lab-cookie-helper.user.js" download>
+            下载油猴 Cookie 助手 ↓
+          </a>
+          {' · '}
+          <a href="#cookie-helper">查看油猴安装、授权与获取教程</a>
+        </p>
       </section>
       <section className="card">
         <h3>Codeforces：F12 详细复制步骤</h3>

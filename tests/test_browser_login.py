@@ -1,7 +1,6 @@
 """Synthetic browser transport tests; none of these establish live OJ login."""
 import asyncio
 import json
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,13 +19,9 @@ SECRET = 'SYNTHETIC-cookie-never-return'
 PASSWORD = 'SYNTHETIC-password-never-return'
 
 
-def identity_page(platform, handle='tourist'):
-    if platform == 'luogu':
-        return '<script id="lentille-context">{"currentUser":{"uid":123}}</script>'
-    nav = 'class="lang-chooser"' if platform == 'codeforces' else 'id="navbar-collapse"'
-    path = '/profile/' if platform == 'codeforces' else '/users/'
-    return (f'<div {nav}><a href="{path}{handle}">current</a></div>'
-            '<a href="/logout">logout</a><form action="/settings"><input name="email"></form>')
+def identity_page(platform):
+    assert platform == 'luogu'
+    return '<script id="lentille-context">{"currentUser":{"uid":123}}</script>'
 
 
 class Keyboard:
@@ -72,7 +67,7 @@ class Context:
         self.page = Page(platform)
         self.pages = []
         self.platform, self.closed, self.routes, self.events = platform, False, {}, {}
-        root = {'atcoder': 'atcoder.jp', 'codeforces': 'codeforces.com', 'luogu': '.luogu.com.cn'}[platform]
+        root = '.luogu.com.cn'
         self.values = [{'name': 'session', 'value': SECRET, 'domain': root, 'path': '/',
                         'httpOnly': True, 'secure': True}]
     async def route(self, pattern, handler): self.routes[pattern] = handler
@@ -134,7 +129,7 @@ class Factory:
     async def stop(self): self.stopped = True
 
 
-def setup_manager(tmp_path, platform='atcoder'):
+def setup_manager(tmp_path, platform='luogu'):
     accounts = Accounts(Settings(data_dir=tmp_path, config_path=tmp_path/'absent.toml'))
     checker = CredentialChecks(accounts)
     factory = Factory(platform)
@@ -142,26 +137,25 @@ def setup_manager(tmp_path, platform='atcoder'):
     return manager, factory
 
 
-@pytest.mark.parametrize('platform', ['codeforces', 'atcoder', 'luogu'])
-def test_human_page_then_same_context_verified_binding_without_secret_response(tmp_path, platform):
+def test_luogu_page_then_same_context_verified_binding_without_secret_response(tmp_path):
     async def run():
-        manager, factory = setup_manager(tmp_path, platform)
+        manager, factory = setup_manager(tmp_path, 'luogu')
         try:
-            started = await manager.start('owner', platform)
+            started = await manager.start('owner', 'luogu')
             assert started['status'] == 'human_required'
             assert (started['width'], started['height']) == (1000, 720)
             assert 0 < started['expires_in'] <= IDLE_SECONDS
-            assert factory.browser.context.page.visits == [LOGIN_URLS[platform]]
+            assert factory.browser.context.page.visits == [LOGIN_URLS['luogu']]
             assert not manager.accounts.path.exists()
             assert (await manager.screenshot('owner', started['login_id'])).startswith(b'\x89PNG')
             await manager.interact('owner', started['login_id'], 'text', text=PASSWORD)
             assert factory.browser.context.page.keyboard.events == [('text', PASSWORD)]
             result = await manager.confirm('owner', started['login_id'])
-            expected = '123' if platform == 'luogu' else 'tourist'
+            expected = '123'
             assert result['status'] == 'authenticated' and result['account']['handle'] == expected
-            assert factory.browser.context.page.visits == [LOGIN_URLS[platform]]
+            assert factory.browser.context.page.visits == [LOGIN_URLS['luogu']]
             verification = factory.browser.context.pages[-1]
-            assert verification.visits == [URLS[platform]] and verification.closed
+            assert verification.visits == [URLS['luogu']] and verification.closed
             assert manager.accounts.document()['accounts'][0]['cookie'] == 'session=' + SECRET
             assert manager.checker.statuses()['items'][0]['login_verified'] is True
             assert SECRET not in json.dumps(result) and PASSWORD not in json.dumps(result)
@@ -173,18 +167,17 @@ def test_human_page_then_same_context_verified_binding_without_secret_response(t
         assert not factory.runtime_dir.exists()
     asyncio.run(run())
 
-
 def test_challenge_and_unverified_identity_keep_exact_browser_available(tmp_path):
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             flow = manager.flow
             factory.browser.context.page.html = '<title>Just a moment</title>'
             result = await manager.confirm('owner', started['login_id'])
             assert result['status'] == 'human_required' and result['reason'] == 'identity_unconfirmed'
             assert manager.flow is flow and not factory.browser.closed
-            assert factory.browser.context.page.url == LOGIN_URLS['atcoder']
+            assert factory.browser.context.page.url == LOGIN_URLS['luogu']
             assert factory.browser.context.pages[-1].closed
             assert not manager.accounts.path.exists()
             assert await manager.screenshot('owner', flow.id)
@@ -193,8 +186,6 @@ def test_challenge_and_unverified_identity_keep_exact_browser_available(tmp_path
         finally:
             await manager.aclose()
     asyncio.run(run())
-
-
 def test_slow_domcontentloaded_keeps_committed_login_page_available(tmp_path):
     async def run():
         manager, factory = setup_manager(tmp_path, 'luogu')
@@ -219,8 +210,6 @@ def test_slow_domcontentloaded_keeps_committed_login_page_available(tmp_path):
         finally:
             await manager.aclose()
     asyncio.run(run())
-
-
 def test_navigation_timeout_before_commit_cleans_browser_without_binding(tmp_path):
     async def run():
         manager, factory = setup_manager(tmp_path, 'luogu')
@@ -258,23 +247,35 @@ def test_committed_navigation_outside_official_site_still_fails_closed(tmp_path)
 
 
 @pytest.mark.parametrize('url,top,allowed', [
-    ('https://atcoder.jp/login', True, True),
-    ('https://img.atcoder.jp/style.css', False, True),
-    ('https://img.atcoder.jp/login', True, False),
+    ('https://www.luogu.com.cn/login', True, True),
+    ('https://static.luogu.com.cn/style.css', False, True),
+    ('https://static.luogu.com.cn/login', True, False),
     ('https://challenges.cloudflare.com/turnstile/v0/api.js', False, True),
     ('https://challenges.cloudflare.com/turnstile/frame', True, False),
-    ('https://evil.atcoder.jp.evil.invalid/', False, False),
+    ('https://evil.luogu.com.cn.evil.invalid/', False, False),
     ('https://evil.invalid/', True, False),
-    ('http://atcoder.jp/', False, False),
-    ('https://atcoder.jp:443/', False, False),
-    ('https://username:password@atcoder.jp/', False, False),
-    ('https://atcoder.jp./', False, False),
+    ('http://www.luogu.com.cn/', False, False),
+    ('https://www.luogu.com.cn:443/', False, False),
+    ('https://username:password@www.luogu.com.cn/', False, False),
+    ('https://www.luogu.com.cn./', False, False),
     ('file:///etc/passwd', True, False),
     ('javascript:alert(1)', True, False),
     ('data:text/html,test', True, False),
 ])
 def test_origin_allowlist(url, top, allowed):
-    assert allowed_url('atcoder', url, top_level=top) is allowed
+    assert allowed_url('luogu', url, top_level=top) is allowed
+
+
+def test_browser_manager_rejects_removed_platforms_before_launch(tmp_path):
+    async def run():
+        manager, factory = setup_manager(tmp_path, 'luogu')
+        for platform in ('codeforces', 'atcoder'):
+            with pytest.raises(HTTPException) as error:
+                await manager.start('owner', platform)
+            assert error.value.status_code == 422
+        assert factory.starts == 0 and manager.flow is None
+        await manager.aclose()
+    asyncio.run(run())
 
 
 def test_route_accepts_embedded_turnstile_but_blocks_top_level_external_and_unsafe_methods(tmp_path):
@@ -289,12 +290,12 @@ def test_route_accepts_embedded_turnstile_but_blocks_top_level_external_and_unsa
             async def continue_(self): self.result = 'allowed'
             async def abort(self, reason): self.result = 'blocked'
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             for url, top, method, expected in [
                 ('https://challenges.cloudflare.com/frame', False, 'GET', 'allowed'),
                 ('https://challenges.cloudflare.com/frame', True, 'GET', 'blocked'),
-                ('https://atcoder.jp/login', True, 'POST', 'allowed'),
-                ('https://atcoder.jp/login', True, 'DELETE', 'blocked'),
+                ('https://www.luogu.com.cn/login', True, 'POST', 'allowed'),
+                ('https://www.luogu.com.cn/login', True, 'DELETE', 'blocked'),
                 ('https://evil.invalid/', False, 'GET', 'blocked'),
             ]:
                 route = Route(url, top, method)
@@ -302,14 +303,12 @@ def test_route_accepts_embedded_turnstile_but_blocks_top_level_external_and_unsa
                 assert route.result == expected
         finally: await manager.aclose()
     asyncio.run(run())
-
-
 @pytest.mark.parametrize('operation', ['status', 'screenshot', 'confirm', 'cancel', 'interact'])
 def test_wrong_owner_cannot_read_or_control_flow(tmp_path, operation):
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             args = ('other-owner', started['login_id'])
             if operation == 'interact': args += ('key',)
             with pytest.raises(HTTPException) as error:
@@ -326,7 +325,7 @@ def test_every_public_flow_operation_rechecks_authorization_and_state(tmp_path, 
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             if change == 'revision':
                 manager.accounts.save(AccountList(items=[AccountInput(platform='luogu', handle='42')]))
             elif change == 'revoked': manager.owner_valid = lambda _: False
@@ -350,7 +349,7 @@ def test_inflight_identity_check_cannot_commit_after_revocation(tmp_path, change
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             def hook():
                 if change == 'revoked': manager.owner_valid = lambda _: False
                 elif change == 'revision': manager.flow.revision = 'stale'
@@ -368,14 +367,14 @@ def test_global_slot_spans_managers_and_is_released_after_actual_close(tmp_path)
         first, factory1 = setup_manager(tmp_path/'one')
         second, factory2 = setup_manager(tmp_path/'two')
         try:
-            started = await first.start('owner1', 'atcoder')
-            with pytest.raises(HTTPException) as error: await second.start('owner2', 'atcoder')
+            started = await first.start('owner1', 'luogu')
+            with pytest.raises(HTTPException) as error: await second.start('owner2', 'luogu')
             assert error.value.status_code == 429 and factory2.starts == 0
             first.clear('different-owner')
             assert first.flow is not None
             await first.cancel('owner1', started['login_id'])
             assert factory1.stopped and factory1.browser.closed
-            assert (await second.start('owner2', 'atcoder'))['status'] == 'human_required'
+            assert (await second.start('owner2', 'luogu'))['status'] == 'human_required'
         finally:
             await first.aclose()
             await second.aclose()
@@ -386,7 +385,7 @@ def test_status_and_screenshot_polling_do_not_keep_abandoned_flow_alive(tmp_path
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             flow = manager.flow
             flow.touched -= 10
             touched = flow.touched
@@ -420,7 +419,7 @@ def test_input_surface_is_bounded_and_cannot_navigate_or_execute_code(tmp_path, 
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             with pytest.raises(HTTPException) as error:
                 await manager.interact('owner', started['login_id'], **kwargs)
             assert error.value.status_code == 422
@@ -435,7 +434,7 @@ def test_fast_input_is_limited_but_latest_screenshot_is_paced_not_rejected(tmp_p
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             await manager.interact('owner', started['login_id'], 'key', key='Tab')
             with pytest.raises(HTTPException) as error:
                 await manager.interact('owner', started['login_id'], 'text', text=PASSWORD)
@@ -452,7 +451,7 @@ def test_mismatch_does_not_bind_and_browser_remains_for_human_correction(tmp_pat
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder', 'different-user')
+            started = await manager.start('owner', 'luogu', 'different-user')
             result = await manager.confirm('owner', started['login_id'])
             assert result['status'] == 'failed' and result['reason'] == 'account_mismatch'
             assert manager.flow is not None and not manager.accounts.path.exists()
@@ -465,12 +464,12 @@ def test_missing_runtime_and_launch_failures_are_explicit_and_do_not_expose_erro
         monkeypatch.setattr('acmweb.browser_login.async_playwright', None)
         manager, factory = setup_manager(tmp_path)
         manager.playwright_factory = None
-        with pytest.raises(HTTPException) as error: await manager.start('owner', 'atcoder')
+        with pytest.raises(HTTPException) as error: await manager.start('owner', 'luogu')
         assert error.value.status_code == 503 and 'Playwright' in error.value.detail
         manager.playwright_factory = factory
         factory.failure = RuntimeError(PASSWORD)
         try:
-            with pytest.raises(HTTPException) as error: await manager.start('owner', 'atcoder')
+            with pytest.raises(HTTPException) as error: await manager.start('owner', 'luogu')
             assert error.value.status_code == 503 and PASSWORD not in error.value.detail
             assert manager.flow is None
         finally: await manager.aclose()
@@ -487,7 +486,7 @@ def test_private_runtime_is_removed_after_failed_browser_launch(tmp_path):
         factory.launch = failed_launch
         try:
             with pytest.raises(HTTPException) as error:
-                await manager.start('owner', 'atcoder')
+                await manager.start('owner', 'luogu')
             assert error.value.status_code == 503
             assert PASSWORD not in error.value.detail
         finally:
@@ -520,14 +519,14 @@ def test_shutdown_drains_done_tasks_when_gather_returns_without_yielding(tmp_pat
 
 def test_cookie_export_excludes_challenge_and_foreign_domain_secrets():
     cookies = [
-        {'name': 'session', 'value': SECRET, 'domain': '.atcoder.jp'},
+        {'name': 'session', 'value': SECRET, 'domain': '.luogu.com.cn'},
         {'name': 'cf', 'value': 'private-challenge', 'domain': '.cloudflare.com'},
         {'name': 'other', 'value': 'foreign', 'domain': 'evil.invalid'},
     ]
-    assert _cookie_header('atcoder', cookies) == 'session=' + SECRET
+    assert _cookie_header('luogu', cookies) == 'session=' + SECRET
     for value in ['injected; second=value', 'line\nbreak']:
-        assert _cookie_header('atcoder', cookies + [
-            {'name': 'bad', 'value': value, 'domain': 'atcoder.jp'}]) is None
+        assert _cookie_header('luogu', cookies + [
+            {'name': 'bad', 'value': value, 'domain': 'www.luogu.com.cn'}]) is None
 
 
 def test_cancelled_start_retains_launch_references_until_worker_can_close(tmp_path):
@@ -540,7 +539,7 @@ def test_cancelled_start_retains_launch_references_until_worker_can_close(tmp_pa
             await resume.wait()
             return await original_start()
         factory.start = slow_start
-        start = asyncio.create_task(manager.start('owner', 'atcoder'))
+        start = asyncio.create_task(manager.start('owner', 'luogu'))
         try:
             await entered.wait()
             start.cancel()
@@ -559,7 +558,7 @@ def test_unexpected_page_origin_cannot_be_screenshot_or_input_target(tmp_path, o
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             factory.browser.context.page.url = 'data:text/html,untrusted'
             args = ('owner', started['login_id'])
             kwargs = {}
@@ -578,12 +577,12 @@ def test_only_controlled_pages_can_navigate_and_popups_are_closed(tmp_path):
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            await manager.start('owner', 'atcoder')
-            popup = Page('atcoder')
+            await manager.start('owner', 'luogu')
+            popup = Page('luogu')
             await manager._close_uncontrolled_page(manager.flow, popup)
             assert popup.closed
             class Route:
-                request = SimpleNamespace(url='https://atcoder.jp/login', method='GET',
+                request = SimpleNamespace(url='https://www.luogu.com.cn/login', method='GET',
                     frame=SimpleNamespace(parent_frame=None, page=popup),
                     is_navigation_request=lambda: True)
                 result = None
@@ -600,7 +599,7 @@ def test_non_ascii_or_unknown_flow_id_is_not_a_compare_digest_error(tmp_path):
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             for login_id in ['非ASCII', None, 'unknown']:
                 with pytest.raises(HTTPException) as error:
                     await manager.status('owner', login_id)
@@ -611,10 +610,10 @@ def test_non_ascii_or_unknown_flow_id_is_not_a_compare_digest_error(tmp_path):
 
 @pytest.mark.parametrize('location,frame,allowed', [
     ('/settings', 'main-frame', True),
-    ('https://atcoder.jp/settings', 'main-frame', True),
+    ('https://www.luogu.com.cn/settings', 'main-frame', True),
     ('https://evil.invalid/', 'main-frame', False),
     ('https://127.0.0.1/admin', 'main-frame', False),
-    ('https://atcoder.jp:444/', 'main-frame', False),
+    ('https://www.luogu.com.cn:444/', 'main-frame', False),
     ('https://challenges.cloudflare.com/frame', 'main-frame', False),
     ('https://challenges.cloudflare.com/frame', 'child-frame', True),
     ('https://evil.invalid/', 'child-frame', False),
@@ -623,13 +622,13 @@ def test_response_guard_blocks_disallowed_redirect_before_continuation(tmp_path,
     async def run():
         manager, factory = setup_manager(tmp_path)
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             flow = manager.flow
             session = CDPSession()
             await manager._guard_response(flow, flow.page, session, 'main-frame', {
                 'requestId': 'synthetic-request', 'frameId': frame,
                 'resourceType': 'Document',
-                'request': {'url': 'https://atcoder.jp/login'}, 'responseStatusCode': 302,
+                'request': {'url': 'https://www.luogu.com.cn/login'}, 'responseStatusCode': 302,
                 'responseHeaders': [{'name': 'Location', 'value': location}],
             })
             assert session.commands[0][0] == ('Fetch.continueResponse' if allowed else 'Fetch.failRequest')
@@ -642,11 +641,11 @@ def test_response_guard_allows_main_frame_subresources_without_treating_them_as_
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             flow = manager.flow
             for resource_type, url in [
                 ('Script', 'https://challenges.cloudflare.com/turnstile/v0/api.js'),
-                ('Stylesheet', 'https://img.atcoder.jp/style.css'),
+                ('Stylesheet', 'https://static.luogu.com.cn/style.css'),
             ]:
                 session = CDPSession()
                 await manager._guard_response(flow, flow.page, session, 'main-frame', {
@@ -667,11 +666,11 @@ def test_unconfirmed_browser_cleanup_keeps_global_slot_closed(tmp_path, monkeypa
         manager, factory = setup_manager(tmp_path)
         async def failed_close(): raise RuntimeError(SECRET)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             factory.browser.context.close = factory.browser.close = factory.stop = failed_close
             await manager.cancel('owner', started['login_id'])
             assert manager.cleanup_failed
-            with pytest.raises(HTTPException) as error: await manager.start('owner', 'atcoder')
+            with pytest.raises(HTTPException) as error: await manager.start('owner', 'luogu')
             assert error.value.status_code == 503 and SECRET not in error.value.detail
         finally: await manager.aclose()
     asyncio.run(run())
@@ -699,7 +698,7 @@ def test_child_target_is_guarded_before_runtime_resumes_and_redirects_stay_guard
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             parent = ChildTransport()
             flow = manager.flow
             await manager._attach_child_guard(flow, flow.page, parent, {'sessionId': 'child-session'})
@@ -743,7 +742,7 @@ def test_missing_redirect_guard_capability_fails_before_official_navigation(tmp_
         async def new_session(page): return NoAutoAttach()
         factory.browser.context.new_cdp_session = new_session
         try:
-            with pytest.raises(HTTPException) as error: await manager.start('owner', 'atcoder')
+            with pytest.raises(HTTPException) as error: await manager.start('owner', 'luogu')
             assert error.value.status_code == 503 and SECRET not in error.value.detail
             assert not factory.browser.context.page.visits
         finally: await manager.aclose()
@@ -754,7 +753,7 @@ def test_dedicated_worker_keeps_creator_frame_network_guard_without_unsupported_
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             parent = ChildTransport()
             flow = manager.flow
             await manager._attach_child_guard(flow, flow.page, parent, {
@@ -786,7 +785,7 @@ def test_worker_tracking_capability_failure_is_explicit_and_handles_destroyed_ta
                         'sessionId': params['sessionId'], 'message': json.dumps({
                             'id': message['id'], 'result': {}})})
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             flow = manager.flow
             parent = BrokenTransport()
             await manager._attach_child_guard(flow, flow.page, parent, {
@@ -815,7 +814,7 @@ def test_shared_worker_is_closed_without_resuming_an_unverified_transport(tmp_pa
                 self.closed.append(params['targetId'])
                 return {'success': True}
         try:
-            await manager.start('owner', 'atcoder')
+            await manager.start('owner', 'luogu')
             parent = SharedParent()
             flow = manager.flow
             await manager._attach_child_guard(flow, flow.page, parent, {
@@ -830,7 +829,7 @@ def test_terminal_reason_is_owner_scoped_stable_and_visible_to_status_and_image(
     async def run():
         manager, _ = setup_manager(tmp_path)
         try:
-            started = await manager.start('owner', 'atcoder')
+            started = await manager.start('owner', 'luogu')
             manager._invalidate(manager.flow, 'guard_protocol_error')
             manager.clear('owner')
             status = await manager.status('owner', started['login_id'])
@@ -841,24 +840,5 @@ def test_terminal_reason_is_owner_scoped_stable_and_visible_to_status_and_image(
             assert '[guard_protocol_error]' in error.value.detail
             with pytest.raises(HTTPException) as error: await manager.status('different-owner', started['login_id'])
             assert error.value.status_code == 404
-        finally: await manager.aclose()
-    asyncio.run(run())
-
-
-@pytest.mark.skipif(os.environ.get('ACM_TEST_BROWSER_OFFICIAL_PASSIVE') != '1',
-                    reason='Explicit opt-in only: loads official AtCoder login without credentials')
-def test_official_atcoder_passive_page_survives_delayed_challenge_worker_creation(tmp_path):
-    """Read-only availability probe; never fill, click, or solve a challenge."""
-    async def run():
-        accounts = Accounts(Settings(data_dir=tmp_path, config_path=tmp_path/'absent.toml'))
-        manager = BrowserLogin(accounts, SimpleNamespace(tasks={}))
-        try:
-            started = await manager.start('synthetic-passive-owner', 'atcoder')
-            for delay in (1, 4, 10):
-                await asyncio.sleep(delay)
-                status = await manager.status('synthetic-passive-owner', started['login_id'])
-                assert status['status'] == 'human_required', status['reason']
-                assert (await manager.screenshot('synthetic-passive-owner', started['login_id'])).startswith(b'\x89PNG')
-            assert not accounts.path.exists()
         finally: await manager.aclose()
     asyncio.run(run())

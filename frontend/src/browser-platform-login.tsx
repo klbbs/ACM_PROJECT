@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type MouseEvent } f
 import { api } from './api'
 import './browser-platform-login.css'
 
-type Platform = 'codeforces' | 'atcoder' | 'luogu'
+type Platform = 'luogu'
 type LoginAccount = { handle?: string; [key: string]: unknown }
 type LoginResponse = {
   login_id?: string
@@ -15,8 +15,6 @@ type LoginResponse = {
 }
 type Session = { id: string; generation: number; width: number; height: number; expiresAt: number }
 const names: Record<Platform, string> = {
-  codeforces: 'Codeforces',
-  atcoder: 'AtCoder',
   luogu: '洛谷',
 }
 const route = '/platform-login/browser'
@@ -379,16 +377,8 @@ export function BrowserPlatformLogin({
     )
       return
     const target = expected.trim()
-    if (
-      target &&
-      (target.length > 100 ||
-        (platform === 'luogu' ? !/^\d+$/.test(target) : !/^[A-Za-z0-9_.-]+$/.test(target)))
-    ) {
-      setError(
-        platform === 'luogu'
-          ? '洛谷绑定目标请填写数字 UID。'
-          : '绑定目标请填写有效的 handle / 用户名。',
-      )
+    if (target && (target.length > 100 || !/^\d+$/.test(target))) {
+      setError('洛谷绑定目标请填写数字 UID。')
       return
     }
     dismissAfterCancel.current = false
@@ -539,18 +529,16 @@ export function BrowserPlatformLogin({
         在服务器的同一个官方登录窗口中操作，可亲自完成验证码。只有验证官方当前身份后才会保存会话并绑定账号。
       </p>
       <div className="browser-login-start">
-        <label htmlFor={`${fieldId}-expected`}>
-          绑定目标{platform === 'luogu' ? ' UID' : ' handle / 用户名'}（可选）
-        </label>
+        <label htmlFor={`${fieldId}-expected`}>绑定目标 UID（可选）</label>
         <input
           id={`${fieldId}-expected`}
           value={expected}
           maxLength={100}
-          inputMode={platform === 'luogu' ? 'numeric' : 'text'}
+          inputMode="numeric"
           autoComplete="off"
           spellCheck={false}
           disabled={modalOpen}
-          placeholder={platform === 'luogu' ? '数字 UID；留空自动识别' : '留空使用官方验证的账号'}
+          placeholder="数字 UID；留空自动识别"
           onChange={(event) => setExpected(event.target.value)}
         />
         <button

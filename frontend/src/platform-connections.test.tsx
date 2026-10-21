@@ -2,8 +2,62 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { PlatformConnections } from './platform-connections'
-vi.mock('./api', () => ({ api: vi.fn(), date: () => '刚刚', names: { codeforces: 'Codeforces', luogu: '洛谷' } }))
+vi.mock('./api', () => ({
+  api: vi.fn(),
+  date: () => '刚刚',
+  names: { codeforces: 'Codeforces', atcoder: 'AtCoder', nowcoder: '牛客', luogu: '洛谷' },
+}))
 import { api } from './api'
+
+it('offers Cookie-helper guidance for Codeforces and AtCoder, Luogu login, and Nowcoder QR', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  vi.mocked(api)
+    .mockReset()
+    .mockImplementation(async (path: string) => {
+      if (path === '/platforms')
+        return {
+          items: ['codeforces', 'atcoder', 'nowcoder', 'luogu'].map((platform) => ({
+            platform,
+            accounts: [],
+          })),
+        } as never
+      return { items: [] } as never
+    })
+  try {
+    await act(async () =>
+      root.render(
+        <PlatformConnections revision={1} run={vi.fn()} onError={vi.fn()} onBound={vi.fn()} />,
+      ),
+    )
+    const cards = [...host.querySelectorAll('.platform-action-grid > article')]
+    expect(
+      cards.map((card) => [
+        card.querySelector('h3')?.textContent,
+        !!card.querySelector('.browser-platform-login'),
+      ]),
+    ).toEqual([
+      ['Codeforces', false],
+      ['AtCoder', false],
+      ['牛客', false],
+      ['洛谷', true],
+    ])
+    for (const card of cards.slice(0, 2)) {
+      expect(card.textContent).toContain('正常登录并完成验证')
+      expect(card.querySelector('a[download]')?.getAttribute('href')).toBe(
+        '/api/browser-userscript/acm-lab-cookie-helper.user.js',
+      )
+      expect(card.querySelector('a[href*="codeforces.com"], a[href*="atcoder.jp"]')).not.toBeNull()
+    }
+    expect(cards[2].querySelector('.nowcoder-qr-login')).not.toBeNull()
+    expect(cards[3].querySelector('.browser-platform-login')).not.toBeNull()
+    expect(host.textContent).toContain('Codeforces、AtCoder 使用油猴助手')
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
 
 it('checks saved credentials explicitly and discards successful status after configuration changes', async () => {
   const host = document.createElement('div')
@@ -247,47 +301,78 @@ it('shows platform throttling and waiting time without asking for an unrelated C
   }
 })
 
-
 it.each([
   ['blocked', 'access_restricted'],
   ['blocked', 'captcha'],
   ['blocked', 'browser_challenge'],
   ['unknown', 'network_error'],
   ['authenticated', 'identity_verified'],
-])('keeps Luogu on public synchronization and official submission regardless of cached %s / %s', async (status, reason) => {
-  const host = document.createElement('div')
-  document.body.append(host)
-  const root = createRoot(host)
-  const run = vi.fn()
-  vi.mocked(api).mockReset().mockImplementation(async (path: string) => {
-    if (path === '/platforms') return { items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }] } as never
-    if (path === '/accounts/checks') return { items: [{
-      platform: 'luogu', handle: '42', status, reason,
-      browser_action_required: true, browser_action_url: 'https://untrusted.example/challenge',
-      checked_at: Math.floor(Date.now() / 1000), upstream_status: 418, retry_after_seconds: 10,
-      message: '旧的访问限制或登录诊断', guidance: ['请完成验证码并重新获取Cookie后重试'],
-    }] } as never
-    throw Error('unexpected request')
-  })
-  try {
-    await act(async () => root.render(<PlatformConnections revision={1} run={run} onError={vi.fn()} />))
-    const card = host.querySelector('article')!
-    expect(card.textContent).toContain('42 · 公开资料同步')
-    expect(card.textContent).toContain('洛谷官方网页交题，再同步记录')
-    const publicAccount = card.querySelector('.platform-account-check')!
-    expect(card.querySelector('.browser-platform-login')).not.toBeNull()
-    for (const hidden of ['访问限制', '验证码', '重新检测', '检测登录状态', 'HTTP 418', '旧的', '已验证登录']) {
-      expect(publicAccount.textContent).not.toContain(hidden)
+])(
+  'keeps Luogu on public synchronization and official submission regardless of cached %s / %s',
+  async (status, reason) => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const run = vi.fn()
+    vi.mocked(api)
+      .mockReset()
+      .mockImplementation(async (path: string) => {
+        if (path === '/platforms')
+          return {
+            items: [{ platform: 'luogu', accounts: [{ handle: '42', has_cookie: true }] }],
+          } as never
+        if (path === '/accounts/checks')
+          return {
+            items: [
+              {
+                platform: 'luogu',
+                handle: '42',
+                status,
+                reason,
+                browser_action_required: true,
+                browser_action_url: 'https://untrusted.example/challenge',
+                checked_at: Math.floor(Date.now() / 1000),
+                upstream_status: 418,
+                retry_after_seconds: 10,
+                message: '旧的访问限制或登录诊断',
+                guidance: ['请完成验证码并重新获取Cookie后重试'],
+              },
+            ],
+          } as never
+        throw Error('unexpected request')
+      })
+    try {
+      await act(async () =>
+        root.render(<PlatformConnections revision={1} run={run} onError={vi.fn()} />),
+      )
+      const card = host.querySelector('article')!
+      expect(card.textContent).toContain('42 · 公开资料同步')
+      expect(card.textContent).toContain('洛谷官方网页交题，再同步记录')
+      const publicAccount = card.querySelector('.platform-account-check')!
+      expect(card.querySelector('.browser-platform-login')).not.toBeNull()
+      for (const hidden of [
+        '访问限制',
+        '验证码',
+        '重新检测',
+        '检测登录状态',
+        'HTTP 418',
+        '旧的',
+        '已验证登录',
+      ]) {
+        expect(publicAccount.textContent).not.toContain(hidden)
+      }
+      expect(card.querySelector('.platform-browser-action')).toBeNull()
+      expect(card.innerHTML).not.toContain('untrusted.example')
+      expect(card.querySelector<HTMLAnchorElement>('a')?.href).toBe('https://www.luogu.com.cn/')
+      const synchronize = [...card.querySelectorAll('button')].find(
+        (button) => button.textContent === '同步此平台信息',
+      )!
+      await act(async () => synchronize.click())
+      expect(run).toHaveBeenCalledWith('/platforms/luogu/collect')
+      expect(vi.mocked(api).mock.calls.some((call) => call[0] === '/accounts/check')).toBe(false)
+    } finally {
+      await act(async () => root.unmount())
+      host.remove()
     }
-    expect(card.querySelector('.platform-browser-action')).toBeNull()
-    expect(card.innerHTML).not.toContain('untrusted.example')
-    expect(card.querySelector<HTMLAnchorElement>('a')?.href).toBe('https://www.luogu.com.cn/')
-    const synchronize = [...card.querySelectorAll('button')].find(button => button.textContent === '同步此平台信息')!
-    await act(async () => synchronize.click())
-    expect(run).toHaveBeenCalledWith('/platforms/luogu/collect')
-    expect(vi.mocked(api).mock.calls.some(call => call[0] === '/accounts/check')).toBe(false)
-  } finally {
-    await act(async () => root.unmount())
-    host.remove()
-  }
-})
+  },
+)

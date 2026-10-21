@@ -30,13 +30,9 @@ except ImportError:  # Browser login is optional; the remaining app still works.
 
 
 LOGIN_URLS = {
-    'codeforces': 'https://codeforces.com/enter',
-    'atcoder': 'https://atcoder.jp/login',
     'luogu': 'https://www.luogu.com.cn/auth/login',
 }
 ROOT_HOSTS = {
-    'codeforces': 'codeforces.com',
-    'atcoder': 'atcoder.jp',
     'luogu': 'luogu.com.cn',
 }
 WIDTH, HEIGHT = 1000, 720
@@ -633,7 +629,7 @@ class BrowserLogin:
             self._authorize(owner)
             self._idle()
             if platform not in LOGIN_URLS:
-                raise HTTPException(422, '此平台不支持浏览器密码登录')
+                raise HTTPException(422, '浏览器登录仅支持洛谷；其他平台请使用 Cookie 绑定')
             if (expected_handle is not None and (not isinstance(expected_handle, str)
                     or not expected_handle or len(expected_handle) > 100
                     or any(ord(c) < 33 or ord(c) == 127 for c in expected_handle))):
@@ -800,8 +796,7 @@ class BrowserLogin:
                 html = None
                 if status != 'authenticated' or not handle:
                     return self._result(flow, reason='identity_unconfirmed')
-                if flow.expected and (flow.expected.casefold() != handle.casefold()
-                                      if flow.platform == 'codeforces' else flow.expected != handle):
+                if flow.expected and flow.expected != handle:
                     return self._result(flow, status='failed', reason='account_mismatch')
                 cookies = await flow.context.cookies([URLS[flow.platform]])
                 self._ensure(flow)

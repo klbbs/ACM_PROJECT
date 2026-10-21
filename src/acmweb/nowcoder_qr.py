@@ -356,7 +356,7 @@ def register(app, accounts, jobs):
     app.state.nowcoder_qr = manager
 
     def owner(request):
-        value = request.scope.get('state', {}).get('platform_login_owner')
+        value = request.scope.get('state', {}).get('browser_login_owner')
         if getattr(app.state, 'multi_child', False) and not value:
             raise HTTPException(401, '请重新登录 ACM Lab')
         return value or 'local-workspace'

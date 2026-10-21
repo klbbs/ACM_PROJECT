@@ -2,9 +2,8 @@
 
 Usage: .venv/bin/python scripts/verify_browser_login_redirects.py --run-local-transport-probe
 Requires the project, requirements-browser.lock, its Chromium install, and openssl.
-No personal browser profile, credentials, page dump, or raw headers. A separate
---run-official-atcoder-passive opt-in visits the official login page anonymously
-for 15 seconds without typing, clicking, logging in, or solving challenges.
+No personal browser profile, credentials, page dump, or raw headers. All
+navigation targets are disposable loopback TLS aliases for Luogu allowlist hosts.
 """
 import argparse
 import asyncio
@@ -63,14 +62,14 @@ def fixture_server():
             # Do not retain headers or content from any real platform.
             received.append((self.path, self.command, body == b'payload=synthetic'))
             redirects = {
-                '/allowed302': (302, 'https://atcoder.jp/final'),
+                '/allowed302': (302, 'https://www.luogu.com.cn/final'),
                 '/bad302': (302, 'https://bad.invalid/forbidden'),
                 '/private307': (307, f'https://127.0.0.1:{self.server.server_port}/forbidden'),
-                '/badtop302': (302, 'https://img.atcoder.jp/forbidden'),
-                '/chain302': (302, 'https://atcoder.jp/bad302'),
+                '/badtop302': (302, 'https://static.luogu.com.cn/forbidden'),
+                '/chain302': (302, 'https://www.luogu.com.cn/bad302'),
                 '/image-redirect': (302, 'https://bad.invalid/forbidden-image'),
-                '/post307': (307, 'https://atcoder.jp/post-final'),
-                '/post302': (302, 'https://atcoder.jp/post-final'),
+                '/post307': (307, 'https://www.luogu.com.cn/post-final'),
+                '/post302': (302, 'https://www.luogu.com.cn/post-final'),
                 '/worker-fetch302': (302, 'https://bad.invalid/forbidden-worker'),
             }
             if self.path in redirects:
@@ -87,7 +86,7 @@ def fixture_server():
                            '<form method="post" action="/post302"><input name="payload" value="synthetic">'
                            '<button id="submit302">Send302</button></form></body></html>'),
                 '/subresource-test': '<html><img src="/image-redirect"></html>',
-                '/subresource-good': '<html><img src="https://img.atcoder.jp/pixel"></html>',
+                '/subresource-good': '<html><img src="https://static.luogu.com.cn/pixel"></html>',
                 '/embedded-good': '<html><iframe src="https://challenges.cloudflare.com/frame"></iframe></html>',
                 '/embedded-redirect-test': ('<html><iframe '
                                             'src="https://challenges.cloudflare.com/frame-with-image"></iframe></html>'),
@@ -130,7 +129,7 @@ class LocalRuntime:
 
     async def launch(self, **kwargs):
         assert kwargs['chromium_sandbox'] is True
-        hosts = ('atcoder.jp', 'img.atcoder.jp', 'bad.invalid', 'challenges.cloudflare.com')
+        hosts = ('www.luogu.com.cn', 'static.luogu.com.cn', 'bad.invalid', 'challenges.cloudflare.com')
         rules = ', '.join(f'MAP {host} 127.0.0.1:{self.port}' for host in hosts)
         # Every named host is loopback or fails DNS; no external destination is needed.
         kwargs['args'] = ['--no-proxy-server', '--host-resolver-rules=' + rules + ', MAP * ~NOTFOUND']
@@ -181,11 +180,15 @@ async def probe(directory, port, received):
         manager = BrowserLogin(accounts, SimpleNamespace(tasks={}), playwright_factory=LocalRuntime(port))
         offset = len(received)
         try:
-            await manager.start('synthetic-owner', 'atcoder')
+            await manager.start('synthetic-owner', 'luogu')
             flow = manager.flow
             try:
+                # Luogu's production login route is not the synthetic fixture
+                # form route, so load the loopback form explicitly for probes.
+                await flow.page.goto('https://www.luogu.com.cn/login',
+                                     wait_until='domcontentloaded', timeout=5000)
                 if target.startswith('/'):
-                    await flow.page.goto('https://atcoder.jp' + target,
+                    await flow.page.goto('https://www.luogu.com.cn' + target,
                                          wait_until='domcontentloaded', timeout=5000)
                 else:
                     await flow.page.locator('#' + target).click(timeout=5000)
@@ -237,52 +240,13 @@ async def probe(directory, port, received):
     return results
 
 
-async def official_atcoder_passive(directory):
-    """Fresh anonymous production context; observe availability, never login."""
-    from acmweb.accounts import Accounts
-    from acmweb.browser_login import BrowserLogin
-    from acmweb.settings import Settings
-
-    accounts = Accounts(Settings(data_dir=directory, config_path=directory / 'absent.toml'))
-    manager = BrowserLogin(accounts, SimpleNamespace(tasks={}))
-    checks = []
-    try:
-        started = await manager.start('anonymous-passive-probe', 'atcoder')
-        login_id = started['login_id']
-        began = time.monotonic()
-        for seconds in (1, 5, 10, 15):
-            await asyncio.sleep(max(0, seconds - (time.monotonic() - began)))
-            status = await manager.status('anonymous-passive-probe', login_id)
-            assert status['status'] == 'human_required', 'anonymous page was prematurely revoked'
-            image = await manager.screenshot('anonymous-passive-probe', login_id)
-            assert image.startswith(b'\x89PNG'), 'anonymous page screenshot unavailable'
-            checks.append({'wait_seconds': seconds, 'status': status['status'],
-                           'screenshot_available': True, 'screenshot_bytes': len(image)})
-            image = None
-        assert not accounts.path.exists(), 'passive observation must not persist account credentials'
-        return {'official_atcoder_anonymous_passive': True, 'observation_seconds': 15,
-                'personal_profiles_used': False, 'login_attempted': False,
-                'credentials_persisted': False, 'checks': checks}
-    finally:
-        await manager.aclose()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-local-transport-probe', action='store_true',
                         help='Explicitly launch disposable Chromium and a loopback TLS fixture.')
-    parser.add_argument('--run-official-atcoder-passive', action='store_true',
-                        help='Explicitly observe a fresh anonymous official AtCoder page for 15 seconds.')
     args = parser.parse_args()
-    if not (args.run_local_transport_probe or args.run_official_atcoder_passive):
-        parser.error('Select an explicit local transport or official anonymous passive probe.')
-    if args.run_official_atcoder_passive:
-        with tempfile.TemporaryDirectory(prefix='acm-atcoder-anonymous-passive-') as temporary:
-            directory = Path(temporary)
-            directory.chmod(0o700)
-            print(json.dumps(asyncio.run(official_atcoder_passive(directory)), ensure_ascii=False, indent=2))
-        if not args.run_local_transport_probe:
-            return
+    if not args.run_local_transport_probe:
+        parser.error('Select the explicit local transport probe.')
     openssl = shutil.which('openssl')
     if not openssl:
         parser.error('openssl is required to generate the disposable fixture certificate.')
@@ -291,7 +255,7 @@ def main():
         directory.chmod(0o700)
         cert, key = directory / 'cert.pem', directory / 'key.pem'
         subprocess.run([openssl, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
-                        '-keyout', str(key), '-out', str(cert), '-days', '1', '-subj', '/CN=atcoder.jp'],
+                        '-keyout', str(key), '-out', str(cert), '-days', '1', '-subj', '/CN=www.luogu.com.cn'],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         server, received = fixture_server()
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

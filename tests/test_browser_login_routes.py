@@ -52,7 +52,13 @@ def test_browser_routes_require_acm_login_and_never_echo_input(tmp_path, monkeyp
         assert response.status_code == 422 and 'SYNTHETIC' not in response.text
         assert client.post('/api/platform-login/browser/start', json={'platform': 'evil', 'url': 'http://127.0.0.1'}).status_code == 422
         assert client.post('/api/platform-login/browser/input', json={'login_id': flow, 'kind': 'click', 'x': True, 'y': 30}).status_code == 422
-        assert client.post('/api/platform-login/browser/start', json={'platform': 'atcoder'}, headers={'Origin': 'https://other.invalid'}).status_code == 403
+        for platform in ('codeforces', 'atcoder'):
+            assert client.post('/api/platform-login/browser/start', json={'platform': platform}).status_code == 422
+        assert client.post('/api/platform-login/password', json={}).status_code in {404, 405}
+        assert client.post('/api/platform-login/browser/start', json={
+            'platform': 'luogu', 'expected_handle': 'not-a-uid'}).status_code == 422
+        assert client.post('/api/platform-login/browser/start', json={'platform': 'luogu'},
+                           headers={'Origin': 'https://other.invalid'}).status_code == 403
     assert app.state.browser_login.closed
 
 
@@ -60,6 +66,6 @@ def test_multi_child_requires_forwarded_owner(tmp_path, monkeypatch):
     app = make_app(tmp_path, monkeypatch)
     app.state.multi_child = True
     with TestClient(app, headers={'Authorization': 'Bearer fixture-access-token'}) as client:
-        response = client.post('/api/platform-login/browser/start', json={'platform': 'codeforces'})
+        response = client.post('/api/platform-login/browser/start', json={'platform': 'luogu'})
         assert response.status_code == 401
         assert app.state.browser_login.calls == []

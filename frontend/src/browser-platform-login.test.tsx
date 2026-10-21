@@ -31,10 +31,7 @@ function backend(overrides: Record<string, unknown> = {}) {
     ) as never
   })
 }
-async function render(
-  platform: 'codeforces' | 'atcoder' | 'luogu' = 'codeforces',
-  onBound = vi.fn(),
-) {
+async function render(platform: 'luogu' = 'luogu', onBound = vi.fn()) {
   await act(async () => root.render(<BrowserPlatformLogin platform={platform} onBound={onBound} />))
   return onBound
 }
@@ -79,11 +76,11 @@ it('starts directly, refreshes the initial image once after painting, then only 
   const bound = await render()
   expect(host.querySelector('input[type="checkbox"]')).toBeNull()
   expect(api).not.toHaveBeenCalled()
-  await fill('expected', ' fixture ')
+  await fill('expected', ' 42 ')
   await click('打开安全登录窗口')
   expect(api).toHaveBeenNthCalledWith(1, '/platform-login/browser/start', 'POST', {
-    platform: 'codeforces',
-    expected_handle: 'fixture',
+    platform: 'luogu',
+    expected_handle: '42',
   })
   expect(host.querySelector('img')!.src).toBe(picture)
   await act(async () => vi.advanceTimersByTimeAsync(45000))
@@ -392,7 +389,7 @@ it('matches the server input limit and rejects oversized text without clearing t
 })
 
 it('opens a named modal with initial focus and loading before startup settles, then shows failure', async () => {
-  await render('atcoder')
+  await render('luogu')
   let rejectStart!: (reason: Error) => void
   vi.mocked(api).mockImplementationOnce(
     () =>
@@ -407,7 +404,7 @@ it('opens a named modal with initial focus and loading before startup settles, t
   const modal = host.querySelector('dialog')!
   expect(modal.open).toBe(true)
   expect(modal.showModal).toHaveBeenCalledOnce()
-  expect(modal.querySelector('h2')!.textContent).toBe('AtCoder 安全登录窗口')
+  expect(modal.querySelector('h2')!.textContent).toBe('洛谷 安全登录窗口')
   expect(document.activeElement).toBe(modal.querySelector('h2'))
   expect(modal.querySelector('[role="status"]')!.textContent).toContain('正在打开')
   expect(modal.querySelector('.browser-login-loading')).not.toBeNull()
@@ -599,7 +596,7 @@ it('bounds a startup that never settles and safely discards its late id after a 
 })
 
 it('shows the specific startup failure as the main status and retries only on explicit action', async () => {
-  await render('atcoder')
+  await render('luogu')
   vi.mocked(api).mockRejectedValueOnce(new Error('服务器尚未安装 Chromium，请联系管理员'))
   await click('打开安全登录窗口')
   const modal = host.querySelector('dialog')!

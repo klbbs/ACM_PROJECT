@@ -23,7 +23,7 @@
 - 每日任务：自行设置题量与周期，AI 生成整张题单、每天换题两次，完成后自行记录实际用时；官方 AC 核验普通签到/K 签，统计月度和累计记录。
 - 部署：Docker Compose、原生 Python、systemd/Caddy 示例、依赖锁、ZIP/TAR 部署包和 GitHub Actions。
 
-推荐题库包含 CF 官方带难度题、AtCoder 近期比赛及洛谷/牛客有限列表；后两者缺少可靠日期时不进入有日期限制的推荐。平台 Cookie 必须通过身份检测，牛客目前可能无法可靠确认身份。详见 [推荐范围](docs/RECOMMENDATIONS.md)。
+推荐题库包含 CF 官方带难度题、AtCoder 近期比赛及洛谷/牛客有限列表；后两者缺少可靠日期时不进入有日期限制的推荐。平台会话必须通过当前身份检测，不能以公开资料可读代替；洛谷官方窗口和牛客扫码已完成本人连续登录绑定验收。详见 [推荐范围](docs/RECOMMENDATIONS.md)。
 
 ## 多人服务器部署
 
@@ -134,7 +134,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.18.2.zip
+python3 scripts/verify_release.py releases/acm-lab-0.18.3.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
@@ -176,4 +176,4 @@ CodeMirror 6 提供四种语言标签的高亮与本地补全、普通/Vim 切�
 鼠标操作工作台验收、子 agent 教练反馈和修复记录见 [2026-10-19 验收报告](docs/USER_ACCEPTANCE_2026-10-19.md)。判题为隔离模拟，未向真实账号交题。
 
 
-平台绑定的保存/编辑规则见[平台教程](docs/PLATFORM_BINDING.md)，CF、AtCoder、洛谷的同会话官方浏览器登录窗口及服务器可选依赖见[平台登录](docs/PASSWORD_LOGIN.md)，牛客使用微信扫码。验证码由本人在原窗口完成，可靠验证身份后才绑定；当前交题仍在官方页面。
+平台绑定的保存/编辑规则见[平台教程](docs/PLATFORM_BINDING.md)：CF、AtCoder 在本人浏览器登录后使用[油猴 Cookie 助手](docs/BROWSER_EXTENSION.md)，回本站保存并检测；两平台不再提供服务器密码或远程浏览器登录。洛谷保留同会话[官方登录窗口](docs/PASSWORD_LOGIN.md)，牛客使用微信扫码。可靠验证身份后才绑定；当前交题仍在官方页面。

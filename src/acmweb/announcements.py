@@ -3,6 +3,11 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 RELEASES = [
+    {'id': '0.18.3', 'date': '2026-10-21', 'title': '平台绑定简化：CF 与 AtCoder 使用 Cookie 助手', 'items': [
+        'Codeforces、AtCoder 请先在自己的浏览器完成官方登录与验证，再用油猴 Cookie 助手复制凭据，回本站粘贴、保存并检测。平台卡片提供下载和教程入口。',
+        '移除 CF、AtCoder 的服务器账号密码及远程浏览器登录；洛谷保留官方窗口，牛客保留微信扫码。已有绑定与训练记录继续保留。',
+        'Firefox 需要完整 HttpOnly Cookie 时可使用官方 Tampermonkey Beta；也可按教程使用 F12。复制成功不等于服务器登录成功，以当前身份检测为准。',
+    ]},
     {'id': '0.18.2', 'date': '2026-10-21', 'title': '官方登录改为独立弹层', 'items': [
         '点击打开安全登录窗口后立即显示弹层，启动状态、官方页面和错误集中展示，平台卡片不再展开跳动。',
         '登录操作留在当前网站，无需浏览器允许新窗口；取消或按 Esc 会回收本次会话，关闭后焦点返回原按钮。',

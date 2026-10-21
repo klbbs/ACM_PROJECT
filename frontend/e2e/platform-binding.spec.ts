@@ -61,7 +61,7 @@ const browserImage =
 const browserSession = {
   login_id: 'synthetic-browser',
   status: 'human_required',
-  platform: 'atcoder',
+  platform: 'luogu',
   width: 1000,
   height: 720,
   expires_in: 90,
@@ -72,8 +72,8 @@ test('browser login reports unavailable honestly and keeps manual Cookie binding
 }) => {
   await page.route('**/api/platform-login/browser/start', async (route) => {
     expect(route.request().postDataJSON()).toEqual({
-      platform: 'atcoder',
-      expected_handle: 'fixture',
+      platform: 'luogu',
+      expected_handle: '42',
     })
     await route.fulfill({
       json: {
@@ -87,8 +87,8 @@ test('browser login reports unavailable honestly and keeps manual Cookie binding
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
   const panel = page
     .locator('.platform-action-grid article')
-    .filter({ has: page.getByRole('heading', { name: 'AtCoder', exact: true }) })
-  await panel.getByLabel('绑定目标 handle / 用户名（可选）').fill('fixture')
+    .filter({ has: page.getByRole('heading', { name: '洛谷', exact: true }) })
+  await panel.getByLabel('绑定目标 UID（可选）').fill('42')
   await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
   await expect(panel.getByRole('status')).toContainText('尚未绑定账号')
   await expect(panel.getByRole('alert')).toContainText('合成环境没有浏览器运行时')
@@ -132,9 +132,9 @@ test('mobile official browser dialog clears sent text and cancels without overfl
     .click()
   const panel = page
     .locator('.platform-action-grid article')
-    .filter({ has: page.getByRole('heading', { name: 'AtCoder', exact: true }) })
+    .filter({ has: page.getByRole('heading', { name: '洛谷', exact: true }) })
   await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
-  const dialog = panel.getByRole('dialog', { name: 'AtCoder 安全登录窗口', exact: true })
+  const dialog = panel.getByRole('dialog', { name: '洛谷 安全登录窗口', exact: true })
   await expect(dialog).toBeVisible()
   expect(await dialog.evaluate((element) => element.matches(':modal'))).toBeTruthy()
   await expect(dialog.getByRole('img')).toBeVisible()
@@ -184,7 +184,7 @@ test('opening an official login shows a modal immediately without navigation or 
   await page.goto('/')
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
   const panel = page.locator('.platform-action-grid article').filter({
-    has: page.getByRole('heading', { name: 'AtCoder', exact: true }),
+    has: page.getByRole('heading', { name: '洛谷', exact: true }),
   })
   const launch = panel.getByRole('button', { name: '打开安全登录窗口', exact: true })
   await launch.scrollIntoViewIfNeeded()
@@ -199,7 +199,7 @@ test('opening an official login shows a modal immediately without navigation or 
     popups++
   })
   await launch.click()
-  const dialog = panel.getByRole('dialog', { name: 'AtCoder 安全登录窗口', exact: true })
+  const dialog = panel.getByRole('dialog', { name: '洛谷 安全登录窗口', exact: true })
   await expect(dialog).toBeVisible()
   expect(await dialog.evaluate((element) => element.matches(':modal'))).toBeTruthy()
   await expect(dialog.getByRole('status')).toContainText('正在')
@@ -243,13 +243,15 @@ test('rate-limited login displays its reason and waits for an explicit retry', a
     route.fulfill({ json: { status: 'cancelled' } }),
   )
   await page.goto('/')
-  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  const settingsNavigation = page.getByRole('button', { name: '连接与设置', exact: true })
+  await expect(settingsNavigation).toBeVisible()
+  await settingsNavigation.click()
   const panel = page.locator('.platform-action-grid article').filter({
-    has: page.getByRole('heading', { name: 'AtCoder', exact: true }),
+    has: page.getByRole('heading', { name: '洛谷', exact: true }),
   })
   const url = page.url()
   await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
-  const dialog = panel.getByRole('dialog', { name: 'AtCoder 安全登录窗口', exact: true })
+  const dialog = panel.getByRole('dialog', { name: '洛谷 安全登录窗口', exact: true })
   await expect(dialog.getByRole('status')).toContainText('请稍后重新开始浏览器登录')
   const retry = dialog.getByRole('button', { name: /重试打开登录窗口/ })
   await expect(retry).toBeDisabled()
