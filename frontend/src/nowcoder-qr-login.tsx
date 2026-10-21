@@ -14,7 +14,6 @@ type Login = {
 type Props = { handles?: string[]; onBound: () => void | Promise<void> }
 
 export function NowcoderQrLogin({ handles = [], onBound }: Props) {
-  const [consent, setConsent] = useState(false)
   const [expected, setExpected] = useState('')
   const [session, setSession] = useState<Login | null>(null)
   const [busy, setBusy] = useState(false)
@@ -116,7 +115,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
     )
   }
   async function start() {
-    if (!consent || busy) return
+    if (busy) return
     const epoch = ++generation.current
     clearTimer()
     const previous = active.current
@@ -182,17 +181,9 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
           ))}
         </select>
       </label>
-      <label className="nowcoder-qr-consent">
-        <input
-          type="checkbox"
-          checked={consent}
-          disabled={busy || waiting}
-          onChange={(e) => setConsent(e.target.checked)}
-        />
-        我确认由本人微信扫码，并同意将牛客登录会话保存在我当前的 ACM Lab 账户中。
-      </label>
+      <p className="help">点击获取即申请本人扫码登录，验证后保存会话至当前账户。</p>
       <div className="nowcoder-qr-actions">
-        <button disabled={!consent || busy} onClick={() => void start()}>
+        <button disabled={busy} onClick={() => void start()}>
           {busy ? '正在申请二维码…' : session ? '刷新二维码' : '获取微信登录二维码'}
         </button>
         {(busy || waiting) && (

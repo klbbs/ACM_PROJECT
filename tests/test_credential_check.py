@@ -32,7 +32,7 @@ class Session:
  def __exit__(self,*args):pass
  def get(self,url,**kwargs):
   assert url==URLS['codeforces'] and kwargs['allow_redirects'] is False
-  assert kwargs['headers']['User-Agent']==requests.utils.default_user_agent()
+  assert kwargs['headers']['User-Agent'].startswith('Mozilla/5.0')
   return Response(status_code=200,headers={},text='<div class="lang-chooser"><a href="/profile/other">other</a><a href="/logout">exit</a></div><form action="/settings/general"></form>')
 
 def test_mismatch_cache_and_credential_change(monkeypatch):

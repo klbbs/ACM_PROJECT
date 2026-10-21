@@ -1,0 +1,115 @@
+{
+  "transport": "real Chromium / disposable loopback HTTPS",
+  "personal_profiles_used": false,
+  "original_case_count": 10,
+  "total_case_count": 15,
+  "blocked_destination_requests": 0,
+  "results": [
+    {
+      "case": "allowed302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "outside302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 2
+    },
+    {
+      "case": "private307",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 2
+    },
+    {
+      "case": "top_subdomain302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 2
+    },
+    {
+      "case": "second_hop302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "subresource302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "subresource_good",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "embedded_good",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "post307",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "post302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 3
+    },
+    {
+      "case": "oopif_subresource302",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 4
+    },
+    {
+      "case": "blob_worker_guarded",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 4,
+      "worker_compute_message": true,
+      "same_origin_fetch_requests": 1,
+      "outside_fetch_requests": 0,
+      "redirect_start_requests": 1
+    },
+    {
+      "case": "nested_blob_worker_guarded",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 4,
+      "worker_compute_message": true,
+      "same_origin_fetch_requests": 1,
+      "outside_fetch_requests": 0,
+      "redirect_start_requests": 1
+    },
+    {
+      "case": "oopif_blob_worker_guarded",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 5,
+      "worker_compute_message": true,
+      "same_origin_fetch_requests": 1,
+      "outside_fetch_requests": 0,
+      "redirect_start_requests": 1
+    },
+    {
+      "case": "oopif_nested_blob_worker_guarded",
+      "passed": true,
+      "blocked_destination_requests": 0,
+      "fixture_requests": 5,
+      "worker_compute_message": true,
+      "same_origin_fetch_requests": 1,
+      "outside_fetch_requests": 0,
+      "redirect_start_requests": 1
+    }
+  ]
+}

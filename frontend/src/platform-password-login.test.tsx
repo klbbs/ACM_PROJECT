@@ -167,7 +167,7 @@ it('keeps a verified binding visible when refreshing the account list fails', as
   expect(host.querySelector<HTMLInputElement>('input[name="password"]')!.value).toBe('')
 })
 
-it('offers password login only on Codeforces and AtCoder cards', async () => {
+it('offers official browser login on Codeforces, AtCoder and Luogu, and WeChat QR on Nowcoder', async () => {
   vi.mocked(api).mockImplementation(async (path) => {
     if (path === '/platforms')
       return {
@@ -187,15 +187,15 @@ it('offers password login only on Codeforces and AtCoder cards', async () => {
   expect(
     cards.map((card) => [
       card.querySelector('h3')?.textContent,
-      !!card.querySelector('.platform-password-login'),
+      !!card.querySelector('.browser-platform-login'),
     ]),
   ).toEqual([
     ['Codeforces', true],
     ['AtCoder', true],
     ['牛客', false],
-    ['洛谷', false],
+    ['洛谷', true],
   ])
   expect(cards[2].querySelector('.nowcoder-qr-login')).not.toBeNull()
-  expect(cards[0].querySelector('details')?.open).toBe(false)
-  expect(host.textContent).toContain('洛谷目前提供公开资料同步与官方网页交题')
+  expect(cards[0].querySelector('.platform-password-login')).toBeNull()
+  expect(host.textContent).toContain('可以在本站的官方登录窗口绑定 Codeforces、AtCoder、洛谷')
 })

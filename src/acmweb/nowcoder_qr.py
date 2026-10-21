@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .codex_bridge import AIError
 from .credential_check import diagnostics, inspect_identity
 from .cookie_validation import valid_cookie
+from ojcrawler.http import browser_headers
 
 ORIGIN = 'https://ac.nowcoder.com'
 NETWORK = threading.BoundedSemaphore(4)
@@ -33,7 +34,8 @@ class FlowID(BaseModel):
 
 
 def _body(session, url, maximum, **kwargs):
-    with session.get(url, timeout=(5, 12), allow_redirects=False, stream=True, **kwargs) as response:
+    headers = {**browser_headers(), **kwargs.pop('headers', {})}
+    with session.get(url, headers=headers, timeout=(5, 12), allow_redirects=False, stream=True, **kwargs) as response:
         if response.status_code != 200:
             raise ValueError('upstream')
         chunks = []; size = 0

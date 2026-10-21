@@ -143,7 +143,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.17.0',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = FastAPI(title='ACM Lab users',version='0.18.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
 
     def owner_valid(uid, owner):
@@ -156,6 +156,7 @@ def create_multi_app(settings, factory):
         if value:
             value[0].state.nowcoder_qr.clear(owner)
             value[0].state.platform_login.clear(owner)
+            value[0].state.browser_login.clear(owner)
 
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
 
@@ -235,7 +236,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok','version':'0.17.0','mode':'multi-user'}
+        return {'status':'ok','version':'0.18.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -479,6 +480,7 @@ def create_multi_app(settings, factory):
             headers.append((b'authorization',('Bearer '+child.state.internal_token).encode()))
             child.state.nowcoder_qr.owner_valid = lambda owner: owner_valid(user['id'], owner)
             child.state.platform_login.owner_valid = lambda owner: owner_valid(user['id'], owner)
+            child.state.browser_login.owner_valid = lambda owner: owner_valid(user['id'], owner)
             scope = {**request.scope,'headers':headers, 'state': {**request.scope.get('state', {}), 'platform_login_owner': digest(request.cookies.get(COOKIE,''))}}
             return ChildResponse(child,scope,request.receive)
         return ChildResponse(assets,request.scope,request.receive)

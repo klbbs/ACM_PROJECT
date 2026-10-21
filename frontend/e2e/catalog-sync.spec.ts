@@ -98,7 +98,8 @@ test('empty-candidate sync immediately explains progress, partial results and ex
   await panel.getByText('“同步平台题库”怎么用？', { exact: true }).click()
   await expect(panel).toContainText('本操作不获取个人提交记录、不检测 Cookie，也不调用 AI')
   await panel.getByRole('button', { name: '检查平台登录与训练偏好', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '算法平台连接', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '平台信息、登录检测与交题', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '训练偏好', exact: true })).toBeVisible()
 })
 
 test('rejected sync and failed candidate reads have different local errors and retry only reads candidates', async ({

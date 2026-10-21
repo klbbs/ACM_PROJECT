@@ -16,17 +16,6 @@
   min-width: 0;
   margin: 8px 0 14px;
 }
-.nowcoder-qr-consent {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  line-height: 1.6;
-}
-.nowcoder-qr-consent input {
-  flex: 0 0 auto;
-  width: auto;
-  margin-top: 5px;
-}
 .nowcoder-qr-actions {
   display: flex;
   flex-wrap: wrap;

@@ -29,6 +29,7 @@ test('overview replaces standalone analysis and authenticated users can inspect 
     'fixture-user（我）',
   )
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByRole('button', { name: '配置平台账号', exact: true }).click()
   await expect(page.getByRole('heading', { name: '平台信息、登录检测与交题' })).toBeVisible()
   await expect(page.getByRole('button', { name: '同步此平台信息', exact: true })).toHaveCount(4)
 })
@@ -70,6 +71,7 @@ test('newly saved platform account immediately exposes login detection without r
   await page.goto('/')
   await page.request.put('/api/accounts', { data: { items: [] } })
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByRole('button', { name: '配置平台账号', exact: true }).click()
   await page.getByLabel('用户名 / UID / 主页链接', { exact: true }).fill('cookie-test-user')
   await page.getByRole('button', { name: '保存平台账号', exact: true }).click()
   await page.getByRole('button', { name: '检测登录状态', exact: true }).click()

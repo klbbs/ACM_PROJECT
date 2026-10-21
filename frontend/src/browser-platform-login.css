@@ -1,0 +1,64 @@
+.browser-platform-login {
+  min-width: 0;
+  margin: 14px 0;
+  overflow-wrap: anywhere;
+}
+.browser-platform-login input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 8px 0 12px;
+}
+.browser-platform-login button {
+  white-space: normal;
+}
+.browser-login-start,
+.browser-login-session,
+.browser-login-session form {
+  min-width: 0;
+}
+.browser-login-start > label,
+.browser-login-session form > label {
+  display: block;
+}
+.browser-login-viewport {
+  overflow: auto;
+  max-width: 100%;
+  max-height: 74vh;
+  border: 1px solid #dce4ed;
+  border-radius: 10px;
+  background: #fff;
+  margin: 12px 0 16px;
+  overscroll-behavior: contain;
+}
+.browser-login-viewport:focus-visible {
+  outline: 2px solid #8c72dc;
+  outline-offset: 2px;
+}
+.browser-login-viewport img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  cursor: crosshair;
+}
+.browser-login-viewport img.zoomed {
+  max-width: none;
+}
+.browser-login-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+@media (max-width: 600px) {
+  .browser-login-controls > button {
+    flex: 1 1 auto;
+  }
+}
+
+/* An active official page uses the full platform row instead of a narrow account card. */
+.platform-action-grid > article:has(.browser-login-session) {
+  grid-column: 1 / -1;
+}

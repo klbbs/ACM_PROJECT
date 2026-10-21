@@ -77,6 +77,47 @@ def nowcoder_identity(soup):
     return 'unknown',None
 
 
+def luogu_identity(soup):
+    """Read the official Lentille session envelope, never the viewed profile.
+
+    Current Columba's currentUser is registry.user, populated from the root of
+    #lentille-context. Older pages explicitly named that field currentUser.
+    data.user belongs to page data and is deliberately never an identity source.
+    """
+    scripts=soup.find_all('script',id='lentille-context')
+    if len(scripts)!=1:return 'unknown',None
+    script=scripts[0]
+    if script.get('src') or script.get('type','').casefold() not in {'','application/json'}:return 'unknown',None
+    if script.find_parent(['template','noscript','textarea','title','style','xmp','iframe']):return 'unknown',None
+
+    def unique_object(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise ValueError('Ambiguous JSON field')
+            result[key]=value
+        return result
+
+    try:context=json.loads(script.get_text(),object_pairs_hook=unique_object)
+    except (ValueError,TypeError):return 'unknown',None
+    if not isinstance(context,dict):return 'unknown',None
+    users=[context[key] for key in ('user','currentUser') if key in context]
+    data=context.get('data')
+    if isinstance(data,dict) and 'currentUser' in data:users.append(data['currentUser'])
+    if not users:return 'unknown',None
+    identities=[]
+    for user in users:
+        if user is None:
+            identities.append(None)
+            continue
+        if not isinstance(user,dict):return 'unknown',None
+        uid=user.get('uid')
+        if type(uid) not in (int,str) or not re.fullmatch(r'[1-9][0-9]*',str(uid)):return 'unknown',None
+        identities.append(str(uid))
+    # Conflicting new/legacy fields cannot choose which account is current.
+    if len(set(identities))!=1:return 'unknown',None
+    return ('expired',None) if identities[0] is None else ('authenticated',identities[0])
+
+
 def inspect_identity(platform, html):
     """Return only identity evidence or a status, never page/CSRF/cookie contents."""
     soup=BeautifulSoup(html,'html.parser')
@@ -99,19 +140,7 @@ def inspect_identity(platform, html):
         if not logout and login:return 'expired',None
         return 'unknown',None
     if platform=='luogu':
-        script=soup.find('script',id='lentille-context')
-        if script:
-            try: data=json.loads(script.get_text())
-            except (ValueError,TypeError):return 'unknown',None
-            if isinstance(data,dict):
-                # data.user on a public profile is the viewed user, not the session.
-                containers=[data,data.get('data',{})]
-                for container in containers:
-                    if not isinstance(container,dict) or 'currentUser' not in container:continue
-                    user=container['currentUser']
-                    if user is None:return 'expired',None
-                    if isinstance(user,dict) and str(user.get('uid','')).isdigit():return 'authenticated',str(user['uid'])
-        return 'unknown',None
+        return luogu_identity(soup)
     if platform=='nowcoder':
         status,identity=nowcoder_identity(soup)
         if status!='unknown':return status,identity
@@ -231,7 +260,8 @@ class CredentialChecks:
             if not SLOTS.acquire(blocking=False):raise HTTPException(429,'平台检测繁忙，请稍后再试')
             try:
                 with requests.Session() as session:
-                    with session.get(URLS[platform],headers={'Cookie':cookie,'User-Agent':requests.utils.default_user_agent(),'Accept-Language':'en,zh-CN;q=0.8'},timeout=12,allow_redirects=False,stream=True) as response:
+                    from ojcrawler.http import browser_headers
+                    with session.get(URLS[platform],headers={**browser_headers(), 'Cookie':cookie},timeout=12,allow_redirects=False,stream=True) as response:
                         status=response.status_code
                         headers=requests.structures.CaseInsensitiveDict(response.headers)
                         body=bytearray()

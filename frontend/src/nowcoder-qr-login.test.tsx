@@ -27,7 +27,6 @@ async function click(text: string) {
   )
 }
 async function begin() {
-  await act(async () => host.querySelector<HTMLInputElement>('input')!.click())
   await click('获取微信登录二维码')
 }
 beforeEach(() => {
@@ -42,9 +41,11 @@ afterEach(async () => {
   host.remove()
   vi.useRealTimers()
 })
-it('requires explicit consent, supports existing UID, and binds only after real verified status', async () => {
+it('starts on the explicit action, explains session saving, supports existing UID, and binds only verified status', async () => {
   const onBound = await render()
-  expect(host.querySelector('button')?.disabled).toBe(true)
+  expect(host.querySelector('button')?.disabled).toBe(false)
+  expect(host.querySelector('input[type="checkbox"]')).toBeNull()
+  expect(host.textContent).toContain('点击获取即申请本人扫码登录，验证后保存会话至当前账户')
   expect(api).not.toHaveBeenCalled()
   await act(async () => {
     const select = host.querySelector('select')!

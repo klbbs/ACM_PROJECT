@@ -1,0 +1,8 @@
+# Optional Chromium image; build/review locally, deployment remains operator controlled.
+services:
+  web:
+    build:
+      target: "${ACM_BROWSER_IMAGE_TARGET:-server-browser}"
+    security_opt:
+      - seccomp=./deploy/chromium-seccomp.json
+    shm_size: 256mb

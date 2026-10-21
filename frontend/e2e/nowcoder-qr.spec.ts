@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 // Synthetic API acceptance only; this does not assert that a real WeChat user scanned.
 const qr =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='
-test('Nowcoder QR consent, pending verification and account refresh work without an existing account', async ({
+test('Nowcoder QR explicit action, pending verification and account refresh work without an existing account', async ({
   page,
 }) => {
   let verified = false
@@ -52,8 +52,9 @@ test('Nowcoder QR consent, pending verification and account refresh work without
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
   const panel = page.getByRole('region', { name: '牛客微信扫码登录' })
   await expect(panel).toHaveCount(1)
-  await expect(panel.getByRole('button', { name: '获取微信登录二维码' })).toBeDisabled()
-  await panel.getByRole('checkbox').check()
+  await expect(panel.getByRole('button', { name: '获取微信登录二维码' })).toBeEnabled()
+  await expect(panel.getByRole('checkbox')).toHaveCount(0)
+  await expect(panel).toContainText('点击获取即申请本人扫码登录，验证后保存会话至当前账户')
   await panel.getByRole('button', { name: '获取微信登录二维码' }).click()
   await expect(panel.getByRole('img')).toBeVisible()
   await expect(panel.getByRole('status')).toContainText('正在验证牛客身份', { timeout: 8000 })
@@ -88,9 +89,11 @@ test('mobile QR panel cancels with no overflow and never reports cancellation as
   await page.goto('/')
   // The compact navigation toggle is explicit on small screens.
   await page.getByRole('button', { name: '打开菜单', exact: true }).click()
-  await page.getByRole('navigation').getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: '连接与设置', exact: true })
+    .click()
   const panel = page.getByRole('region', { name: '牛客微信扫码登录' })
-  await panel.getByRole('checkbox').check()
   await panel.getByRole('button', { name: '获取微信登录二维码' }).click()
   await expect(panel.getByRole('img')).toBeVisible()
   expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBeTruthy()

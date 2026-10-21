@@ -25,6 +25,7 @@ test('Cookie save, masked editing, replacement checks and explicit clearing form
   })
   await page.goto('/')
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByRole('button', { name: '配置平台账号', exact: true }).click()
   const editor = page.locator('.account-editor')
   const accounts = page.locator('#platform-accounts')
   await accounts.getByRole('button', { name: '编辑', exact: true }).click()
@@ -54,22 +55,30 @@ test('Cookie save, masked editing, replacement checks and explicit clearing form
   expect(savedChecks.length).toBe(2)
 })
 
-test('password attempt is explicit, clears the password and offers only official fallback links', async ({
+// Synthetic screenshots and responses exercise the UI; no real platform login is claimed.
+const browserImage =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='
+const browserSession = {
+  login_id: 'synthetic-browser',
+  status: 'human_required',
+  platform: 'atcoder',
+  width: 1000,
+  height: 720,
+  expires_in: 90,
+}
+
+test('browser login reports unavailable honestly and keeps manual Cookie binding available', async ({
   page,
 }) => {
-  await page.route('**/api/platform-login/password', async (route) => {
-    const payload = route.request().postDataJSON()
-    expect(payload).toEqual({
+  await page.route('**/api/platform-login/browser/start', async (route) => {
+    expect(route.request().postDataJSON()).toEqual({
       platform: 'atcoder',
-      username: 'fixture',
-      password: 'synthetic-password',
       expected_handle: 'fixture',
     })
     await route.fulfill({
       json: {
-        status: 'blocked',
-        reason: 'browser_challenge',
-        message: '合成平台要求浏览器验证',
+        status: 'unavailable',
+        message: '合成环境没有浏览器运行时',
         official_url: 'https://unsafe.invalid/',
       },
     })
@@ -79,25 +88,41 @@ test('password attempt is explicit, clears the password and offers only official
   const panel = page
     .locator('.platform-action-grid article')
     .filter({ has: page.getByRole('heading', { name: 'AtCoder', exact: true }) })
-  await panel.locator('summary').click()
-  await panel.getByLabel('账号（用户名）', { exact: true }).fill('fixture')
-  await panel.getByLabel('密码', { exact: true }).fill('synthetic-password')
-  await panel.getByLabel('绑定目标用户名（可选）', { exact: true }).fill('fixture')
-  await panel.getByRole('button', { name: '尝试登录并绑定' }).click()
-  await expect(panel.getByRole('status')).toContainText('当前服务器尚未验证登录')
-  await expect(panel.getByLabel('密码', { exact: true })).toHaveValue('')
-  await expect(panel.getByRole('link', { name: '打开 AtCoder 官方登录 ↗' })).toHaveAttribute(
-    'href',
-    'https://atcoder.jp/login',
-  )
-  expect(await panel.locator('a[href*="unsafe"]').count()).toBe(0)
+  await panel.getByLabel('绑定目标 handle / 用户名（可选）').fill('fixture')
+  await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('尚未绑定账号')
+  await expect(panel.getByRole('alert')).toContainText('合成环境没有浏览器运行时')
+  await expect(panel.locator('img')).toHaveCount(0)
+  await expect(panel.locator('a[href*="unsafe"]')).toHaveCount(0)
+  await page.getByRole('button', { name: '配置平台账号', exact: true }).click()
+  await expect(page.getByLabel('Cookie（可选）', { exact: true })).toBeVisible()
 })
 
-test('expanded password login stays inside a mobile viewport', async ({ page }) => {
+test('mobile official browser window expands, clears sent text and cancels without overflow or false success', async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.route('**/api/platform-login/browser/start', (route) =>
+    route.fulfill({ json: browserSession }),
+  )
+  await page.route('**/api/platform-login/browser/image', (route) =>
+    route.fulfill({ json: { image: browserImage } }),
+  )
+  await page.route('**/api/platform-login/browser/input', (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      login_id: 'synthetic-browser',
+      kind: 'text',
+      text: 'synthetic-password',
+    })
+    return route.fulfill({ json: browserSession })
+  })
+  await page.route('**/api/platform-login/browser/confirm', (route) =>
+    route.fulfill({ json: { ...browserSession, message: '合成页面尚未验证官方身份' } }),
+  )
+  await page.route('**/api/platform-login/browser/cancel', (route) =>
+    route.fulfill({ json: { status: 'cancelled' } }),
+  )
   await page.goto('/')
-  const notice = page.getByRole('button', { name: '已读以上更新', exact: true })
-  if (await notice.count()) await notice.click()
   await page.getByRole('button', { name: '打开菜单', exact: true }).click()
   await page
     .getByRole('navigation')
@@ -106,14 +131,28 @@ test('expanded password login stays inside a mobile viewport', async ({ page }) 
   const panel = page
     .locator('.platform-action-grid article')
     .filter({ has: page.getByRole('heading', { name: 'AtCoder', exact: true }) })
-  await panel.locator('summary').click()
-  await expect(panel.getByLabel('账号（用户名）', { exact: true })).toBeVisible()
-  const widths = await page.evaluate(() => ({
-    viewport: innerWidth,
-    document: document.documentElement.scrollWidth,
-  }))
-  expect(widths.document).toBeLessThanOrEqual(widths.viewport)
-  const box = await panel.getByLabel('密码', { exact: true }).boundingBox()
-  expect(box!.width).toBeGreaterThan(180)
-  expect(box!.x + box!.width).toBeLessThanOrEqual(390)
+  await panel.getByRole('button', { name: '打开安全登录窗口', exact: true }).click()
+  await expect(panel.getByRole('img')).toBeVisible()
+  const input = panel.getByLabel('向选中位置输入', { exact: true })
+  await expect(input).toHaveAttribute('type', 'password')
+  await input.fill('synthetic-password')
+  await panel.getByRole('button', { name: '发送文字', exact: true }).click()
+  await expect(input).toHaveValue('')
+  await panel.getByRole('button', { name: '检测登录并绑定', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('尚未验证官方身份')
+  await expect(panel.getByRole('status')).not.toContainText('已绑定')
+  await panel.getByRole('button', { name: '放大登录页面', exact: true }).click()
+  expect(
+    await panel
+      .locator('.browser-login-viewport')
+      .evaluate((element) => element.scrollWidth > element.clientWidth),
+  ).toBeTruthy()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
+  await panel.getByRole('button', { name: '取消安全登录', exact: true }).click()
+  await expect(panel.getByRole('img')).toHaveCount(0)
+  await expect(panel.getByRole('status')).toContainText('已取消')
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('data:image/png')
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
+    'synthetic-password',
+  )
 })

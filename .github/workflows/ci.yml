@@ -37,7 +37,13 @@ jobs:
           name: editor-browser-test-results
           path: frontend/test-results/
       - run: python scripts/package.py --skip-build
-      - run: python scripts/verify_release.py releases/acm-lab-0.16.0.zip
+      - name: Verify versioned deployment archive
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          from scripts.verify_release import verify
+          verify(f"releases/acm-lab-{version('oj-account-crawler')}.zip")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: acm-lab-deployment
@@ -46,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [runtime, server-codex]
+        target: [runtime, server-codex, server-browser, server-browser-codex]
     steps:
       - uses: actions/checkout@v4
       - run: docker build --target ${{ matrix.target }} -t acm-lab:ci .
@@ -58,5 +64,14 @@ jobs:
           --tmpfs /app/data:uid=10001,gid=10001,mode=0700
           -e ACM_ACCESS_TOKEN=ci-only-setup-token-not-production
           acm-lab:ci python scripts/container_smoke.py
-      - if: matrix.target == 'server-codex'
+      - if: contains(matrix.target, 'codex')
         run: docker run --rm --entrypoint codex acm-lab:ci --version
+      - name: Verify optional browser runtime with sandbox
+        if: contains(matrix.target, 'browser')
+        run: >-
+          docker run --rm --read-only --init
+          --security-opt no-new-privileges:true
+          --security-opt seccomp=deploy/chromium-seccomp.json
+          --cap-drop ALL --shm-size=256m
+          --tmpfs /tmp:size=268435456,mode=1777
+          --entrypoint python acm-lab:ci scripts/browser_runtime_smoke.py

@@ -1,0 +1,25 @@
+{
+  "scope": "existing supplied Cookie to real Chromium; not a new password login",
+  "results": [
+    {
+      "platform": "codeforces",
+      "source": "existing_local_config",
+      "new_password_login": false,
+      "status": "human_required",
+      "reason": "identity_unconfirmed",
+      "stored_accounts": 0,
+      "has_cookie": false,
+      "expected_identity_matches": false
+    },
+    {
+      "platform": "atcoder",
+      "source": "existing_local_config",
+      "new_password_login": false,
+      "status": "authenticated",
+      "reason": "identity_verified",
+      "stored_accounts": 1,
+      "has_cookie": true,
+      "expected_identity_matches": true
+    }
+  ]
+}

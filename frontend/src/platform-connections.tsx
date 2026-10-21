@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, date, names } from './api'
 import './platform-connections.css'
 import { NowcoderQrLogin } from './nowcoder-qr-login'
-import { PlatformPasswordLogin } from './platform-password-login'
+import { BrowserPlatformLogin } from './browser-platform-login'
 
 // These links are controlled locally, never copied from challenge HTML or response URLs.
 const officialPages: Record<string, string> = {
@@ -124,16 +124,16 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
     <section className="card settings-card">
       <h2>平台信息、登录检测与交题</h2>
       <p className="help">
-        Codeforces、牛客和 AtCoder 保存 Cookie 后，请逐个账号检测。
-        洛谷目前提供公开资料同步与官方网页交题。公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
+        可以在本站的官方登录窗口绑定 Codeforces、AtCoder、洛谷，牛客支持微信扫码；也可以手动保存
+        Cookie 并检测。 公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
         本站目前通过官方页面交题，不支持用 Cookie 自动代提交。官方页仍需在你当前浏览器中登录。
       </p>
       <div className="platform-action-grid">
         {items.map((p) => (
           <article key={p.platform}>
             <h3>{names[p.platform] || p.platform}</h3>
-            {(p.platform === 'codeforces' || p.platform === 'atcoder') && (
-              <PlatformPasswordLogin platform={p.platform} onBound={onBound || (() => {})} />
+            {['codeforces', 'atcoder', 'luogu'].includes(p.platform) && (
+              <BrowserPlatformLogin platform={p.platform} onBound={onBound || (() => {})} />
             )}
             {p.platform === 'nowcoder' && (
               <NowcoderQrLogin
@@ -147,7 +147,11 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
                 return (
                   <div key={a.handle} className="platform-account-check">
                     <p>
-                      <strong>{a.handle}</strong> · 公开资料同步
+                      <strong>{a.handle}</strong> ·{' '}
+                      {checks[key]?.status === 'authenticated' &&
+                      checks[key]?.login_verified === true
+                        ? '已验证登录'
+                        : '公开资料同步'}
                     </p>
                     <p className="help">
                       使用数字 UID

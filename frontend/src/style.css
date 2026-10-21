@@ -3766,3 +3766,86 @@ textarea:focus {
 .social-heading {
   display: none;
 }
+
+/* Settings disclosures preserve mounted forms while making the common path easy to scan. */
+.settings-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.settings-section {
+  border: 1px solid var(--border, #e5e8ef);
+  border-radius: 14px;
+  background: var(--card, #fff);
+  margin-bottom: 18px;
+  scroll-margin-top: 24px;
+}
+.settings-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 21px 24px;
+  cursor: pointer;
+  list-style: none;
+}
+.settings-section > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-section > summary h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+.settings-section-description {
+  color: #7c8497;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.settings-section > summary > svg {
+  flex-shrink: 0;
+  transition: transform 160ms ease;
+}
+.settings-section[open] > summary > svg {
+  transform: rotate(180deg);
+}
+.settings-section > summary:focus-visible {
+  outline: 2px solid #8c72dc;
+  outline-offset: 3px;
+  border-radius: 12px;
+}
+.settings-section-body {
+  padding: 0 18px 18px;
+}
+.settings-section-body > :last-child,
+.settings-section-body > .settings-grid {
+  margin-bottom: 0;
+}
+.settings-section-body .settings-guide,
+.settings-manual {
+  scroll-margin-top: 24px;
+}
+.settings-manual > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-manual[open] > summary {
+  margin-bottom: 24px;
+}
+.settings-advanced > label,
+.settings-advanced > details {
+  display: block;
+  margin-top: 18px;
+}
+@media (max-width: 640px) {
+  .settings-section > summary {
+    padding: 18px;
+  }
+  .settings-section-body {
+    padding: 0 10px 10px;
+  }
+  .settings-shortcuts button {
+    flex: 1 1 140px;
+  }
+}

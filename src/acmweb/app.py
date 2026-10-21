@@ -93,11 +93,12 @@ def create_app(settings=None):
         yield
         app.state.nowcoder_qr.close()
         app.state.platform_login.close()
+        await app.state.browser_login.aclose()
         await jobs.close()
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.17.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.18.0",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
     register_credential_checks(app,account_config)
     from .nowcoder_qr import register as register_nowcoder_qr
     register_nowcoder_qr(app, account_config, jobs)
@@ -108,6 +109,8 @@ def create_app(settings=None):
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
     from .platform_login import register as register_platform_login
     register_platform_login(app, account_config)
+    from .browser_login_routes import register as register_browser_login
+    register_browser_login(app, account_config)
     if not settings.access_token:
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
     session_value=hmac.new((settings.access_token or secrets.token_urlsafe(32)).encode(),b"acm-lab-session",hashlib.sha256).hexdigest()
@@ -144,7 +147,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.17.0"}
+    def health():return {"status":"ok","version":"0.18.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -164,6 +167,7 @@ def create_app(settings=None):
     def logout(response:Response):
         app.state.nowcoder_qr.clear()
         app.state.platform_login.clear()
+        app.state.browser_login.clear()
         response.delete_cookie("acm_session");return {"ok":True}
 
     @app.get("/api/overview")

@@ -12,6 +12,13 @@ log = logging.getLogger(__name__)
 _LAST_REQUEST = defaultdict(float)
 _HOST_LOCKS = defaultdict(threading.Lock)
 
+# Ordinary desktop request headers improve content negotiation. This remains
+# HTTP transport, not a browser TLS fingerprint or a way to solve challenges.
+def browser_headers():
+    return {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+
 
 class Client:
     def __init__(self, *, interval=2.1, timeout=30, retries=3, cookie=None, cookie_host=None):
@@ -19,8 +26,7 @@ class Client:
         self.timeout = timeout
         self.retries = retries
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; OJAccountCrawler/0.1)",
-                                     "Accept-Language": "zh-CN,en;q=0.8"})
+        self.session.headers.update(browser_headers())
         # Cookie is scoped to this adapter's client; never stored in collected data.
         self.cookie = cookie
         self.cookie_host = cookie_host

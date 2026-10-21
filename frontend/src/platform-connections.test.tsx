@@ -274,8 +274,10 @@ it.each([
     const card = host.querySelector('article')!
     expect(card.textContent).toContain('42 · 公开资料同步')
     expect(card.textContent).toContain('洛谷官方网页交题，再同步记录')
+    const publicAccount = card.querySelector('.platform-account-check')!
+    expect(card.querySelector('.browser-platform-login')).not.toBeNull()
     for (const hidden of ['访问限制', '验证码', '重新检测', '检测登录状态', 'HTTP 418', '旧的', '已验证登录']) {
-      expect(card.textContent).not.toContain(hidden)
+      expect(publicAccount.textContent).not.toContain(hidden)
     }
     expect(card.querySelector('.platform-browser-action')).toBeNull()
     expect(card.innerHTML).not.toContain('untrusted.example')

@@ -47,6 +47,9 @@ import { SocialPage } from './social'
 import { nav, navigationGroups, availableNavigation, type Page } from './navigation'
 import { MainDirectory } from './main-directory'
 import { CatalogSyncPanel } from './catalog-sync'
+import { SettingsSection, revealSettingsSection } from './settings-section'
+import { RetainedPage, usePageMotion } from './page-motion'
+import { useSettingsDraft } from './settings-draft'
 
 type Row = Record<string, any>
 const statusNames: Record<string, string> = {
@@ -151,6 +154,7 @@ function App() {
     [mobile, setMobile] = useState(false),
     [days, setDays] = useState(30),
     [platform, setPlatform] = useState('')
+  const pageSurface = usePageMotion(page)
   const setPage = (next: Page) => {
     if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
       window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
@@ -585,7 +589,7 @@ function App() {
             )}
           </div>
         </header>
-        <div className="content">
+        <div className="content" ref={pageSurface}>
           <AnnouncementBanner state={announcements} onOpen={() => setPage('announcements')} />
           {error && (
             <div className="alert" role="alert">
@@ -1073,7 +1077,7 @@ function App() {
           {page === 'admin' && auth.user?.role === 'admin' && (
             <AdminPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}
-          {page === 'settings' && (
+          <RetainedPage active={page === 'settings'}>
             <SettingsPage
               guideOpen={guideOpen}
               setGuideOpen={setGuideOpen}
@@ -1087,7 +1091,7 @@ function App() {
               run={run}
               model={model}
             />
-          )}
+          </RetainedPage>
           <section className="jobs-strip">
             <div className="jobs-title">
               <Activity size={16} />
@@ -1116,7 +1120,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.17.0</span>
+              数据有边界，进步有方向。 <span className="version">v0.18.0</span>
             </span>
           </footer>
         </div>
@@ -1920,16 +1924,21 @@ function SettingsPage({
 }: any) {
   const guideRef = useRef<HTMLDetailsElement>(null)
   useEffect(() => {
-    if (guideRequest && guideOpen) guideRef.current?.scrollIntoView({ block: 'start' })
+    if (guideRequest && guideOpen) revealSettingsSection('platform-guide')
   }, [guideRequest])
-  const [config, setConfig] = useState<Row>({
-      base_url: 'https://api.openai.com/v1',
-      protocol: 'responses',
-      model: '',
-      has_key: false,
-    }),
-    [key, setKey] = useState(''),
-    [saving, setSaving] = useState(false)
+  const configDraft = useSettingsDraft<Row>({
+    base_url: 'https://api.openai.com/v1',
+    protocol: 'responses',
+    model: '',
+    has_key: false,
+  })
+  const { value: config, setValue: setConfig } = configDraft
+  const [key, setKeyRaw] = useState('')
+  const setKey = (value: string) => {
+    configDraft.markDirty()
+    setKeyRaw(value)
+  }
+  const [saving, setSaving] = useState(false)
   const [presets, setPresets] = useState<Row[]>([])
   const [apiModels, setApiModels] = useState<Row[]>([])
   const [apiModelNote, setApiModelNote] = useState('')
@@ -1943,7 +1952,7 @@ function SettingsPage({
   const [account, setAccount] = useState<Row | null>(null),
     [login, setLogin] = useState<Row | null>(null),
     [connecting, setConnecting] = useState(false)
-  const [training, setTraining] = useState<Row>({
+  const trainingDraft = useSettingsDraft<Row>({
     goal_rating: 2000,
     minimum: 1000,
     maximum: 1600,
@@ -1952,14 +1961,17 @@ function SettingsPage({
     avoid_tags: [],
     prefer_recent: true,
   })
+  const { value: training, setValue: setTraining } = trainingDraft
   const [accounts, setAccounts] = useState<Row[]>([])
   const [accountRevision, setAccountRevision] = useState(0)
   useEffect(() => {
+    const trainingRefresh = trainingDraft.beginRefresh()
+    const configRefresh = configDraft.beginRefresh()
     api('/training')
-      .then(setTraining)
+      .then((value) => trainingDraft.refresh(value, trainingRefresh))
       .catch((e) => onError(e.message))
     api('/ai/settings')
-      .then(setConfig)
+      .then((value) => configDraft.refresh(value, configRefresh))
       .catch((e) => onError(e.message))
     api('/accounts')
       .then((d) => setAccounts(d.items))
@@ -2066,6 +2078,7 @@ function SettingsPage({
     return () => clearInterval(timer)
   }, [login])
   const save = async (clearKey = false) => {
+    const savedVersion = configDraft.getVersion()
     setSaving(true)
     try {
       const payload: Row = {
@@ -2083,13 +2096,19 @@ function SettingsPage({
       if (clearKey) payload.api_key = ''
       else if (key) payload.api_key = key
       const saved = await api('/ai/settings', 'PUT', payload)
-      setConfig(saved)
-      setKey('')
+      const committed = configDraft.commit(saved, savedVersion)
+      if (committed) setKeyRaw('')
       window.dispatchEvent(
         new CustomEvent('acm:ai-config-changed', { detail: { model: saved.model } }),
       )
-      onNotice(clearKey ? '当前 API 地址的密钥已清除' : 'AI API 配置已保存，密钥仅保存在服务端')
-      return true
+      onNotice(
+        !committed
+          ? '已保存刚才提交的 API 配置；之后的新修改仍保留，请再次保存。'
+          : clearKey
+            ? '当前 API 地址的密钥已清除'
+            : 'AI API 配置已保存，密钥仅保存在服务端',
+      )
+      return committed
     } catch (e: any) {
       onError(e.message)
       return false
@@ -2100,744 +2119,775 @@ function SettingsPage({
   return (
     <>
       <div className="settings-shortcuts">
-        <button
-          className="secondary"
-          onClick={() =>
-            document.getElementById('platform-accounts')?.scrollIntoView({ block: 'start' })
-          }
-        >
+        <button className="secondary" onClick={() => revealSettingsSection('platform-accounts')}>
           配置平台账号
         </button>
         <button
           className="secondary"
           onClick={() => {
             setGuideOpen(true)
-            guideRef.current?.scrollIntoView({ block: 'start' })
+            revealSettingsSection('platform-guide')
           }}
         >
           安装油猴脚本与绑定教程
         </button>
+        <button className="secondary" onClick={() => revealSettingsSection('settings-ai')}>
+          配置 AI
+        </button>
+        <button className="secondary" onClick={() => revealSettingsSection('settings-training')}>
+          训练偏好
+        </button>
       </div>
-      <details
-        className="settings-guide"
-        ref={guideRef}
-        open={guideOpen}
-        onToggle={(e) => setGuideOpen(e.currentTarget.open)}
+      <SettingsSection
+        id="settings-platform"
+        title="平台连接"
+        description="登录算法平台、检测连接并同步账号。"
+        defaultOpen
       >
-        <summary>平台绑定教程与油猴脚本</summary>
-        <ExtensionGuide />
-        <PlatformGuide />
-      </details>
-      <div className="settings-grid">
-        <section className="card settings-card">
+        <PlatformConnections
+          revision={`${revision}:${accountRevision}`}
+          onBound={async () => {
+            const refreshed = await api('/accounts')
+            setAccounts(refreshed.items)
+            setAccountRevision((value) => value + 1)
+            onNotice('平台登录已验证，账号列表已刷新')
+          }}
+          run={run}
+          onError={onError}
+        />
+        <details className="card settings-card settings-manual" id="platform-accounts">
+          <summary>手动配置账号与 Cookie</summary>
           <div className="card-heading">
             <div>
               <h2>
                 <span className="inline">
-                  <KeyRound size={19} />
-                  AI API 接入
+                  <Database size={19} />
+                  算法平台连接
                 </span>
               </h2>
-              <p>
-                选择提供方并填写 Key，点击“保存并读取模型列表”，再从下拉栏选择模型并保存。
-                连接测试会实际调用模型并按提供方规则计费。
-              </p>
+              <p>填写用户名、数字 UID 或个人主页链接即可；支持无桌面服务器，保存后立即生效。</p>
             </div>
-            <span className={`badge ${config.has_key ? 'success' : 'neutral'}`}>
-              {config.has_key ? '已配置' : '未配置'}
-            </span>
-          </div>
-          <label>
-            模型提供方
-            <select
-              aria-label="模型提供方"
-              value={config.vendor || 'custom'}
-              onChange={(e) => {
-                const preset = presets.find((p) => p.id === e.target.value)
-                if (!preset) return
-                setKey('')
-                setApiModels([])
-                setApiModelNote('')
-                setApiModelSource('')
-                setConfig({
-                  ...config,
-                  vendor: preset.id,
-                  base_url: preset.base_url,
-                  protocol: preset.protocol,
-                  model: '',
-                  has_key: false,
-                  thinking: 'auto',
-                  reasoning_effort: 'auto',
-                  output_mode: 'auto',
-                  temperature: null,
-                })
-              }}
-            >
-              {presets.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.allowed ? '' : '（需管理员批准域名）'}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="help">
-            密钥按 API 地址分别保存；切换提供方不会把旧密钥发送给新地址。区域和 Key 必须匹配。Gemini
-            使用官方兼容接口；智谱按量 API 与 Coding Plan 地址不同。
-          </p>
-          {presets.find((p) => p.id === config.vendor)?.docs && (
-            <a
-              href={presets.find((p) => p.id === config.vendor)?.docs}
-              target="_blank"
-              rel="noreferrer"
-            >
-              提供方官方接入文档 ↗
-            </a>
-          )}
-          <label>
-            API 地址
-            <input
-              value={config.base_url}
-              onChange={(e) => {
-                setConfig({ ...config, base_url: e.target.value, has_key: false })
-                setKey('')
-                setApiModels([])
-                setApiModelNote('')
-                setApiModelSource('')
-              }}
-              placeholder="https://api.openai.com/v1"
-              type="url"
-            />
-          </label>
-          <label>
-            接入协议
-            <select
-              value={config.protocol}
-              onChange={(e) =>
-                setConfig({
-                  ...config,
-                  protocol: e.target.value,
-                  thinking: 'auto',
-                  reasoning_effort: 'auto',
-                  output_mode: 'auto',
-                })
-              }
-            >
-              <option value="responses">Responses API · OpenAI 官方</option>
-              <option value="chat">Chat Completions · 兼容提供方</option>
-              <option value="anthropic">Claude 原生 Messages</option>
-            </select>
-          </label>
-          <label>
-            API Key
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={key}
-              onChange={(e) => {
-                setKey(e.target.value)
-                setApiModels([])
-                setApiModelNote('')
-                setApiModelSource('')
-              }}
-              placeholder={config.has_key ? '已保存；留空保持原密钥' : '输入提供方的 API Key'}
-            />
-          </label>
-          <p className="help">
-            <ShieldCheck size={13} />
-            密钥不会返回浏览器，不会进入 Git 或 AI 提示词。
-          </p>
-          <label>
-            默认模型
-            <select
-              aria-label="默认模型 ID"
-              value={config.model || ''}
-              onChange={(e) => setConfig({ ...config, model: e.target.value })}
-            >
-              <option value="">先保存 Key 并读取模型</option>
-              {apiModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {apiModelSource === 'manual' ? '未验证 · ' : ''}
-                  {m.name || m.id}
-                </option>
-              ))}
-              {config.model && !apiModels.some((m) => m.id === config.model) && (
-                <option value={config.model}>{config.model}（当前填写；未验证）</option>
+            <Button
+              className="secondary"
+              loading={jobs.some(
+                (j: Row) => j.kind === 'crawl' && ['running', 'queued'].includes(j.status),
               )}
-            </select>
-          </label>
-          <details>
-            <summary>目录未包含可用模型？手动填写模型 ID</summary>
-            <label>
-              手动模型 ID
-              <input
-                aria-label="手动模型 ID"
-                value={config.model || ''}
-                onChange={(e) => setConfig({ ...config, model: e.target.value })}
-                maxLength={150}
-                placeholder="填写服务商提供的准确模型 ID；保存后可测试"
-              />
-            </label>
-          </details>
-          <Button
-            className="text-button"
-            loading={readingModels}
-            disabled={saving}
-            onClick={async () => {
-              setReadingModels(true)
-              try {
-                if (!(await save())) return
-                setApiModels([])
-                setApiModelSource('')
-                setApiModelNote('正在向当前提供方读取模型目录…')
-                const data = await api('/ai/models?provider=api')
-                setApiModels(data.items)
-                setApiModelNote(data.note)
-                setApiModelSource(data.source || 'remote')
-                if (!data.items.some((m: Row) => m.id === config.model)) {
-                  const nextModel = data.default_model || data.items[0]?.id || ''
-                  setConfig((current) => ({ ...current, model: nextModel }))
-                }
-              } catch (e: any) {
-                setApiModels([])
-                setApiModelSource('')
-                setApiModelNote('读取失败；请检查提供方、Key、API 地址和网络后重试。')
-                onError(e.message)
-              } finally {
-                setReadingModels(false)
-              }
-            }}
-          >
-            保存并读取模型列表
-          </Button>
-          {apiModelNote && (
-            <p className="help" role="status">
-              {apiModels.length} 个模型；{apiModelNote}
-            </p>
-          )}
-          <label>
-            结构化输出
-            <select
-              aria-label="结构化输出"
-              value={config.output_mode || 'auto'}
-              onChange={(e) => setConfig({ ...config, output_mode: e.target.value })}
+              onClick={() => run('/crawl')}
             >
-              <option value="auto">按协议默认</option>
-              <option value="schema">JSON Schema（须模型支持）</option>
-              <option value="json" disabled={config.protocol === 'anthropic'}>
-                JSON 对象
-              </option>
-              <option value="prompt">仅提示约束（仍严格校验结果）</option>
-            </select>
-          </label>
-          {config.protocol === 'chat' &&
-            ['deepseek', 'qwen', 'qwen_global'].includes(config.vendor) && (
-              <label>
-                思考模式
-                <select
-                  aria-label="思考模式"
-                  value={config.thinking || 'auto'}
-                  onChange={(e) => setConfig({ ...config, thinking: e.target.value })}
-                >
-                  <option value="auto">使用模型默认</option>
-                  <option value="enabled">启用（须模型支持）</option>
-                  <option value="disabled">关闭（须模型支持）</option>
-                </select>
-              </label>
-            )}
-          {config.protocol !== 'anthropic' &&
-            ['openai', 'deepseek', 'moonshot', 'gemini'].includes(config.vendor) && (
-              <label>
-                推理强度
-                <select
-                  value={config.reasoning_effort || 'auto'}
-                  onChange={(e) => setConfig({ ...config, reasoning_effort: e.target.value })}
-                >
-                  {(config.vendor === 'deepseek' || config.vendor === 'moonshot'
-                    ? ['auto', 'low', 'high', 'max']
-                    : ['auto', 'low', 'medium', 'high']
-                  ).map((v) => (
-                    <option key={v}>{v}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-          <details>
-            <summary>输出与超时参数</summary>
-            <label>
-              最大输出 token
-              <input
-                type="number"
-                min={256}
-                max={32768}
-                value={config.max_output_tokens || 8192}
-                onChange={(e) =>
-                  setConfig({ ...config, max_output_tokens: Number(e.target.value) })
-                }
-              />
-            </label>
-            <label>
-              超时（秒）
-              <input
-                type="number"
-                min={30}
-                max={240}
-                value={config.timeout || 180}
-                onChange={(e) => setConfig({ ...config, timeout: Number(e.target.value) })}
-              />
-            </label>
-            <label>
-              Temperature（空白为不发送）
-              <input
-                type="number"
-                min={0}
-                max={2}
-                step={0.1}
-                value={config.temperature ?? ''}
-                onChange={(e) =>
-                  setConfig({
-                    ...config,
-                    temperature: e.target.value === '' ? null : Number(e.target.value),
-                  })
-                }
-              />
-            </label>
-            <p>
-              思考模型可能不支持 temperature，默认不发送。推理 token
-              会占输出额度，截断时需提高上限。
-            </p>
-          </details>
-          <div className="settings-actions">
-            <Button className="primary" loading={saving} onClick={() => save()}>
-              保存 API 配置 <Check size={16} />
+              <RefreshCw size={15} />
+              同步全部账号
             </Button>
-            <button
-              disabled={jobs.some(
-                (j: Row) => j.kind === 'ai_test' && ['queued', 'running'].includes(j.status),
-              )}
-              onClick={() => run('/ai/test')}
-            >
-              测试已保存配置（会计费）
-            </button>
-            <button
-              className="text-button"
-              onClick={() => {
-                setProvider('api', config.model || '')
-                onNotice('已切换到 API Key 通道，可使用默认模型或读取模型列表')
-              }}
-            >
-              使用此通道 <ArrowRight size={14} />
-            </button>
+          </div>
+          <div className="account-settings">
+            {accounts.map((a: Row) => (
+              <div key={a.platform + a.handle}>
+                <Platform platform={a.platform} />
+                <div>
+                  <strong>{names[a.platform]}</strong>
+                  <small>{a.handle}</small>
+                </div>
+                <span className="badge neutral">
+                  {a.cookie_info?.status === 'invalid'
+                    ? 'Cookie 格式需修正'
+                    : a.has_cookie
+                      ? '凭据已保存'
+                      : '公开接口'}
+                </span>
+                <button
+                  className="text-button"
+                  disabled={accountSaving}
+                  onClick={() =>
+                    setEditingAccount({
+                      ...a,
+                      originalHandle: a.handle,
+                      cookie: '',
+                      clearCookie: false,
+                    })
+                  }
+                >
+                  编辑
+                </button>
+                <button
+                  className="text-button"
+                  disabled={accountSaving}
+                  onClick={() =>
+                    saveAccounts(accounts.filter((item) => item !== a).map(accountPayload))
+                  }
+                >
+                  移除配置
+                </button>
+              </div>
+            ))}
           </div>
           <button
             className="text-button"
-            disabled={saving || !config.has_key}
-            onClick={() => save(true)}
+            onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
           >
-            清除当前地址密钥
+            查看平台绑定与 Cookie 获取教程
           </button>
-          {jobs
-            .filter((j: Row) => j.kind === 'ai_test')
-            .slice(0, 1)
-            .map((j: Row) => (
-              <p key={j.id} role="status">
-                最近连接测试：{statusNames[j.status]} {j.result?.model}{' '}
-                {j.result?.latency_ms ? `${j.result.latency_ms} ms` : ''}{' '}
-                {j.error || j.result?.note}
-              </p>
-            ))}
-        </section>
-        <section className="card settings-card chatgpt-settings">
-          <div className="card-heading">
-            <div>
-              <h2>
-                <span className="inline">
-                  <Bot size={20} />
-                  ChatGPT 官方账号
-                </span>
-              </h2>
-              <p>通过官方 Codex App Server 读取登录状态和模型目录。</p>
-            </div>
-            <span className="mini-label">OFFICIAL LOGIN</span>
-          </div>
-          <div className="official-account">
-            <span className="official-icon">
-              <Bot size={30} />
-            </span>
-            <h3>{account?.connected ? '官方账号已连接' : '连接你的 ChatGPT 账号'}</h3>
-            <p>
-              {account?.connected
-                ? `${account.email || 'ChatGPT 官方账号 会话'} · ${account.plan || account.type || ''}`
-                : '已登录 Codex 时可以直接读取，无需复制 ChatGPT Cookie。'}
-            </p>
-          </div>
-          {account?.message && <p className="help">{account.message}</p>}
-          <div className="settings-actions">
-            <Button className="secondary" loading={connecting} onClick={readAccount}>
-              <RefreshCw size={15} />
-              读取现有登录
-            </Button>
-            <Button
-              className="dark"
-              loading={connecting}
-              disabled={config.codex_enabled === false}
-              onClick={() => doLogin('device')}
-            >
-              <LogIn size={16} />
-              申请官方登录设备码
-            </Button>
-          </div>
-          {!config.codex_device_only && (
-            <button
-              className="text-button device-link"
-              disabled={config.codex_enabled === false}
-              onClick={() => doLogin('browser')}
-            >
-              本机浏览器回调登录 <ArrowRight size={13} />
-            </button>
+          {!accounts.length && (
+            <p className="help">尚未配置账号，请在下方添加。移除配置不会删除已采集的提交历史。</p>
           )}
-          {account?.connected && (
-            <button
+          <div className="account-editor">
+            <h3>{editingAccount.originalHandle ? '编辑平台账号' : '添加平台账号'}</h3>
+            <div className="practice-filters">
+              <label>
+                平台
+                <select
+                  value={editingAccount.platform}
+                  disabled={!!editingAccount.originalHandle}
+                  onChange={(e) =>
+                    setEditingAccount({ ...editingAccount, platform: e.target.value })
+                  }
+                >
+                  {Object.entries(names).map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {String(name)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                用户名 / UID / 主页链接
+                <input
+                  value={editingAccount.handle}
+                  maxLength={500}
+                  onChange={(e) => setEditingAccount({ ...editingAccount, handle: e.target.value })}
+                  placeholder={
+                    ['luogu', 'nowcoder'].includes(editingAccount.platform)
+                      ? '数字 UID 或个人主页链接'
+                      : '用户名或个人主页链接'
+                  }
+                />
+              </label>
+            </div>
+            <AccountCookieField
+              value={editingAccount.cookie}
+              saved={editingAccount.has_cookie}
+              info={editingAccount.cookie_info}
+              disabled={accountSaving || editingAccount.clearCookie}
+              onChange={(cookie) => setEditingAccount({ ...editingAccount, cookie })}
+            />
+            <p className="help">
+              公开数据可以先不填 Cookie。需要登录时，先用本页提供的油猴脚本获取并复制 Cookie，或按
+              F12
+              教程手动获取，粘贴保存后自动检测，之后也可手动重检。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
+              F12。
+            </p>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={!!editingAccount.enrich}
+                onChange={(e) => setEditingAccount({ ...editingAccount, enrich: e.target.checked })}
+              />
+              补充题目信息（AtCoder，可能增加请求）
+            </label>
+            {editingAccount.originalHandle && (
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={!!editingAccount.clearCookie}
+                  onChange={(e) =>
+                    setEditingAccount({ ...editingAccount, clearCookie: e.target.checked })
+                  }
+                />
+                清除已保存 Cookie，使用公开接口
+              </label>
+            )}
+            <div className="settings-actions">
+              <Button
+                className="primary"
+                loading={accountSaving}
+                disabled={!editingAccount.handle.trim()}
+                onClick={saveAccount}
+              >
+                保存平台账号
+              </Button>
+              {editingAccount.originalHandle && (
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    setEditingAccount({
+                      platform: 'codeforces',
+                      handle: '',
+                      cookie: '',
+                      enrich: false,
+                    })
+                  }
+                >
+                  取消编辑
+                </button>
+              )}
+            </div>
+          </div>
+        </details>
+        <details
+          className="settings-guide"
+          id="platform-guide"
+          ref={guideRef}
+          open={guideOpen}
+          onToggle={(e) => setGuideOpen(e.currentTarget.open)}
+        >
+          <summary>平台绑定教程与油猴脚本</summary>
+          <ExtensionGuide />
+          <PlatformGuide />
+        </details>
+      </SettingsSection>
+      <SettingsSection
+        id="settings-ai"
+        title="AI 接入"
+        description="配置 API 或连接 ChatGPT 官方账号，选择适合训练的模型。"
+        defaultOpen
+      >
+        <div className="settings-grid">
+          <section className="card settings-card">
+            <div className="card-heading">
+              <div>
+                <h2>
+                  <span className="inline">
+                    <KeyRound size={19} />
+                    AI API 接入
+                  </span>
+                </h2>
+                <p>
+                  选择提供方并填写 Key，点击“保存并读取模型列表”，再从下拉栏选择模型并保存。
+                  连接测试会实际调用模型并按提供方规则计费。
+                </p>
+              </div>
+              <span className={`badge ${config.has_key ? 'success' : 'neutral'}`}>
+                {config.has_key ? '已配置' : '未配置'}
+              </span>
+            </div>
+            <label>
+              模型提供方
+              <select
+                aria-label="模型提供方"
+                value={config.vendor || 'custom'}
+                onChange={(e) => {
+                  const preset = presets.find((p) => p.id === e.target.value)
+                  if (!preset) return
+                  setKey('')
+                  setApiModels([])
+                  setApiModelNote('')
+                  setApiModelSource('')
+                  setConfig({
+                    ...config,
+                    vendor: preset.id,
+                    base_url: preset.base_url,
+                    protocol: preset.protocol,
+                    model: '',
+                    has_key: false,
+                    thinking: 'auto',
+                    reasoning_effort: 'auto',
+                    output_mode: 'auto',
+                    temperature: null,
+                  })
+                }}
+              >
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.allowed ? '' : '（需管理员批准域名）'}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="help">
+              密钥按 API 地址分别保存；切换提供方不会把旧密钥发送给新地址。区域和 Key
+              必须匹配。Gemini 使用官方兼容接口；智谱按量 API 与 Coding Plan 地址不同。
+            </p>
+            {presets.find((p) => p.id === config.vendor)?.docs && (
+              <a
+                href={presets.find((p) => p.id === config.vendor)?.docs}
+                target="_blank"
+                rel="noreferrer"
+              >
+                提供方官方接入文档 ↗
+              </a>
+            )}
+            <label>
+              API 地址
+              <input
+                value={config.base_url}
+                onChange={(e) => {
+                  setConfig({ ...config, base_url: e.target.value, has_key: false })
+                  setKey('')
+                  setApiModels([])
+                  setApiModelNote('')
+                  setApiModelSource('')
+                }}
+                placeholder="https://api.openai.com/v1"
+                type="url"
+              />
+            </label>
+            <label>
+              接入协议
+              <select
+                value={config.protocol}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    protocol: e.target.value,
+                    thinking: 'auto',
+                    reasoning_effort: 'auto',
+                    output_mode: 'auto',
+                  })
+                }
+              >
+                <option value="responses">Responses API · OpenAI 官方</option>
+                <option value="chat">Chat Completions · 兼容提供方</option>
+                <option value="anthropic">Claude 原生 Messages</option>
+              </select>
+            </label>
+            <label>
+              API Key
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={key}
+                onChange={(e) => {
+                  setKey(e.target.value)
+                  setApiModels([])
+                  setApiModelNote('')
+                  setApiModelSource('')
+                }}
+                placeholder={config.has_key ? '已保存；留空保持原密钥' : '输入提供方的 API Key'}
+              />
+            </label>
+            <p className="help">
+              <ShieldCheck size={13} />
+              密钥不会返回浏览器，不会进入 Git 或 AI 提示词。
+            </p>
+            <label>
+              默认模型
+              <select
+                aria-label="默认模型 ID"
+                value={config.model || ''}
+                onChange={(e) => setConfig({ ...config, model: e.target.value })}
+              >
+                <option value="">先保存 Key 并读取模型</option>
+                {apiModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {apiModelSource === 'manual' ? '未验证 · ' : ''}
+                    {m.name || m.id}
+                  </option>
+                ))}
+                {config.model && !apiModels.some((m) => m.id === config.model) && (
+                  <option value={config.model}>{config.model}（当前填写；未验证）</option>
+                )}
+              </select>
+            </label>
+            <details>
+              <summary>目录未包含可用模型？手动填写模型 ID</summary>
+              <label>
+                手动模型 ID
+                <input
+                  aria-label="手动模型 ID"
+                  value={config.model || ''}
+                  onChange={(e) => setConfig({ ...config, model: e.target.value })}
+                  maxLength={150}
+                  placeholder="填写服务商提供的准确模型 ID；保存后可测试"
+                />
+              </label>
+            </details>
+            <Button
               className="text-button"
+              loading={readingModels}
+              disabled={saving}
               onClick={async () => {
+                setReadingModels(true)
                 try {
-                  await api('/ai/logout', 'POST', {})
-                  setAccount(null)
-                  setLogin(null)
-                  onNotice('官方账号已退出')
+                  if (!(await save())) return
+                  setApiModels([])
+                  setApiModelSource('')
+                  setApiModelNote('正在向当前提供方读取模型目录…')
+                  const data = await api('/ai/models?provider=api')
+                  setApiModels(data.items)
+                  setApiModelNote(data.note)
+                  setApiModelSource(data.source || 'remote')
+                  if (!data.items.some((m: Row) => m.id === config.model)) {
+                    const nextModel = data.default_model || data.items[0]?.id || ''
+                    setConfig((current) => ({ ...current, model: nextModel }))
+                  }
                 } catch (e: any) {
+                  setApiModels([])
+                  setApiModelSource('')
+                  setApiModelNote('读取失败；请检查提供方、Key、API 地址和网络后重试。')
                   onError(e.message)
+                } finally {
+                  setReadingModels(false)
                 }
               }}
             >
-              退出官方账号
+              保存并读取模型列表
+            </Button>
+            {apiModelNote && (
+              <p className="help" role="status">
+                {apiModels.length} 个模型；{apiModelNote}
+              </p>
+            )}
+            <details className="settings-advanced">
+              <summary>AI 高级参数</summary>
+              <label>
+                结构化输出
+                <select
+                  aria-label="结构化输出"
+                  value={config.output_mode || 'auto'}
+                  onChange={(e) => setConfig({ ...config, output_mode: e.target.value })}
+                >
+                  <option value="auto">按协议默认</option>
+                  <option value="schema">JSON Schema（须模型支持）</option>
+                  <option value="json" disabled={config.protocol === 'anthropic'}>
+                    JSON 对象
+                  </option>
+                  <option value="prompt">仅提示约束（仍严格校验结果）</option>
+                </select>
+              </label>
+              {config.protocol === 'chat' &&
+                ['deepseek', 'qwen', 'qwen_global'].includes(config.vendor) && (
+                  <label>
+                    思考模式
+                    <select
+                      aria-label="思考模式"
+                      value={config.thinking || 'auto'}
+                      onChange={(e) => setConfig({ ...config, thinking: e.target.value })}
+                    >
+                      <option value="auto">使用模型默认</option>
+                      <option value="enabled">启用（须模型支持）</option>
+                      <option value="disabled">关闭（须模型支持）</option>
+                    </select>
+                  </label>
+                )}
+              {config.protocol !== 'anthropic' &&
+                ['openai', 'deepseek', 'moonshot', 'gemini'].includes(config.vendor) && (
+                  <label>
+                    推理强度
+                    <select
+                      value={config.reasoning_effort || 'auto'}
+                      onChange={(e) => setConfig({ ...config, reasoning_effort: e.target.value })}
+                    >
+                      {(config.vendor === 'deepseek' || config.vendor === 'moonshot'
+                        ? ['auto', 'low', 'high', 'max']
+                        : ['auto', 'low', 'medium', 'high']
+                      ).map((v) => (
+                        <option key={v}>{v}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              <details>
+                <summary>输出与超时参数</summary>
+                <label>
+                  最大输出 token
+                  <input
+                    type="number"
+                    min={256}
+                    max={32768}
+                    value={config.max_output_tokens || 8192}
+                    onChange={(e) =>
+                      setConfig({ ...config, max_output_tokens: Number(e.target.value) })
+                    }
+                  />
+                </label>
+                <label>
+                  超时（秒）
+                  <input
+                    type="number"
+                    min={30}
+                    max={240}
+                    value={config.timeout || 180}
+                    onChange={(e) => setConfig({ ...config, timeout: Number(e.target.value) })}
+                  />
+                </label>
+                <label>
+                  Temperature（空白为不发送）
+                  <input
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={config.temperature ?? ''}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        temperature: e.target.value === '' ? null : Number(e.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <p>
+                  思考模型可能不支持 temperature，默认不发送。推理 token
+                  会占输出额度，截断时需提高上限。
+                </p>
+              </details>
+            </details>
+            <div className="settings-actions">
+              <Button className="primary" loading={saving} onClick={() => save()}>
+                保存 API 配置 <Check size={16} />
+              </Button>
+              <button
+                disabled={jobs.some(
+                  (j: Row) => j.kind === 'ai_test' && ['queued', 'running'].includes(j.status),
+                )}
+                onClick={() => run('/ai/test')}
+              >
+                测试已保存配置（会计费）
+              </button>
+              <button
+                className="text-button"
+                onClick={() => {
+                  setProvider('api', config.model || '')
+                  onNotice('已切换到 API Key 通道，可使用默认模型或读取模型列表')
+                }}
+              >
+                使用此通道 <ArrowRight size={14} />
+              </button>
+            </div>
+            <button
+              className="text-button"
+              disabled={saving || !config.has_key}
+              onClick={() => save(true)}
+            >
+              清除当前地址密钥
             </button>
-          )}
-          {login?.userCode && (
-            <div className="device-code">
-              <p>在你的电脑或手机浏览器打开官方页面，输入设备码</p>
-              <strong>{login.userCode}</strong>
-              <a href={login.verificationUrl} target="_blank" rel="noreferrer">
-                打开官方验证页 <ExternalLink size={13} />
-              </a>
+            {jobs
+              .filter((j: Row) => j.kind === 'ai_test')
+              .slice(0, 1)
+              .map((j: Row) => (
+                <p key={j.id} role="status">
+                  最近连接测试：{statusNames[j.status]} {j.result?.model}{' '}
+                  {j.result?.latency_ms ? `${j.result.latency_ms} ms` : ''}{' '}
+                  {j.error || j.result?.note}
+                </p>
+              ))}
+          </section>
+          <section className="card settings-card chatgpt-settings">
+            <div className="card-heading">
+              <div>
+                <h2>
+                  <span className="inline">
+                    <Bot size={20} />
+                    ChatGPT 官方账号
+                  </span>
+                </h2>
+                <p>通过官方 Codex App Server 读取登录状态和模型目录。</p>
+              </div>
+              <span className="mini-label">OFFICIAL LOGIN</span>
+            </div>
+            <div className="official-account">
+              <span className="official-icon">
+                <Bot size={30} />
+              </span>
+              <h3>{account?.connected ? '官方账号已连接' : '连接你的 ChatGPT 账号'}</h3>
+              <p>
+                {account?.connected
+                  ? `${account.email || 'ChatGPT 官方账号 会话'} · ${account.plan || account.type || ''}`
+                  : '已登录 Codex 时可以直接读取，无需复制 ChatGPT Cookie。'}
+              </p>
+            </div>
+            {account?.message && <p className="help">{account.message}</p>}
+            <div className="settings-actions">
+              <Button className="secondary" loading={connecting} onClick={readAccount}>
+                <RefreshCw size={15} />
+                读取现有登录
+              </Button>
+              <Button
+                className="dark"
+                loading={connecting}
+                disabled={config.codex_enabled === false}
+                onClick={() => doLogin('device')}
+              >
+                <LogIn size={16} />
+                申请官方登录设备码
+              </Button>
+            </div>
+            {!config.codex_device_only && (
+              <button
+                className="text-button device-link"
+                disabled={config.codex_enabled === false}
+                onClick={() => doLogin('browser')}
+              >
+                本机浏览器回调登录 <ArrowRight size={13} />
+              </button>
+            )}
+            {account?.connected && (
               <button
                 className="text-button"
                 onClick={async () => {
                   try {
-                    await api('/ai/login/cancel', 'POST', {})
+                    await api('/ai/logout', 'POST', {})
+                    setAccount(null)
                     setLogin(null)
+                    onNotice('官方账号已退出')
                   } catch (e: any) {
                     onError(e.message)
                   }
                 }}
               >
-                取消本次登录
+                退出官方账号
               </button>
-              <p>等待官方授权完成，页面自动刷新状态。过期或失败后可重新申请。</p>
-            </div>
-          )}
-          <p className="help">
-            服务器无需桌面。请先在 ChatGPT 安全设置中启用设备码登录；管理员需启用服务器官方通道。
-            登录绑定当前用户，授权保存在服务器的独立目录。模型以实际调用权限为准。
-          </p>
-        </section>
-      </div>
-      <PlatformConnections
-        revision={`${revision}:${accountRevision}`}
-        onBound={async () => {
-          const refreshed = await api('/accounts')
-          setAccounts(refreshed.items)
-          setAccountRevision((value) => value + 1)
-          onNotice('平台登录已验证，账号列表已刷新')
-        }}
-        run={run}
-        onError={onError}
-      />
-      <section className="card settings-card" id="platform-accounts">
-        <div className="card-heading">
-          <div>
-            <h2>
-              <span className="inline">
-                <Database size={19} />
-                算法平台连接
-              </span>
-            </h2>
-            <p>填写用户名、数字 UID 或个人主页链接即可；支持无桌面服务器，保存后立即生效。</p>
-          </div>
-          <Button
-            className="secondary"
-            loading={jobs.some(
-              (j: Row) => j.kind === 'crawl' && ['running', 'queued'].includes(j.status),
             )}
-            onClick={() => run('/crawl')}
-          >
-            <RefreshCw size={15} />
-            同步全部账号
-          </Button>
-        </div>
-        <div className="account-settings">
-          {accounts.map((a: Row) => (
-            <div key={a.platform + a.handle}>
-              <Platform platform={a.platform} />
-              <div>
-                <strong>{names[a.platform]}</strong>
-                <small>{a.handle}</small>
+            {login?.userCode && (
+              <div className="device-code">
+                <p>在你的电脑或手机浏览器打开官方页面，输入设备码</p>
+                <strong>{login.userCode}</strong>
+                <a href={login.verificationUrl} target="_blank" rel="noreferrer">
+                  打开官方验证页 <ExternalLink size={13} />
+                </a>
+                <button
+                  className="text-button"
+                  onClick={async () => {
+                    try {
+                      await api('/ai/login/cancel', 'POST', {})
+                      setLogin(null)
+                    } catch (e: any) {
+                      onError(e.message)
+                    }
+                  }}
+                >
+                  取消本次登录
+                </button>
+                <p>等待官方授权完成，页面自动刷新状态。过期或失败后可重新申请。</p>
               </div>
-              <span className="badge neutral">
-                {a.cookie_info?.status === 'invalid'
-                  ? 'Cookie 格式需修正'
-                  : a.has_cookie
-                    ? '凭据已保存'
-                    : '公开接口'}
-              </span>
-              <button
-                className="text-button"
-                disabled={accountSaving}
-                onClick={() =>
-                  setEditingAccount({
-                    ...a,
-                    originalHandle: a.handle,
-                    cookie: '',
-                    clearCookie: false,
-                  })
-                }
-              >
-                编辑
-              </button>
-              <button
-                className="text-button"
-                disabled={accountSaving}
-                onClick={() =>
-                  saveAccounts(accounts.filter((item) => item !== a).map(accountPayload))
-                }
-              >
-                移除配置
-              </button>
-            </div>
-          ))}
+            )}
+            <p className="help">
+              服务器无需桌面。请先在 ChatGPT 安全设置中启用设备码登录；管理员需启用服务器官方通道。
+              登录绑定当前用户，授权保存在服务器的独立目录。模型以实际调用权限为准。
+            </p>
+          </section>
         </div>
-        <button
-          className="text-button"
-          onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
-        >
-          查看平台绑定与 Cookie 获取教程
-        </button>
-        {!accounts.length && (
-          <p className="help">尚未配置账号，请在下方添加。移除配置不会删除已采集的提交历史。</p>
-        )}
-        <div className="account-editor">
-          <h3>{editingAccount.originalHandle ? '编辑平台账号' : '添加平台账号'}</h3>
+      </SettingsSection>
+      <SettingsSection
+        id="settings-training"
+        title="训练与高级偏好"
+        description="调整目标、练习难度、题目日期与知识点偏好。"
+      >
+        <section className="card settings-card">
+          <div className="card-heading">
+            <div>
+              <h2>
+                <span className="inline">
+                  <Target size={19} />
+                  训练偏好
+                </span>
+              </h2>
+              <p>让 AI 了解你的目标，优先选择更有价值的新题。</p>
+            </div>
+          </div>
           <div className="practice-filters">
             <label>
-              平台
-              <select
-                value={editingAccount.platform}
-                disabled={!!editingAccount.originalHandle}
-                onChange={(e) => setEditingAccount({ ...editingAccount, platform: e.target.value })}
-              >
-                {Object.entries(names).map(([id, name]) => (
-                  <option key={id} value={id}>
-                    {String(name)}
-                  </option>
-                ))}
-              </select>
+              目标 CF Rating
+              <input
+                type="number"
+                min="800"
+                max="4000"
+                value={training.goal_rating}
+                onChange={(e) => setTraining({ ...training, goal_rating: Number(e.target.value) })}
+              />
             </label>
             <label>
-              用户名 / UID / 主页链接
+              最低练习难度
               <input
-                value={editingAccount.handle}
-                maxLength={500}
-                onChange={(e) => setEditingAccount({ ...editingAccount, handle: e.target.value })}
-                placeholder={
-                  ['luogu', 'nowcoder'].includes(editingAccount.platform)
-                    ? '数字 UID 或个人主页链接'
-                    : '用户名或个人主页链接'
+                type="number"
+                min="800"
+                max="3500"
+                step="100"
+                value={training.minimum}
+                onChange={(e) => setTraining({ ...training, minimum: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              最高练习难度
+              <input
+                type="number"
+                min="800"
+                max="3500"
+                step="100"
+                value={training.maximum}
+                onChange={(e) => setTraining({ ...training, maximum: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              最早题目发布日期
+              <input
+                type="date"
+                aria-label="最早题目发布日期"
+                value={training.published_after || ''}
+                onChange={(e) =>
+                  setTraining({
+                    ...training,
+                    published_after: e.target.value || null,
+                    min_contest: 0,
+                  })
                 }
               />
             </label>
           </div>
-          <AccountCookieField
-            value={editingAccount.cookie}
-            saved={editingAccount.has_cookie}
-            info={editingAccount.cookie_info}
-            disabled={accountSaving || editingAccount.clearCookie}
-            onChange={(cookie) => setEditingAccount({ ...editingAccount, cookie })}
-          />
-          <p className="help">
-            公开数据可以先不填 Cookie。需要登录时，先用本页提供的油猴脚本获取并复制 Cookie，或按 F12
-            教程手动获取，粘贴保存后自动检测，之后也可手动重检。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
-            F12。
-          </p>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={!!editingAccount.enrich}
-              onChange={(e) => setEditingAccount({ ...editingAccount, enrich: e.target.checked })}
-            />
-            补充题目信息（AtCoder，可能增加请求）
-          </label>
-          {editingAccount.originalHandle && (
+          <button
+            className="text-button"
+            type="button"
+            disabled={!training.published_after && !training.min_contest}
+            onClick={() => {
+              setTraining({ ...training, published_after: null, min_contest: 0 })
+              onNotice('已清除日期与旧编号限制，请保存训练偏好生效')
+            }}
+          >
+            不限制发布日期（清除旧编号限制）
+          </button>
+          <div className="preference-fields">
+            <label>
+              优先知识点（英文标签，逗号分隔）
+              <input
+                value={training.preferred_tags.join(',')}
+                onChange={(e) =>
+                  setTraining({ ...training, preferred_tags: e.target.value.split(',') })
+                }
+              />
+            </label>
+            <label>
+              避免仅包含这些标签的题目
+              <input
+                value={training.avoid_tags.join(',')}
+                onChange={(e) =>
+                  setTraining({ ...training, avoid_tags: e.target.value.split(',') })
+                }
+              />
+            </label>
             <label className="checkbox">
               <input
                 type="checkbox"
-                checked={!!editingAccount.clearCookie}
-                onChange={(e) =>
-                  setEditingAccount({ ...editingAccount, clearCookie: e.target.checked })
-                }
+                checked={training.prefer_recent}
+                onChange={(e) => setTraining({ ...training, prefer_recent: e.target.checked })}
               />
-              清除已保存 Cookie，使用公开接口
+              同难度优先较新比赛
             </label>
-          )}
-          <div className="settings-actions">
-            <Button
-              className="primary"
-              loading={accountSaving}
-              disabled={!editingAccount.handle.trim()}
-              onClick={saveAccount}
-            >
-              保存平台账号
-            </Button>
-            {editingAccount.originalHandle && (
-              <button
-                className="text-button"
-                onClick={() =>
-                  setEditingAccount({
-                    platform: 'codeforces',
-                    handle: '',
-                    cookie: '',
-                    enrich: false,
-                  })
-                }
-              >
-                取消编辑
-              </button>
-            )}
           </div>
-        </div>
-      </section>
-      <section className="card settings-card">
-        <div className="card-heading">
-          <div>
-            <h2>
-              <span className="inline">
-                <Target size={19} />
-                训练偏好
-              </span>
-            </h2>
-            <p>让 AI 了解你的目标，优先选择更有价值的新题。</p>
-          </div>
-        </div>
-        <div className="practice-filters">
-          <label>
-            目标 CF Rating
-            <input
-              type="number"
-              min="800"
-              max="4000"
-              value={training.goal_rating}
-              onChange={(e) => setTraining({ ...training, goal_rating: Number(e.target.value) })}
-            />
-          </label>
-          <label>
-            最低练习难度
-            <input
-              type="number"
-              min="800"
-              max="3500"
-              step="100"
-              value={training.minimum}
-              onChange={(e) => setTraining({ ...training, minimum: Number(e.target.value) })}
-            />
-          </label>
-          <label>
-            最高练习难度
-            <input
-              type="number"
-              min="800"
-              max="3500"
-              step="100"
-              value={training.maximum}
-              onChange={(e) => setTraining({ ...training, maximum: Number(e.target.value) })}
-            />
-          </label>
-          <label>
-            最早题目发布日期
-            <input
-              type="date"
-              aria-label="最早题目发布日期"
-              value={training.published_after || ''}
-              onChange={(e) =>
-                setTraining({
-                  ...training,
-                  published_after: e.target.value || null,
-                  min_contest: 0,
-                })
-              }
-            />
-          </label>
-        </div>
-        <button
-          className="text-button"
-          type="button"
-          disabled={!training.published_after && !training.min_contest}
-          onClick={() => {
-            setTraining({ ...training, published_after: null, min_contest: 0 })
-            onNotice('已清除日期与旧编号限制，请保存训练偏好生效')
-          }}
-        >
-          不限制发布日期（清除旧编号限制）
-        </button>
-        <div className="preference-fields">
-          <label>
-            优先知识点（英文标签，逗号分隔）
-            <input
-              value={training.preferred_tags.join(',')}
-              onChange={(e) =>
-                setTraining({ ...training, preferred_tags: e.target.value.split(',') })
-              }
-            />
-          </label>
-          <label>
-            避免仅包含这些标签的题目
-            <input
-              value={training.avoid_tags.join(',')}
-              onChange={(e) => setTraining({ ...training, avoid_tags: e.target.value.split(',') })}
-            />
-          </label>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={training.prefer_recent}
-              onChange={(e) => setTraining({ ...training, prefer_recent: e.target.checked })}
-            />
-            同难度优先较新比赛
-          </label>
-        </div>
-        <Button
-          className="primary"
-          onClick={async () => {
-            try {
-              setTraining(
-                await api('/training', 'PUT', {
+          <Button
+            className="primary"
+            onClick={async () => {
+              try {
+                const savedVersion = trainingDraft.getVersion()
+                const saved = await api('/training', 'PUT', {
                   ...training,
                   preferred_tags: training.preferred_tags
                     .map((t: string) => t.trim())
                     .filter(Boolean),
                   avoid_tags: training.avoid_tags.map((t: string) => t.trim()).filter(Boolean),
-                }),
-              )
-              onNotice('训练偏好已保存')
-            } catch (e: any) {
-              onError(e.message)
-            }
-          }}
-        >
-          保存训练偏好
-        </Button>
-        <p className="help">
-          使用题目真实发布日期控制新旧；缺少可靠日期的题不会进入有日期下限的推荐。题库会排除已有提交，以及本地导入的已练习记录。
-        </p>
-      </section>
+                })
+                trainingDraft.commit(saved, savedVersion)
+                onNotice('训练偏好已保存')
+              } catch (e: any) {
+                onError(e.message)
+              }
+            }}
+          >
+            保存训练偏好
+          </Button>
+          <p className="help">
+            使用题目真实发布日期控制新旧；缺少可靠日期的题不会进入有日期下限的推荐。题库会排除已有提交，以及本地导入的已练习记录。
+          </p>
+        </section>
+      </SettingsSection>
     </>
   )
 }

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from .codex_bridge import AIError
 from .cookie_validation import valid_cookie
 from .credential_check import URLS, challenge_reason, inspect_identity
+from ojcrawler.http import browser_headers
 
 LOGIN_URLS = {'codeforces': 'https://codeforces.com/enter',
               'atcoder': 'https://atcoder.jp/login'}
@@ -88,7 +89,8 @@ def _request(session, platform, method, url, deadline, **kwargs):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise LoginFailure('unknown', 'timeout')
-    with session.request(method, url, timeout=(min(5, remaining), min(12, remaining)),
+    headers = {**browser_headers(), **kwargs.pop('headers', {})}
+    with session.request(method, url, headers=headers, timeout=(min(5, remaining), min(12, remaining)),
                          allow_redirects=False, stream=True, **kwargs) as response:
         body = bytearray()
         for part in response.iter_content(16384):

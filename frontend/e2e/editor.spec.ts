@@ -282,6 +282,7 @@ test('AI presets expose dedicated fields and preserve secrets per endpoint', asy
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
   await page.getByLabel('模型提供方').selectOption('deepseek')
   await expect(page.getByLabel('API 地址', { exact: true })).toHaveValue('https://api.deepseek.com')
+  await page.getByText('AI 高级参数', { exact: true }).click()
   await expect(page.getByLabel('思考模式')).toBeVisible()
   await page.getByText('目录未包含可用模型？手动填写模型 ID', { exact: true }).click()
   await page.getByLabel('手动模型 ID', { exact: true }).fill('test-model')
@@ -303,6 +304,10 @@ test('AI presets expose dedicated fields and preserve secrets per endpoint', asy
 test('practice loop keeps hints, submitted code, WA reviews and navigable AC submission records', async ({
   page,
 }) => {
+  // This journey waits for several independently polled hint/judge/review jobs
+  // and then revisits settings; keep their combined time separate from a
+  // single interaction's locator timeout.
+  test.setTimeout(60000)
   // All upstream judge/AI responses are synthetic in the isolated test server.
   await page.route('**/api/ai/models?provider=api', (route) =>
     route.fulfill({
@@ -393,6 +398,7 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
     data: { items: [{ platform: 'codeforces', handle: 'FIXTURE_USER', enrich: false }] },
   })
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByRole('button', { name: '训练偏好', exact: true }).click()
   await expect(page.getByLabel('优先知识点（英文标签，逗号分隔）')).toBeVisible()
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await page.getByRole('button', { name: /^codeforces:4-A / }).click()
