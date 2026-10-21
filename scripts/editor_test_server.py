@@ -49,11 +49,11 @@ def main():
             if url != 'https://codeforces.com/api/contest.status':
                 return original_json(self,url,**kwargs)
             handle = kwargs.get('params',{}).get('handle','')
-            rows = [{'id':sid,'creationTimeSeconds':int(time.time()),
+            rows = [{'id':sid,'creationTimeSeconds':int(time.time())-(3600 if sid == 920003 else 0),
                      'problem':{'contestId':4,'index':'A','name':'Synthetic acceptance problem','rating':1200,'tags':['math']},
                      'author':{'members':[{'handle':handle}]},'verdict':status,
                      'programmingLanguage':'Python 3','passedTestCount':1,'timeConsumedMillis':46,
-                     'memoryConsumedBytes':786432} for sid,status in [(920001,'WRONG_ANSWER'),(920002,'OK')]]
+                     'memoryConsumedBytes':786432} for sid,status in [(920001,'WRONG_ANSWER'),(920002,'OK'),(920003,'WRONG_ANSWER')]]
             return {'status':'OK','result':rows}
         workbench.Client.json = fixture_judge
         app.state.database.set('training',{'minimum':800,'maximum':1800})

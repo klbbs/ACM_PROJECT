@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,f
 CREATE TABLE IF NOT EXISTS wb_drafts (problem_id TEXT PRIMARY KEY,language TEXT NOT NULL,code TEXT NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_hints (problem_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(problem_id,seq));
 CREATE TABLE IF NOT EXISTS wb_attempts (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,language TEXT NOT NULL,code TEXT NOT NULL,code_hash TEXT NOT NULL,created_at INTEGER NOT NULL,handle TEXT,submission_id INTEGER,verdict TEXT NOT NULL DEFAULT 'UNLINKED',judge_data TEXT,review TEXT,last_synced INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS wb_submission_code_claims (attempt_id TEXT PRIMARY KEY,code_hash TEXT NOT NULL,confirmed_at INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS wb_submission_code_claims_cleanup AFTER DELETE ON wb_attempts
+BEGIN DELETE FROM wb_submission_code_claims WHERE attempt_id=OLD.id; END;
 CREATE TABLE IF NOT EXISTS wb_auto_reviews (fingerprint TEXT PRIMARY KEY,created_at INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS wb_remote_platform_case ON wb_attempts(substr(problem_id,1,instr(problem_id,':')-1),CASE WHEN problem_id LIKE 'codeforces:%' THEN lower(handle) ELSE handle END,submission_id) WHERE submission_id IS NOT NULL;
 DROP INDEX IF EXISTS wb_remote;
@@ -339,18 +342,30 @@ class Workbench:
             if old:
                 if old['problem_id'] != pid or old['code_hash'] != digest or old['language'] != draft['language']:
                     raise HTTPException(409, '此平台提交已有代码记录，不能用当前代码覆盖；请查看原记录')
+                conn.execute('INSERT OR IGNORE INTO wb_submission_code_claims VALUES(?,?,?)',
+                             (old['id'], digest, int(time.time())))
                 return old['id'], False, handle
             if conn.execute('SELECT COUNT(*) FROM wb_attempts').fetchone()[0] >= 2000:
                 raise HTTPException(409, '提交代码记录达到 2000 上限，请联系管理员归档')
             aid = uuid.uuid4().hex
             now = int(time.time())
-            # A user can submit on the official page and return later. Bind only
-            # recently saved code; stale drafts cannot claim arbitrary history.
-            saved_at = draft['updated_at']
-            created_at = saved_at if now - 86400 <= saved_at <= now else now
             conn.execute('INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,handle,submission_id) VALUES(?,?,?,?,?,?,?,?)',
-                         (aid, pid, draft['language'], draft['code'], digest, created_at, handle, data.submission_id))
+                         (aid, pid, draft['language'], draft['code'], digest, now, handle, data.submission_id))
+            # This is a user's source-code declaration, not a remote source verification.
+            # A later paste/save cannot determine when the official submission occurred.
+            conn.execute('INSERT INTO wb_submission_code_claims VALUES(?,?,?)', (aid, digest, now))
         return aid, True, handle
+
+    def validate_submission_time(self, attempt, submitted_at):
+        if type(submitted_at) is not int or submitted_at <= 0 or submitted_at > int(time.time()) + 300:
+            raise AIError('提交时间异常，请确认官方判题记录后重试')
+        if submitted_at >= attempt['created_at'] - 300:
+            return
+        with self.db.connect() as conn:
+            claim = conn.execute('SELECT code_hash FROM wb_submission_code_claims WHERE attempt_id=?',
+                                 (attempt['id'],)).fetchone()
+        if not claim or claim['code_hash'] != attempt['code_hash']:
+            raise AIError('提交时间早于旧代码记录，请在“关联本次提交结果”中确认代码后重新关联')
 
     def history(self, pid):
         pid = normalize(pid)
@@ -466,10 +481,7 @@ class Workbench:
         members = found.get('author', {}).get('members', [])
         if str(problem.get('contestId')) != contest or problem.get('index') != index or len(members) != 1 or members[0].get('handle', '').lower() != handle.lower():
             raise AIError('提交账号或题号不匹配（暂不支持团队提交）')
-        if found.get('creationTimeSeconds', 0) < attempt['created_at'] - 300:
-            raise AIError('此提交早于代码记录，请关联本次练习提交')
-        if found.get('creationTimeSeconds', 0) > int(time.time()) + 300:
-            raise AIError('提交时间异常，请确认官方判题记录后重试')
+        self.validate_submission_time(attempt, found.get('creationTimeSeconds'))
         status = codeforces_judge_verdict(found.get('verdict'))
         now = int(time.time())
         judge = {k: found.get(k) for k in ('verdict', 'passedTestCount', 'timeConsumedMillis', 'memoryConsumedBytes', 'creationTimeSeconds', 'programmingLanguage')}
@@ -511,8 +523,7 @@ class Workbench:
                 if not row: raise AIError('本用户尚未采集到此账号的提交号，请先同步该平台账号信息后重试')
                 if normalize(platform+':'+row['problem_id']) != attempt['problem_id']:
                     raise AIError('提交题号不匹配，请选择本题的提交记录')
-                if row['submitted_at'] < attempt['created_at']-300 or row['submitted_at']>now+300:
-                    raise AIError('提交时间与本次代码记录不符，请关联本次练习提交')
+                self.validate_submission_time(attempt, row['submitted_at'])
                 raw=json.loads(row['data'])
                 judge={k:raw.get(k) for k in ('language','submitted_at','time_ms','memory_bytes','score','url')}
                 judge.update(verdict=row['verdict'],source='collected_official_record',platform=platform,collected_at=row['updated_at'])
@@ -710,10 +721,13 @@ def register(app, service, jobs, daily=None):
                 raise
             if result['verdict'] == 'AC' and daily:
                 attempt = service.attempt(payload['aid'])
-                try:
-                    await asyncio.to_thread(daily.complete, Complete(problem_id=attempt['problem_id']))
-                except Exception:
-                    result['checkin_error'] = '判题已保存，但签到未更新；请刷新每日任务或同步平台记录'
+                judge = attempt.get('judge_data') or {}
+                submitted_at = judge.get('creationTimeSeconds', judge.get('submitted_at'))
+                if type(submitted_at) is int and daily.today(submitted_at) == daily.today():
+                    try:
+                        await asyncio.to_thread(daily.complete, Complete(problem_id=attempt['problem_id']))
+                    except Exception:
+                        result['checkin_error'] = '判题已保存，但签到未更新；请刷新每日任务或同步平台记录'
             if result['verdict'] in ERROR_VERDICTS:
                 try:
                     result.update(await service.automatic_review(payload['aid']))

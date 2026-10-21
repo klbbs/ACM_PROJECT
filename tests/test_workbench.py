@@ -436,6 +436,8 @@ def test_submission_queue_failure_cleans_unclaimed_record(workspace,monkeypatch)
     response=client.post('/api/workbench/problem/4-A/submission',json={'handle':'demo','submission_id':1,'revision':1,'code_matches_submission':True})
     assert response.status_code == 400
     assert not service.state('4-A')['attempts']
+    with service.db.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM wb_submission_code_claims').fetchone()[0] == 0
     assert service.state('4-A')['draft']['code']=='code'
 
 
@@ -530,6 +532,8 @@ def test_failed_submission_id_can_be_corrected_without_losing_code(workspace, mo
         time.sleep(.01)
     assert job['status'] == 'failed'
     assert service.state('4-A')['attempts'] == []
+    with service.db.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM wb_submission_code_claims').fetchone()[0] == 0
     assert service.state('4-A')['draft']['code'] == 'my practice code'
     response = client.post('/api/workbench/problem/4-A/submission',json={**body,'submission_id':12345})
     assert response.status_code == 200
@@ -689,14 +693,17 @@ def test_linking_accounts_are_available_without_recommendation_login_eligibility
 
 @pytest.mark.parametrize('draft_age,submission_age,passes', [
     (1200, 600, True),       # Saved before submitting, returned ten minutes later.
-    (1200, 1501, False),     # Official record predates the saved code window.
-    (90000, 89000, False),   # Stale draft cannot be used to backfill old history.
+    (0, 3600, True),         # Pasted the actual submitted code after submitting.
+    (1200, 1501, True),      # A later edit/save is not proof that the source differs.
+    (90000, 89000, True),    # Explicitly confirmed older code can be reviewed later.
     (1200, -301, False),     # Impossible future record.
+    (0, 0, True),
 ])
-def test_direct_link_window_uses_recent_saved_code_without_accepting_history(workspace, monkeypatch, draft_age, submission_age, passes):
+def test_confirmed_link_accepts_earlier_official_submission_without_using_save_time(workspace, monkeypatch, draft_age, submission_age, passes):
     from acmweb.workbench import SubmissionLink
     client, service, _ = workspace
     now = int(time.time())
+    monkeypatch.setattr('acmweb.workbench.time.time', lambda: now)
     service.draft('4-A', Draft(code='confirmed submitted code', revision=0))
     with service.db.connect() as conn:
         conn.execute('UPDATE wb_drafts SET updated_at=?', (now - draft_age,))
@@ -704,10 +711,82 @@ def test_direct_link_window_uses_recent_saved_code_without_accepting_history(wor
     aid, _, _ = service.prepare_submission('4-A', body)
     mock_judge(monkeypatch, creationTimeSeconds=now - submission_age)
     if passes:
-        assert service.sync(aid, Link(handle='demo', submission_id=12345))['verdict'] == 'WA'
+        result = service.sync(aid, Link(handle='demo', submission_id=12345))
+        assert result['verdict'] == 'WA' and result['code_verified'] is False
     else:
         with pytest.raises(AIError, match='早于|时间异常'):
             service.sync(aid, Link(handle='demo', submission_id=12345))
+
+
+def test_legacy_attempt_requires_explicit_code_confirmation_before_older_submission(workspace, monkeypatch):
+    from acmweb.workbench import SubmissionLink, Workbench
+    _, service, _ = workspace
+    aid = snapshot(service)
+    mock_judge(monkeypatch, creationTimeSeconds=int(time.time())-3600)
+    with pytest.raises(AIError, match='确认代码'):
+        service.sync(aid, Link(handle='demo', submission_id=12345))
+    # An explicit re-association is required to upgrade legacy records, and survives restart.
+    # No claim is created by simply reading or refreshing the old attempt.
+    with service.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM wb_submission_code_claims').fetchone()[0] == 0
+        db.execute("UPDATE wb_attempts SET handle='demo',submission_id=12345 WHERE id=?", (aid,))
+    same, created, _ = service.prepare_submission('4-A', SubmissionLink(
+        handle='demo', submission_id=12345, revision=1, code_matches_submission=True))
+    assert same == aid and not created
+    restarted = Workbench(service.db, service.ai, service.accounts)
+    assert restarted.sync(aid, Link(handle='demo', submission_id=12345))['verdict'] == 'WA'
+
+
+@pytest.mark.parametrize('platform,pid', [('atcoder','abc001_1'),('luogu','P1001'),('nowcoder','14301')])
+def test_confirmed_collected_submission_can_predate_local_code(workspace, platform, pid):
+    from acmweb.workbench import SubmissionLink
+    _, service, _ = workspace
+    handle = 'demo' if platform == 'atcoder' else '12345'
+    service.accounts.save(AccountList(items=[{'platform':platform, 'handle':handle}]))
+    problem = platform+':'+pid
+    service.draft(problem, Draft(code='submitted outside ACM Lab', revision=0))
+    aid, _, _ = service.prepare_submission(problem, SubmissionLink(
+        handle=handle, submission_id=111, revision=1, code_matches_submission=True))
+    official_time = int(time.time())-86400
+    with service.db.connect() as db:
+        db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',
+                   (platform,handle,'111',pid,official_time,'WA',json.dumps({'submitted_at':official_time,'verdict':'WA'}),int(time.time())))
+    result = service.sync(aid, Link(handle=handle, submission_id=111))
+    assert result['verdict'] == 'WA' and result['code_verified'] is False
+
+
+def test_confirmed_historical_ac_keeps_official_date_without_checking_in_today(workspace, monkeypatch):
+    from acmweb.workbench import SubmissionLink
+    _, service, app = workspace
+    app.state.daily.configure(DailySettings(daily_goal=1, duration_days=14))
+    service.draft('4-A', Draft(code='actual old submitted code', revision=0))
+    aid, _, handle = service.prepare_submission('4-A', SubmissionLink(
+        handle='demo', submission_id=12345, revision=1, code_matches_submission=True))
+    submitted_at = int(time.time())-2*86400
+    mock_judge(monkeypatch, status='OK', creationTimeSeconds=submitted_at)
+    result = asyncio.run(app.state.jobs.run_workbench('wb_sync', {
+        'aid':aid, 'handle':handle, 'submission_id':12345, 'new_attempt':True,
+    }))
+    assert result['verdict'] == 'AC'
+    assert 'checkin_error' not in result
+    assert app.state.daily.state()['checkin']['kind'] is None
+    assert service.history('4-A')['items'][0]['submitted_at'] == submitted_at
+
+
+@pytest.mark.parametrize('changes', [
+    {'problem':{'contestId':5,'index':'A'}},
+    {'author':{'members':[{'handle':'someone'}]}},
+    {'creationTimeSeconds':0},
+])
+def test_explicit_source_claim_does_not_bypass_official_identity_or_time_validity(workspace, monkeypatch, changes):
+    from acmweb.workbench import SubmissionLink
+    _, service, _ = workspace
+    service.draft('4-A', Draft(code='confirmed code', revision=0))
+    aid, _, _ = service.prepare_submission('4-A', SubmissionLink(
+        handle='demo', submission_id=12345, revision=1, code_matches_submission=True))
+    mock_judge(monkeypatch, **changes)
+    with pytest.raises(AIError):
+        service.sync(aid, Link(handle='demo', submission_id=12345))
 
 
 def test_link_handle_limit_matches_account_configuration():

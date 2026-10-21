@@ -689,7 +689,7 @@ export function WorkbenchPage({
               <section className="card">
                 <h3>本次提交与错因复盘</h3>
                 <p className="muted">
-                  平台账号、题号和时间可核验；当次代码仅在你明确确认并关联结果时保存，用于错因复盘，无法核验与平台实际源码相同。
+                  平台账号、题号和官方提交时间可核验；代码由你确认对应关系后保存，用于错因复盘，无法核验与平台实际源码相同。较早的提交也可关联，签到仍按官方提交日期计算。
                 </p>
                 <SubmissionForm
                   key={pid}

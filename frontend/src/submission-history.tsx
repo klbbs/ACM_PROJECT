@@ -262,7 +262,7 @@ export function SubmissionForm({
           checked={confirmed}
           onChange={(e) => setConfirmed(e.target.checked)}
         />
-        我确认本次官方提交使用了当前编辑器中的代码；这不是为历史记录补填代码。
+        我确认当前编辑器中的代码对应这条官方提交；平台无法自动核验源码，提交与保存时间可能不同。
       </label>
       <p role="status" className="muted">
         {message ||

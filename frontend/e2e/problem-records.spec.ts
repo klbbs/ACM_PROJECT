@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('association waits for automatic saving even when recommendations are unavailable', async ({ page }) => {
+test('an older official submission links after saving even when recommendations are unavailable', async ({ page }) => {
   expect((await page.request.post('/_fixture/reset-workbench')).ok()).toBe(true)
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
@@ -29,7 +29,7 @@ test('association waits for automatic saving even when recommendations are unava
   await page.getByLabel('代码语言').selectOption('python3')
   await page.getByLabel('源代码', { exact: true }).fill(code)
   const form = page.locator('.wb-submission-form')
-  await form.getByLabel('本次平台提交号').fill('https://codeforces.com/contest/4/submission/920001')
+  await form.getByLabel('本次平台提交号').fill('https://codeforces.com/contest/4/submission/920003')
   await form.getByRole('checkbox').check()
   try {
     await expect.poll(() => savingStarted).toBe(true)
@@ -44,7 +44,7 @@ test('association waits for automatic saving even when recommendations are unava
   const state = await (await page.request.get('/api/workbench/problem/4-A')).json()
   expect(state.draft.code).toBe(code)
   expect(state.attempts).toHaveLength(1)
-  expect(state.attempts[0].submission_id).toBe(920001)
+  expect(state.attempts[0].submission_id).toBe(920003)
 })
 
 test('a note typed while the next problem is resolving stays on the original problem', async ({ page }) => {
