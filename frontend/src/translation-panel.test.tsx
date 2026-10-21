@@ -122,6 +122,40 @@ it('disables another generation while a translation job is active', async () => 
   expect(props.run).not.toHaveBeenCalled()
 })
 
+it('shows the failed batch beside translation controls and clears it for another problem', async () => {
+  props.run.mockResolvedValue({ id: 'my-translation', status: 'queued' })
+  await render()
+  await click('翻译题面（AI）')
+  await render({ jobs: [{ id: 'my-translation', kind: 'translation', status: 'failed',
+    error: '题面翻译第 2/4 批失败：AI 响应被截断' }] })
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('第 2/4 批失败')
+  expect(host.textContent).toContain('原题和已有译文仍可阅读')
+  await render({ problemId: 'codeforces:5-A' })
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('handles queue rejection returned by the shared run helper', async () => {
+  props.run.mockResolvedValue({ error: '当前用户任务已满，请等待完成' })
+  await render()
+  await click('翻译题面（AI）')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('任务已满')
+  expect(props.onError).toHaveBeenCalledWith('当前用户任务已满，请等待完成')
+})
+
+it('selects the requested shared result rather than an older completed job', async () => {
+  const item = (id: string) => ({ id, engine: 'ai', model: 'fixture-model', scope: 'shared',
+    status: 'approved', statement: { title: id, sections: [id], samples: [] } })
+  vi.mocked(api).mockResolvedValue({ ...data(), items: [item('old-result'), item('reused-result')] })
+  props.run.mockResolvedValue({ id: 'current-job' })
+  await render()
+  await click('翻译题面（AI）')
+  await render({ jobs: [
+    { id: 'current-job', kind: 'translation', status: 'completed', result: { translation_id: 'reused-result' } },
+    { id: 'old-job', kind: 'translation', status: 'completed', result: { translation_id: 'old-result' } },
+  ] })
+  expect(host.querySelector<HTMLSelectElement>('[aria-label="阅读原题或译文"]')?.value).toBe('reused-result')
+})
+
 it('reading a private result never uploads it, and sharing still requires the upload action', async () => {
   const item = {
     id: 'private-translation',

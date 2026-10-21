@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from acmweb.ai import AIResult, ProviderConfig
 from acmweb.app import create_app
 from acmweb.settings import Settings
-from acmweb.translations import fingerprint, Translations, Translate
+from acmweb.translations import Document, fingerprint, Translations, Translate, fragment_blocks
+from acmweb.codex_bridge import AIError
 from fastapi import HTTPException
 from acmweb.users import csrf_token
 from acmweb.workbench import parse_statement
@@ -184,6 +185,126 @@ def test_translation_fingerprint_excludes_fetch_metadata(workspace):
     assert fingerprint(changed) == before
 
 
+def test_ai_translation_batches_long_statements_and_saves_only_complete_result(workspace, monkeypatch):
+    app, _, statement = workspace
+    sections = [f'Paragraph {i}. ' + ('A natural-language sentence. ' * 90) for i in range(7)]
+    statement = {**statement, 'body_html': '', 'sections': sections}
+    app.state.workbench.store_statement('codeforces:4-A', statement)
+    calls = []
+
+    async def complete(task, provider, model, payload, schema):
+        blocks = payload['blocks']
+        assert task == 'translation'
+        assert sum(len(block['text']) for block in blocks) <= 4000
+        assert len(blocks) <= 48
+        calls.append(blocks)
+        return AIResult(
+            data={'blocks': [{'id': block['id'], 'text': '译文 ' + block['text']} for block in blocks]},
+            provenance={'channel': 'api', 'endpoint': 'https://api.example.test/v1',
+                        'vendor': 'custom', 'protocol': 'chat', 'model': model},
+        )
+
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    result = asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
+    assert len(calls) > 1
+    translated = app.state.translations.get(result['translation_id'])
+    assert translated['statement']['sections'] == ['译文 ' + section for section in sections]
+
+    app.state.translations._expire(result['translation_id'])
+    calls.clear()
+
+    async def fail_second_batch(task, provider, model, payload, schema):
+        calls.append(payload['blocks'])
+        if len(calls) == 2:
+            raise AIError('AI 请求失败，HTTP 429：额度不足或触发限流')
+        return AIResult(
+            data={'blocks': [{'id': block['id'], 'text': '译文 ' + block['text']} for block in payload['blocks']]},
+            provenance={'channel': 'api', 'endpoint': 'https://api.example.test/v1',
+                        'vendor': 'custom', 'protocol': 'chat', 'model': model},
+        )
+
+    monkeypatch.setattr(app.state.ai, 'complete', fail_second_batch)
+    with pytest.raises(AIError, match='第 2/.*批失败.*HTTP 429'):
+        asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
+    assert app.state.translations.ephemeral == {}
+
+
+def test_ai_translation_splits_oversized_single_text_block_and_reassembles(workspace, monkeypatch):
+    app, _, statement = workspace
+    original = 'x' * 3980 + '$x + 1$' + 'y' * 4001
+    statement = {**statement, 'body_html': '', 'sections': [original]}
+    app.state.workbench.store_statement('codeforces:4-A', statement)
+    calls = []
+
+    async def complete(task, provider, model, payload, schema):
+        blocks = payload['blocks']
+        calls.extend(blocks)
+        assert all(len(block['text']) <= 4000 for block in blocks)
+        return AIResult(
+            data={'blocks': blocks},
+            provenance={'channel': 'api', 'endpoint': 'https://api.example.test/v1',
+                        'vendor': 'custom', 'protocol': 'chat', 'model': model},
+        )
+
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    result = asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
+    assert len(calls) > 1
+    masked = ''.join(block['text'] for block in calls)
+    assert 'ACMPROTECT_' in masked and masked.count('ACMPROTECT_') == 1
+    translated = app.state.translations.get(result['translation_id'])['statement']['sections'][0]
+    assert translated == original
+
+
+def test_ai_translation_respects_small_output_budget(workspace, monkeypatch):
+    app, _, statement = workspace
+    app.state.ai.save(ProviderConfig(max_output_tokens=256))
+    original = 'Read the problem carefully. ' * 30
+    app.state.workbench.store_statement('codeforces:4-A', {**statement, 'body_html': '', 'sections': [original]})
+    calls = []
+
+    async def complete(task, provider, model, payload, schema):
+        calls.append(payload['blocks'])
+        assert len(payload['blocks']) <= 2
+        assert sum(len(block['text']) for block in payload['blocks']) <= 128
+        return AIResult(data={'blocks': payload['blocks']}, provenance={'channel': 'api', 'model': model})
+
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    result = asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
+    assert len(calls) > 1
+    assert app.state.translations.get(result['translation_id'])['statement']['sections'] == [original]
+
+
+def test_markdown_code_blocks_remain_original_and_tokens_are_not_split():
+    statement = {'title': 'Statement', 'sections': [
+        'Read this example:\n```cpp\n// Never translate this comment\nint main() {}\n```\nThen solve $x + 1$.']}
+    doc = Document(statement)
+    assert not any('Never translate' in block['text'] for block in doc.blocks)
+    translated = doc.apply({'blocks': [{'id': block['id'], 'text': '译文 ' + block['text']} for block in doc.blocks]})
+    assert '```cpp\n// Never translate this comment\nint main() {}\n```' in translated['sections'][0]
+    token = 'ACMPROTECT_0123456789abcdef_0_END'
+    fragments = fragment_blocks([{'id': '0', 'text': 'x' * 3980 + token + 'y' * 100}])
+    assert token in fragments[1]['text']
+    assert ''.join(fragment['text'] for fragment in fragments) == 'x' * 3980 + token + 'y' * 100
+
+
+def test_bad_batch_stops_before_more_calls_and_does_not_persist(workspace, monkeypatch):
+    app, _, statement = workspace
+    app.state.workbench.store_statement('codeforces:4-A', {**statement, 'body_html': '',
+        'sections': [('Explain $x$ carefully. ' * 60)] * 3})
+    calls = []
+
+    async def complete(task, provider, model, payload, schema):
+        calls.append(payload)
+        return AIResult(data={'blocks': [{'id': block['id'], 'text': '译文已丢失公式'} for block in payload['blocks']]},
+                        provenance={'channel': 'api', 'model': model})
+
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    with pytest.raises(AIError, match='第 1/.*占位符'):
+        asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
+    assert len(calls) == 1
+    assert app.state.translations.ephemeral == {}
+
+
 def test_official_translation_requests_are_batched(monkeypatch, workspace):
     app, _, _ = workspace
     monkeypatch.setenv('ACM_GOOGLE_TRANSLATE_KEY', 'server-only-key')
@@ -216,6 +337,33 @@ def test_official_translation_requests_are_batched(monkeypatch, workspace):
     assert result['blocks'][0] == {'id': '0', 'text': '译文-0'}
     assert result['blocks'][-1] == {'id': '129', 'text': '译文-1'}
     assert all(call[1]['X-Goog-Api-Key'] == 'server-only-key' for call in calls)
+
+
+def test_official_translation_splits_a_single_large_markdown_block(monkeypatch, workspace):
+    app, _, _ = workspace
+    monkeypatch.setenv('ACM_GOOGLE_TRANSLATE_KEY', 'server-only-key')
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, count): self.count = count
+        def json(self):
+            return {'data': {'translations': [{'translatedText': f'text-{i}'} for i in range(self.count)]}}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return None
+        async def post(self, url, *, headers, json):
+            calls.append(json['q'])
+            return Response(len(json['q']))
+
+    monkeypatch.setattr('acmweb.translations.httpx.AsyncClient', lambda **kwargs: Client())
+    blocks = [{'id': '0', 'text': 'x' * 8500}]
+    result = asyncio.run(app.state.translations.ordinary('google', blocks))
+    assert len(calls) == 1
+    assert [len(fragment) for fragment in calls[0]] == [4000, 4000, 500]
+    assert result['blocks'] == [{'id': '0', 'text': 'text-0text-1text-2'}]
 
 
 def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_path, monkeypatch):

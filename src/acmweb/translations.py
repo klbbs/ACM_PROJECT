@@ -59,8 +59,33 @@ def fingerprint(statement):
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-PROTECTED = re.compile(r'\$\$\$.*?\$\$\$|\$\$.*?\$\$|\$(?:\\.|[^$\n])+\$|\\\(.*?\\\)|\\\[.*?\\\]|https?://[^\s<>]+|`[^`]*`', re.S)
+PROTECTED = re.compile(r'```[^\n]*\n.*?```|~~~[^\n]*\n.*?~~~|\$\$\$.*?\$\$\$|\$\$.*?\$\$|\$(?:\\.|[^$\n])+\$|\\\(.*?\\\)|\\\[.*?\\\]|https?://[^\s<>]+|`[^`]*`', re.S)
 TOKEN = re.compile(r'ACMPROTECT_[a-f0-9]{16}_\d+_END')
+AI_BATCH_CHAR_LIMIT = 4000
+AI_BATCH_BLOCK_LIMIT = 48
+
+
+def fragment_blocks(blocks, limit=AI_BATCH_CHAR_LIMIT):
+    """Split long single text nodes without changing their reconstructed text."""
+    fragments = []
+    for block in blocks:
+        text = block['text']
+        start = 0
+        part = 0
+        while start < len(text):
+            end = min(start + limit, len(text))
+            if end < len(text):
+                floor = start + limit // 2
+                boundary = max(text.rfind('\n', floor, end), text.rfind(' ', floor, end))
+                if boundary > start:
+                    end = boundary + 1
+                for match in TOKEN.finditer(text, max(start, end - 128), min(len(text), end + 128)):
+                    if match.start() < end < match.end():
+                        end = match.start() if match.start() > start else match.end()
+            fragments.append({'id': f"{block['id']}.{part}", 'source_id': block['id'],
+                              'text': text[start:end]})
+            start, part = end, part + 1
+    return fragments
 
 
 def model_identity(provenance):
@@ -328,8 +353,7 @@ class Translations:
         if not doc.blocks: raise AIError('题面没有可翻译的文字')
         if payload.engine == 'ai':
             if not payload.model: raise AIError('请选择 AI 模型')
-            result = await self.ai.complete('translation', payload.provider, payload.model, {'blocks': doc.blocks, 'target_language': 'zh-CN'}, Translated)
-            data, provenance = result.data, result.provenance
+            data, provenance = await self.translate_ai(payload, doc.blocks)
         else:
             data = await self.ordinary(payload.engine, doc.blocks)
             provenance = {'channel': 'translation_api', 'vendor': payload.engine, 'model': 'official-service'}
@@ -341,6 +365,62 @@ class Translations:
         self._remember(item)
         return {'translation_id': tid, 'reused': False}
 
+    async def translate_ai(self, payload, blocks):
+        """Bound structured output size so long statements do not truncate as one response."""
+        char_limit, block_limit = AI_BATCH_CHAR_LIMIT, AI_BATCH_BLOCK_LIMIT
+        if payload.provider == 'api':
+            with self.ai.config_lock:
+                token_limit = self.ai.config()['max_output_tokens']
+            char_limit = min(char_limit, max(128, token_limit // 2))
+            block_limit = min(block_limit, max(1, (token_limit - 128) // 48))
+        fragments = fragment_blocks(blocks, char_limit)
+        batches, current, size = [], [], 0
+        for block in fragments:
+            block_size = len(block['text'])
+            if current and (len(current) >= block_limit or
+                            size + block_size > char_limit):
+                batches.append(current)
+                current, size = [], 0
+            current.append(block)
+            size += block_size
+        if current:
+            batches.append(current)
+        if len(batches) > 64:
+            raise AIError('当前输出上限过低，题面需要超过 64 批翻译；请在 AI 设置提高输出 token 上限后重试')
+
+        translated = {}
+        provenance = None
+        for index, batch in enumerate(batches, start=1):
+            try:
+                result = await self.ai.complete(
+                    'translation', payload.provider, payload.model,
+                    {'blocks': [{'id': block['id'], 'text': block['text']} for block in batch],
+                     'target_language': 'zh-CN'}, Translated,
+                )
+                response = Translated.model_validate(result.data).blocks
+                expected_ids = [block['id'] for block in batch]
+                if [block.id for block in response] != expected_ids:
+                    raise AIError('AI 返回的段落顺序或编号不匹配')
+                for block, result_block in zip(batch, response):
+                    if (not result_block.text.strip() or
+                            TOKEN.findall(block['text']) != TOKEN.findall(result_block.text) or
+                            'ACMPROTECT_' in TOKEN.sub('', result_block.text)):
+                        raise AIError('翻译改变了段落或公式占位符，未保存')
+                    translated[block['source_id']] = translated.get(block['source_id'], '') + result_block.text
+                if provenance is None:
+                    provenance = result.provenance
+                elif model_identity(provenance) != model_identity(result.provenance):
+                    raise AIError('翻译期间 AI 配置发生变化，未保存；请重新翻译')
+            except AIError as exc:
+                if len(batches) == 1:
+                    raise
+                raise AIError(f'题面翻译第 {index}/{len(batches)} 批失败，未保存：{exc}') from None
+            except Exception:
+                if len(batches) == 1:
+                    raise AIError('题面翻译结果格式无效，未保存') from None
+                raise AIError(f'题面翻译第 {index}/{len(batches)} 批结果无效，未保存') from None
+        return {'blocks': [{'id': block['id'], 'text': translated[block['id']]} for block in blocks]}, provenance
+
     async def ordinary(self, engine, blocks):
         key = os.getenv('ACM_GOOGLE_TRANSLATE_KEY' if engine == 'google' else 'ACM_BING_TRANSLATE_KEY', '')
         if not key: raise AIError('管理员尚未配置该翻译服务，请使用官方翻译网页入口')
@@ -349,8 +429,9 @@ class Translations:
             # size. Keep each batch comfortably below those documented limits
             # and combine only after every batch has validated its response.
             item_limit, char_limit = (128, 30000) if engine == 'google' else (100, 50000)
+            fragments = fragment_blocks(blocks, min(AI_BATCH_CHAR_LIMIT, char_limit))
             batches, current, size = [], [], 0
-            for block in blocks:
+            for block in fragments:
                 block_size = len(block['text'].encode('utf-8'))
                 if current and (len(current) >= item_limit or size + block_size > char_limit):
                     batches.append(current)
@@ -359,9 +440,9 @@ class Translations:
                 size += block_size
             if current:
                 batches.append(current)
-            translated = []
+            translated = {}
             async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
-                for batch in batches:
+                for index, batch in enumerate(batches, start=1):
                     if engine == 'google':
                         response = await client.post('https://translation.googleapis.com/language/translate/v2', headers={'X-Goog-Api-Key': key}, json={'q': [b['text'] for b in batch], 'target': 'zh-CN', 'format': 'text'})
                     else:
@@ -369,15 +450,17 @@ class Translations:
                         region = os.getenv('ACM_BING_TRANSLATE_REGION', '')
                         if region: headers['Ocp-Apim-Subscription-Region'] = region
                         response = await client.post('https://api.cognitive.microsofttranslator.com/translate', params={'api-version': '3.0', 'to': 'zh-Hans', 'textType': 'plain'}, headers=headers, json=[{'Text': b['text']} for b in batch])
-                    if response.status_code != 200: raise AIError(f'官方翻译服务返回 HTTP {response.status_code}，请管理员检查密钥与配额')
+                    if response.status_code != 200:
+                        raise AIError(f'官方翻译服务第 {index}/{len(batches)} 批返回 HTTP {response.status_code}，请管理员检查密钥与配额')
                     raw = response.json()
                     if engine == 'google':
                         import html
                         texts = [html.unescape(row['translatedText']) for row in raw['data']['translations']]
                     else: texts = [row['translations'][0]['text'] for row in raw]
                     if len(texts) != len(batch): raise ValueError()
-                    translated.extend(texts)
-                return {'blocks': [{'id': b['id'], 'text': text} for b, text in zip(blocks, translated)]}
+                    for block, text in zip(batch, texts):
+                        translated[block['source_id']] = translated.get(block['source_id'], '') + text
+                return {'blocks': [{'id': block['id'], 'text': translated[block['id']]} for block in blocks]}
         except AIError: raise
         except Exception: raise AIError('官方翻译请求失败或格式无效，未保存，请检查服务端网络') from None
 

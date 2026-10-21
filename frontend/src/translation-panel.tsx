@@ -69,6 +69,8 @@ export function TranslationPanel({
   const disclosureId = React.useId()
   const [busy, setBusy] = useState(false),
     [notice, setNotice] = useState('')
+  const [translationError, setTranslationError] = useState('')
+  const [generationJobId, setGenerationJobId] = useState('')
   const [reviews, setReviews] = useState<Row[] | null>(null),
     [reviewNotes, setReviewNotes] = useState<Record<string, string>>({})
   const pendingGeneration = useRef<{ engine: string; model: string; before: Set<string> } | null>(
@@ -78,6 +80,14 @@ export function TranslationPanel({
     (job) => job.kind === 'translation' && ['running', 'queued'].includes(job.status),
   )
   const fail = (error: unknown) => onError(error instanceof Error ? error.message : '翻译请求失败')
+  useEffect(() => {
+    pendingGeneration.current = null
+    setGenerationJobId('')
+    setTranslationError('')
+    setNotice('')
+    setSelected('')
+    setData(null)
+  }, [problemId])
   useEffect(() => {
     let alive = true
     api(`/workbench/problem/${encodeURIComponent(problemId)}/translations`)
@@ -108,17 +118,21 @@ export function TranslationPanel({
     }
   }, [problemId, revision, statement])
   useEffect(() => {
-    const completed = [...jobs]
-      .reverse()
-      .find(
-        (job) =>
-          job.kind === 'translation' &&
-          job.status === 'completed' &&
-          job.result?.translation_id &&
-          data?.items.some((item: Row) => item.id === job.result.translation_id),
-      )
-    if (completed) setSelected(completed.result.translation_id)
-  }, [jobs, data])
+    if (!generationJobId) return
+    const job = jobs.find((item) => item.id === generationJobId && item.kind === 'translation')
+    if (job?.status === 'failed' || job?.status === 'interrupted') {
+      pendingGeneration.current = null
+      setTranslationError(job.error || '翻译任务中断，请检查连接后重新发起。')
+    } else if (
+      job?.status === 'completed' &&
+      data?.items.some((item: Row) => item.id === job.result?.translation_id)
+    ) {
+      setSelected(job.result.translation_id)
+      pendingGeneration.current = null
+      setGenerationJobId('')
+      setNotice('翻译已完成，可在下方切换阅读；个人译文仅在内存暂存 30 分钟。')
+    }
+  }, [jobs, data, generationJobId])
   const reload = async () => {
     const result = await api(`/workbench/problem/${encodeURIComponent(problemId)}/translations`)
     setData(result)
@@ -134,20 +148,28 @@ export function TranslationPanel({
     if (busy || active || !configured || (engine === 'ai' && !model)) return
     setBusy(true)
     setNotice('')
-    pendingGeneration.current = {
+    setTranslationError('')
+    setGenerationJobId('')
+    const pending = {
       engine,
       model,
-      before: new Set((data?.items || []).map((item: Row) => item.id)),
+      before: new Set<string>((data?.items || []).map((item: Row) => item.id)),
     }
+    pendingGeneration.current = pending
     try {
-      await run(`/workbench/problem/${encodeURIComponent(problemId)}/translate`, {
+      const response = await run(`/workbench/problem/${encodeURIComponent(problemId)}/translate`, {
         engine,
         provider,
         model: engine === 'ai' ? model : '',
         consent: true,
       })
+      if (pendingGeneration.current !== pending) return
+      if (response?.error) throw new Error(response.error)
+      setGenerationJobId(response?.id || '')
     } catch (error) {
+      if (pendingGeneration.current !== pending) return
       pendingGeneration.current = null
+      setTranslationError(error instanceof Error ? error.message : '翻译请求失败')
       fail(error)
     } finally {
       setBusy(false)
@@ -263,6 +285,7 @@ export function TranslationPanel({
           </div>
         )}
         {active && <p role="status">题面翻译正在进行，可继续编码；完成后仅在内存暂存 30 分钟。</p>}
+        {translationError && <p role="alert">{translationError} 原题和已有译文仍可阅读。</p>}
         {!data?.shareable && (
           <p className="help">手动导入等未经核验的题面仅支持个人翻译，不接受共享上传。</p>
         )}
