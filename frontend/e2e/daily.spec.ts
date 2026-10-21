@@ -57,6 +57,20 @@ test('daily plan generates every target, replaces one problem twice, and cannot 
   await expect(daily).toContainText('今日目标 2 题')
   await expect(daily.locator('.daily-problem')).toHaveCount(2)
   await page.screenshot({ path: 'test-results/daily-plan.png', fullPage: true })
+  const task = (await (await page.request.get('/api/daily')).json()).plan.tasks[0]
+  const state = await (await page.request.get(`/api/workbench/problem/${encodeURIComponent(task.id)}`)).json()
+  const draft = `// today's practice: ${task.id}`
+  await page.request.put(`/api/workbench/problem/${encodeURIComponent(task.id)}/draft`, {
+    data: { code: draft, language: 'cpp20', revision: state.draft.revision },
+  })
+  await daily.getByRole('button', { name: '去工作台', exact: true }).first().click()
+  await expect(page.locator('.wb-statement')).toContainText(task.title)
+  await expect(page.locator('.cm-content')).toHaveText(draft)
+  await expect(page.getByLabel('代码语言')).toHaveValue('cpp20')
+  expect(rollRequests).toHaveLength(3)
+  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await expect(daily.locator('.daily-problem')).toHaveCount(2)
+  await expect(daily).toContainText('今日还可换题 0 次')
 })
 
 test('verified completed task accepts actual minutes and allows corrections without changing check-in', async ({

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import { RefreshCw, Sparkles, ExternalLink } from 'lucide-react'
+import { RefreshCw, Sparkles, ExternalLink, Code2 } from 'lucide-react'
 
 type Row = Record<string, any>
 type Props = {
@@ -10,9 +10,10 @@ type Props = {
   aiPicker: React.ReactNode
   onError: (s: string) => void
   onNotice: (s: string) => void
+  onOpenProblem: (problemId: string) => void
 }
 
-export function DailyTasksPage({ revision, provider, model, aiPicker, onError, onNotice }: Props) {
+export function DailyTasksPage({ revision, provider, model, aiPicker, onError, onNotice, onOpenProblem }: Props) {
   const [data, setData] = useState<Row | null>(null)
   const [formReady, setFormReady] = useState(false)
   const dirty = useRef(false)
@@ -286,6 +287,9 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
                 </div>
               )}
               <div className="daily-task-actions">
+                <button className="button primary" onClick={() => onOpenProblem(task.id)}>
+                  <Code2 size={14} /> 去工作台
+                </button>
                 <a className="button secondary" href={task.url} target="_blank" rel="noreferrer">
                   打开原题
                   <ExternalLink size={14} />

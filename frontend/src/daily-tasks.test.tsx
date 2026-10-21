@@ -31,6 +31,7 @@ const render = async (revision = 0, overrides: Record<string, unknown> = {}) =>
         aiPicker={null}
         onError={vi.fn()}
         onNotice={vi.fn()}
+        onOpenProblem={vi.fn()}
         {...overrides}
       />,
     )

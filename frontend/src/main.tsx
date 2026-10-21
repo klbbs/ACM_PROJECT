@@ -162,6 +162,13 @@ function App() {
     }
   }
   const [workbenchSelection, setWorkbenchSelection] = useState<Row | null>(null)
+  const openProblem = (problemId: string) => {
+    if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
+      setWorkbenchSelection({ problem_id: problemId, request_id: Date.now() })
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+      setPageRaw('workbench')
+    }
+  }
   const openSubmission = (row: Row) => {
     if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
       setWorkbenchSelection({
@@ -1046,6 +1053,7 @@ function App() {
               revision={revision}
               onError={setError}
               onNotice={setNotice}
+              onOpenProblem={openProblem}
             />
           )}
           {page === 'announcements' && <AnnouncementPage state={announcements} />}
@@ -1062,14 +1070,7 @@ function App() {
             />
           )}
           {page === 'social' && auth.multi_user && (
-            <SocialPage
-              onOpenProblem={(pid: string) => {
-                if (window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))) {
-                  setWorkbenchSelection({ problem_id: pid, request_id: Date.now() })
-                  setPageRaw('workbench')
-                }
-              }}
-            />
+            <SocialPage onOpenProblem={openProblem} />
           )}
           {page === 'community' && auth.multi_user && (
             <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
@@ -1120,7 +1121,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.18.4</span>
+              数据有边界，进步有方向。 <span className="version">v0.18.5</span>
             </span>
           </footer>
         </div>
@@ -1518,6 +1519,7 @@ function PracticePage({
   revision,
   onError,
   onNotice,
+  onOpenProblem,
 }: any) {
   const [minimum, setMinimum] = useState(800),
     [maximum, setMaximum] = useState(1600),
@@ -1758,6 +1760,7 @@ function PracticePage({
         aiPicker={aiPicker}
         onError={onError}
         onNotice={onNotice}
+        onOpenProblem={onOpenProblem}
       />
       {selected.length > 0 && (
         <>
@@ -1790,8 +1793,11 @@ function PracticePage({
                     <p>{p.reason}</p>
                   </div>
                   <div className="problem-actions">
-                    <a className="button primary" href={p.url} target="_blank" rel="noreferrer">
-                      开始练习 <ExternalLink size={14} />
+                    <Button className="primary" onClick={() => onOpenProblem(p.id)}>
+                      去工作台 <Code2 size={14} />
+                    </Button>
+                    <a className="button secondary" href={p.url} target="_blank" rel="noreferrer">
+                      打开原题 <ExternalLink size={14} />
                     </a>
                     <Button
                       className="icon-btn"
@@ -1877,6 +1883,9 @@ function PracticePage({
                       </div>
                     </td>
                     <td>
+                      <Button className="text-button" onClick={() => onOpenProblem(p.id)}>
+                        去工作台
+                      </Button>
                       <a
                         href={p.url}
                         className="icon-link"
