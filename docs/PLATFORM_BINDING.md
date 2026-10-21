@@ -58,7 +58,7 @@ JSESSIONID、RCPC 与其他验证 Cookie 是否存在，以浏览器当前实际
 
 浏览器网络面板见 [Firefox 官方说明](https://firefox-source-docs.mozilla.org/devtools-user/network_monitor/request_details/index.html) 与 [Chrome 官方请求标头说明](https://developer.chrome.com/docs/devtools/network/reference#headers)。
 
-牛客检测已支持官网当前会话字段，必须识别到与配置 UID 一致的真实会话身份；页面结构不匹配时仍显示“无法确认”，不能只凭 HTTP200 或公开主页判定成功。洛谷连接页不提供登录检测或验证码重试引导，使用数字 UID 同步公开资料，并在官方网页交题。状态解释见 [登录检测说明](CREDENTIAL_CHECK.md)。
+牛客检测已支持官网当前会话字段，必须识别到与配置 UID 一致的真实会话身份；页面结构不匹配时仍显示“无法确认”，不能只凭 HTTP200 或公开主页判定成功。洛谷可通过上文官方登录窗口输入账号并处理验证码、检测绑定；手动Cookie卡片仍不提供无效的访问限制重试引导，也可使用数字UID同步公开资料。交题在官方网页完成。状态解释见 [登录检测说明](CREDENTIAL_CHECK.md)。
 
 ## 排查
 

@@ -308,6 +308,12 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   // and then revisits settings; keep their combined time separate from a
   // single interaction's locator timeout.
   test.setTimeout(60000)
+  const manualAiRequests: string[] = []
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (/\/api\/workbench\/(?:problem\/[^/]+\/hint|attempt\/[^/]+\/review)$/.test(path))
+      manualAiRequests.push(path)
+  })
   // All upstream judge/AI responses are synthetic in the isolated test server.
   await page.route('**/api/ai/models?provider=api', (route) =>
     route.fulfill({
@@ -332,11 +338,14 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   await page.getByLabel('AI 通道').selectOption('api')
   await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
   await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
-  await page.getByRole('checkbox', { name: /我同意将本题题面/ }).check()
+  await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /给我一个小提示/ })).toBeEnabled()
+  expect(manualAiRequests).toHaveLength(0)
   await page.getByRole('button', { name: /给我一个小提示/ }).click()
   await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible({
     timeout: 15000,
   })
+  expect(manualAiRequests).toHaveLength(1)
   const form = page.locator('.wb-submission-form')
   // A mistyped official ID should fail visibly and remain correctable.
   await form.getByLabel('本次平台提交号').fill('999999')
@@ -362,6 +371,7 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   await expect(wa.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
   await wa.getByRole('button', { name: '分析本次错因（不提供答案）' }).click()
   await expect(wa.getByText(/仅针对本地快照检查边界/)).toBeVisible()
+  expect(manualAiRequests).toHaveLength(2)
   await editor.fill('print("corrected practice version")')
   await editor.press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
@@ -472,8 +482,11 @@ test('self-test uses custom input, compares output and keeps results out of subm
     .locator('.wb-editor')
     .screenshot({ path: test.info().outputPath('editor-self-test.png') })
   const run = page.getByRole('button', { name: '运行自测', exact: true })
-  await expect(run).toBeDisabled()
-  await page.getByLabel('我同意将本次代码和输入发送到管理员配置的隔离自测服务').check()
+  await expect(run).toBeEnabled()
+  await expect(page.getByLabel('我同意将本次代码和输入发送到管理员配置的隔离自测服务')).toHaveCount(
+    0,
+  )
+  expect(sent).toHaveLength(0)
   await run.click()
   await expect(page.getByText('FAIL · 与预期输出不一致', { exact: true })).toBeVisible()
   expect(sent).toEqual([
@@ -526,8 +539,8 @@ test('automatic error coaching needs opt-in and gives a small hint after a verif
   const attempt = page.locator('article.wb-attempt').last()
   await expect(attempt.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
   await expect(attempt.getByText(/仅针对本地快照检查边界/)).toBeVisible({ timeout: 15000 })
-  // Automatic consent is separate from optional manual-hint consent; no manual call was made.
-  await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).not.toBeChecked()
+  // Automatic coaching stays opt-in; manual actions need only a chosen model and an explicit click.
+  await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).toHaveCount(0)
   await toggle.uncheck()
   await expect(
     page.getByText('自动提示已关闭，不会自动发送代码。仍可手动获取小提示或分析错因。'),

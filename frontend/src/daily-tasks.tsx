@@ -21,8 +21,8 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
   const [goal, setGoal] = useState(1),
     [days, setDays] = useState(30)
   const [durations, setDurations] = useState<Record<number, string>>({})
-  const [busy, setBusy] = useState(false),
-    [consent, setConsent] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const disclosureId = React.useId()
   const fail = (error: unknown) =>
     onError(error instanceof Error ? error.message : '每日任务请求失败')
   const applyRead = (value: Row) => {
@@ -214,7 +214,8 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
         {!ready && (
           <button
             className="button primary"
-            disabled={busy || generating || !data?.active || !model || !consent}
+            disabled={busy || generating || !data?.active || !model}
+            aria-describedby={disclosureId}
             onClick={() => select()}
           >
             <Sparkles size={16} />
@@ -228,10 +229,10 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
           刷新已验证进度
         </button>
       </div>
-      <label className="consent">
-        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-        同意将训练偏好和公开候选题信息发送给所选 AI，生成和换题可能产生 API 费用。
-      </label>
+      <p className="help" id={disclosureId}>
+        点击“AI 生成”或“换这道题”会将训练偏好、每日目标、练习用时资料和公开候选题信息发送给所选
+        AI，可能产生 API 费用。 查看题单、修改偏好和刷新进度不会触发 AI 选题。
+      </p>
       {ready && (
         <p className="help">
           今日还可换题 {data.rerolls_remaining}{' '}
@@ -291,9 +292,8 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
                 </a>
                 <button
                   className="button secondary"
-                  disabled={
-                    busy || task.completed || !model || !consent || data.rerolls_remaining === 0
-                  }
+                  aria-describedby={disclosureId}
+                  disabled={busy || task.completed || !model || data.rerolls_remaining === 0}
                   onClick={() => select(task.task_id)}
                 >
                   换这道题

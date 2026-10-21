@@ -1,0 +1,16 @@
+{
+  "platform": "luogu",
+  "source": "authorized_default_firefox_quiescent_snapshot",
+  "source_profile_modified": false,
+  "new_password_login": false,
+  "expiry_unit_normalized": "milliseconds_to_seconds",
+  "applicable_cookie_count": 2,
+  "httponly_count": 2,
+  "default_container_used": true,
+  "status": "authenticated",
+  "reason": "identity_verified",
+  "stored_accounts": 1,
+  "expected_identity_matches": true,
+  "has_cookie": true,
+  "verified_status_cached": true
+}

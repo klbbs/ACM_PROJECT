@@ -31,12 +31,12 @@ export function SelfTestPanel({
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
   const [stdin, setStdin] = useState(''),
     [expected, setExpected] = useState('')
-  const [compare, setCompare] = useState(false),
-    [consent, setConsent] = useState(false)
+  const [compare, setCompare] = useState(false)
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [result, setResult] = useState<Result | null>(null)
   const alive = useRef(true)
+  const running = useRef(false)
   const fingerprint = JSON.stringify([code, language, stdin, compare ? expected : null])
   const current = useRef(fingerprint)
   current.current = fingerprint
@@ -57,6 +57,8 @@ export function SelfTestPanel({
     }
   }, [])
   const run = async () => {
+    if (running.current || !capabilities?.enabled || !supported || !code.trim()) return
+    running.current = true
     const submitted = fingerprint
     setBusy(true)
     setError('')
@@ -67,7 +69,7 @@ export function SelfTestPanel({
         language,
         stdin,
         expected: compare ? expected : null,
-        consent,
+        consent: true,
       })
       if (alive.current) {
         if (current.current === submitted) setResult(value)
@@ -76,6 +78,7 @@ export function SelfTestPanel({
     } catch (e) {
       if (alive.current) setError(e instanceof Error ? e.message : '自测请求失败')
     } finally {
+      running.current = false
       if (alive.current) setBusy(false)
     }
   }
@@ -165,19 +168,10 @@ export function SelfTestPanel({
             />{' '}
             对照预期输出（忽略行尾空白与末尾空行）
           </label>
-          <label className="wb-consent">
-            <input
-              type="checkbox"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
-            />{' '}
-            我同意将本次代码和输入发送到管理员配置的隔离自测服务
-          </label>
-          <button
-            className="secondary"
-            disabled={busy || !supported || !consent || !code.trim()}
-            onClick={run}
-          >
+          <p className="muted">
+            点击运行自测后，才会将本次代码和输入发送到管理员配置的隔离自测服务。
+          </p>
+          <button className="secondary" disabled={busy || !supported || !code.trim()} onClick={run}>
             {busy ? '隔离运行中…' : '运行自测'}
           </button>
         </>

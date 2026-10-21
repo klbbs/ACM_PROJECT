@@ -52,8 +52,7 @@ export function WorkbenchPage({
     [language, setLanguage] = useState('cpp17')
   const [saved, setSaved] = useState('尚未选择题目'),
     [busy, setBusy] = useState(false)
-  const [consent, setConsent] = useState(false),
-    [saveTick, setSaveTick] = useState(0)
+  const [saveTick, setSaveTick] = useState(0)
   const [automaticCoach, setAutomaticCoach] = useState<Row>({
     enabled: false,
     provider: 'api',
@@ -255,8 +254,8 @@ export function WorkbenchPage({
       })
   }
   const coach = (path: string) => {
-    if (!consent || !model) {
-      onError('请先选择模型，并同意将题面或所选提交代码交给 AI 分析')
+    if (!model) {
+      onError('请先选择用于提示或错因分析的模型')
       return
     }
     return run(path, { provider, model })
@@ -620,15 +619,10 @@ export function WorkbenchPage({
                   <Lightbulb size={18} /> AI 小提示
                 </h3>
                 {aiPicker}
-                <label className="wb-consent">
-                  <input
-                    type="checkbox"
-                    checked={consent}
-                    onChange={(e) => setConsent(e.target.checked)}
-                  />{' '}
-                  我同意将本题题面和提示历史发送给所选
-                  AI；点击错因复盘时，另发送该次提交代码及判题信息。
-                </label>
+                <p className="muted">
+                  点击获取提示时，将本题题面和提示历史发送给所选 AI；点击错因复盘时，另发送
+                  该次提交代码及判题信息。调用所选服务可能计费。
+                </p>
                 <p className="muted">
                   每次只给一个切入点，最多 8 次；先分析题目，再结合已有提示逐步引导。AI
                   可能判断有误，仍需自己验证。
@@ -671,7 +665,7 @@ export function WorkbenchPage({
                   </article>
                 ))}
                 <button
-                  disabled={!consent || !model || active || !statement || data?.hints.length >= 8}
+                  disabled={!model || active || !statement || data?.hints.length >= 8}
                   onClick={() => coach(`/workbench/problem/${encodeURIComponent(pid)}/hint`)}
                 >
                   给我一个小提示 {data?.hints.length || 0}/8
@@ -708,7 +702,7 @@ export function WorkbenchPage({
                     }
                     capabilities={data?.capabilities}
                     active={active}
-                    consent={consent && !!model}
+                    aiReady={!!model}
                     run={run}
                     coach={coach}
                     onError={onError}
@@ -723,7 +717,7 @@ export function WorkbenchPage({
   )
 }
 
-function Attempt({ attempt: a, handles, capabilities, active, consent, run, coach, onError }: any) {
+function Attempt({ attempt: a, handles, capabilities, active, aiReady, run, coach, onError }: any) {
   const [handle, setHandle] = useState(a.handle || handles[0] || ''),
     [sid, setSid] = useState(a.submission_id ? String(a.submission_id) : '')
   useEffect(() => {
@@ -882,7 +876,7 @@ function Attempt({ attempt: a, handles, capabilities, active, consent, run, coac
       ].includes(a.verdict) && (
         <button
           className="secondary"
-          disabled={!consent || active}
+          disabled={!aiReady || active}
           onClick={() => coach(`/workbench/attempt/${a.id}/review`)}
         >
           分析本次错因（不提供答案）

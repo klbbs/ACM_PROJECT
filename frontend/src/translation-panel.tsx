@@ -65,8 +65,8 @@ export function TranslationPanel({
 }: Props) {
   const [data, setData] = useState<Row | null>(null),
     [selected, setSelected] = useState('')
-  const [engine, setEngine] = useState('ai'),
-    [consent, setConsent] = useState(false)
+  const [engine, setEngine] = useState('ai')
+  const disclosureId = React.useId()
   const [busy, setBusy] = useState(false),
     [notice, setNotice] = useState('')
   const [reviews, setReviews] = useState<Row[] | null>(null),
@@ -131,7 +131,7 @@ export function TranslationPanel({
     setReviews(result.items)
   }
   const generate = async () => {
-    if (!consent || !configured || (engine === 'ai' && !model)) return
+    if (busy || active || !configured || (engine === 'ai' && !model)) return
     setBusy(true)
     setNotice('')
     pendingGeneration.current = {
@@ -197,18 +197,11 @@ export function TranslationPanel({
         <p className="help">
           选择已有共享译文不会调用 AI。新翻译仅发送本题题面，不发送你的代码、提交记录或平台
           Cookie。个人译文仅在内存暂存 30 分钟，服务重启后清除；仅主动上传的共享译文持久保存。
-          AI 可能分段调用并计费，请先核对下方模型。
         </p>
         <div className="translation-form">
           <label>
             翻译方式
-            <select
-              value={engine}
-              onChange={(event) => {
-                setEngine(event.target.value)
-                setConsent(false)
-              }}
-            >
+            <select value={engine} onChange={(event) => setEngine(event.target.value)}>
               <option value="ai">AI 翻译</option>
               <option value="google">Google 翻译</option>
               <option value="bing">Bing 翻译</option>
@@ -233,16 +226,14 @@ export function TranslationPanel({
         </div>
         {configured ? (
           <>
-            <label className="translation-consent">
-              <input
-                type="checkbox"
-                checked={consent}
-                onChange={(event) => setConsent(event.target.checked)}
-              />
-              我同意将本题题面发送至所选{engine === 'ai' ? ' AI（可能计费）' : '翻译服务'}
-            </label>
+            <p className="help" id={disclosureId}>
+              {engine === 'ai'
+                ? '点击“翻译题面（AI）”会将本题题面发送给所选 AI，可能分段调用并计费。'
+                : `点击翻译会将本题题面发送给 ${engineNames[engine]} 官方服务，可能按服务规则计费；不会调用 AI。`}
+            </p>
             <button
-              disabled={busy || active || !consent || (engine === 'ai' && !model)}
+              aria-describedby={disclosureId}
+              disabled={busy || active || (engine === 'ai' && !model)}
               onClick={generate}
             >
               翻译题面{engine === 'ai' ? '（AI）' : `（${engineNames[engine]}）`}
