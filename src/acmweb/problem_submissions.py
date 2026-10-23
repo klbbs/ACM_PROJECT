@@ -166,6 +166,9 @@ class ProblemSubmissions:
             if out.error:
                 # Adapter diagnostics contain fixed messages/hosts, not arbitrary HTML.
                 result.update(message='本次查询未完整完成，已保留可读取记录和历史记录', error=out.error)
+                if not out.submissions and not out.error.startswith('达到 max_pages='):
+                    self.db.set(key, {**status, **result, 'status':'failed', 'finished_at':int(time.time())})
+                    raise AIError('本题提交记录未能读取：'+out.error+'；原记录已保留')
             self.db.set(key, {**status, **result, 'status':'completed' if complete else 'partial', 'finished_at':int(time.time())})
             # Judge results from the local send path can now be reviewed without
             # associating the editor's current text with an unrelated submission.
@@ -184,7 +187,7 @@ class ProblemSubmissions:
             self.db.set(key, {**status, 'status':'interrupted', 'message':'同步中断，原记录保留；代码不会重新提交'})
             raise
         except Exception as exc:
-            self.db.set(key, {**status, 'status':'failed', 'message':'本题记录未完成同步，原记录已保留'})
+            self.db.set(key, {**self.db.get(key, status), 'status':'failed', 'message':'本题记录未完成同步，原记录已保留'})
             if isinstance(exc, (AIError, HTTPException)):
                 raise
             raise AIError('本题记录未完成同步，请检查平台网络或登录状态；原记录已保留') from None

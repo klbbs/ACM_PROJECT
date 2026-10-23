@@ -268,6 +268,9 @@ class RemoteSubmissions:
         judge.update(verdict=status, platform=platform, source='official_remote_submission')
         if platform == 'codeforces':
             judge['creationTimeSeconds'] = timestamp
+            judge['passedTestCount'] = (observed.get('raw') or {}).get('passedTestCount')
+            judge['timeConsumedMillis'] = observed.get('time_ms')
+            judge['memoryConsumedBytes'] = observed.get('memory_bytes')
         from dataclasses import asdict
         from ojcrawler.models import Submission
         raw = {key: value for key, value in observed.items() if key not in {'account', 'code', 'cookie', 'sourceCode'}}
@@ -292,9 +295,16 @@ class RemoteSubmissions:
             conn.execute('''UPDATE wb_attempts SET verdict=?,judge_data=?,last_synced=?,
                 review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?''',
                 (status,encoded,now,status,encoded,aid))
-            existing = conn.execute("SELECT account FROM submissions WHERE platform=? AND "+
+            existing = conn.execute("SELECT account,data FROM submissions WHERE platform=? AND "+
                                     ('lower(account)=lower(?)' if platform=='codeforces' else 'account=?')+
                                     ' AND id=?', (platform,intent['handle'],intent['submission_id'])).fetchone()
+            if existing:
+                standard['problem'] = json.loads(existing['data']).get('problem', {})
+            if not standard['problem']:
+                catalog = conn.execute('SELECT data FROM problem_catalog WHERE platform=? AND id=?', (platform,pid)).fetchone()
+                if catalog:
+                    item = json.loads(catalog['data'])
+                    standard['problem'] = {key:item.get(key) for key in ('title','difficulty','tags')}
             conn.execute('''INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(platform,account,id) DO UPDATE SET verdict=excluded.verdict,data=excluded.data,updated_at=excluded.updated_at''',
                 (platform,existing['account'] if existing else intent['handle'],intent['submission_id'],pid.split(':',1)[1],

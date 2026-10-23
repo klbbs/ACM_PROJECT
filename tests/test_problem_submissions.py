@@ -57,12 +57,12 @@ def test_sync_partial_and_empty_keep_previous_results(site):
     import asyncio
     asyncio.run(service.sync('codeforces:4-A', 'demo'))
     plan['result'] = Collection('codeforces','demo', complete=False, error='Synthetic permission failure')
-    result = asyncio.run(service.sync('codeforces:4-A', 'demo'))
-    assert result['count'] == 0 and result['complete'] is False
-    assert 'error' in result
+    with pytest.raises(AIError,match='未能读取'):
+        asyncio.run(service.sync('codeforces:4-A', 'demo'))
     rows = service.listing('codeforces:4-A','demo')
     assert len(rows['items']) == 1
-    assert rows['sync_status']['status'] == 'partial'
+    assert rows['sync_status']['status'] == 'failed'
+    assert rows['sync_status']['error'] == 'Synthetic permission failure'
 
 
 def test_sync_rejects_other_accounts_extra_source_and_wrong_problem(site):
