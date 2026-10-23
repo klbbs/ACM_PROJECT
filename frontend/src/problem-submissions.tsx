@@ -53,7 +53,7 @@ export type ProblemSubmissionsProps = {
   revision: number
   aiReady: boolean
   coach: (path: string) => Promise<any> | void
-  loadCode: (code: string, language?: string | null) => Promise<void>
+  loadCode: (code: string, language?: string | null, stillCurrent?: () => boolean) => Promise<void>
   onChanged: () => void | Promise<void>
   onError: (message: string) => void
   selected?: Row | null
@@ -477,7 +477,7 @@ export function ProblemSubmissions({
       mounted.current && currentProblem.current === target && currentHandle.current === account
     if (!stillCurrent()) return
     try {
-      await callbacks.current.loadCode(state.code, state.language)
+      await callbacks.current.loadCode(state.code, state.language, stillCurrent)
       if (!stillCurrent()) return
       setLoaded((previous) => ({ ...previous, [submission]: '已载入编辑器，正在自动保存' }))
       setCodeErrors((previous) => ({ ...previous, [submission]: '' }))

@@ -260,9 +260,15 @@ export function WorkbenchPage({
   }, [initialSelection])
   // Loading a synchronized record never silently replaces the draft: the existing
   // save path runs first and the replacement is stored as a new unsaved version.
-  const loadCode = async (value: string, lang?: string | null) => {
+  const loadCode = async (value: string, lang?: string | null, stillCurrent = () => true) => {
+    const target = currentPid.current
+    if (!stillCurrent()) throw new Error('当前题目或账号已变化，未替换编辑器内容')
     if (dirty.current && !(await save()))
       throw new Error('当前草稿尚未保存成功，未替换编辑器内容；请先保存或复制后再试')
+    // Saving can yield while the user changes problem/account. Recheck at the
+    // actual replacement boundary rather than only in the calling component.
+    if (currentPid.current !== target || !stillCurrent())
+      throw new Error('保存期间题目或账号已变化，未替换编辑器内容')
     if (lang && ['cpp17', 'cpp20', 'python3', 'java17'].includes(lang)) setLanguage(lang)
     setCode(value)
     dirty.current = true

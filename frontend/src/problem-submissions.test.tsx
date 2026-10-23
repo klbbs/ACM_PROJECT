@@ -358,7 +358,7 @@ it('requires explicit confirmation before replacing a non-empty draft', async ()
     })
     expect(load.disabled).toBe(false)
     await click(host, '载入编辑器')
-    expect(values.loadCode).toHaveBeenCalledWith('int main(){}', 'cpp17')
+    expect(values.loadCode).toHaveBeenCalledWith('int main(){}', 'cpp17', expect.any(Function))
     expect(host.textContent).toContain('已载入编辑器')
   })
 })
@@ -660,7 +660,7 @@ it('loading into the editor stays bound to the account that started it', async (
   const gate = new Promise<void>((resolve) => {
     release = resolve
   })
-  const loadCode = vi.fn(() => gate)
+  const loadCode = vi.fn<ProblemSubmissionsProps['loadCode']>(() => gate)
   const values = props({ handles: ['demo', 'alt'], loadCode })
   await render(values, async (host) => {
     await act(async () => {
@@ -668,7 +668,10 @@ it('loading into the editor stays bound to the account that started it', async (
     })
     await click(host, '载入编辑器')
     expect(loadCode).toHaveBeenCalledOnce()
+    const stillCurrent = loadCode.mock.calls[0][2]!
+    expect(stillCurrent()).toBe(true)
     await pick(host, 'alt')
+    expect(stillCurrent()).toBe(false)
     // Open the new account's code so a stale message would be visible on its row.
     await act(async () => {
       ;(host.querySelector('button.secondary') as HTMLButtonElement).click()
@@ -676,8 +679,8 @@ it('loading into the editor stays bound to the account that started it', async (
     expect(host.querySelector('pre')!.textContent).toBe('print(1)')
     await act(async () => release())
     await settle()
-    // The load already happened in the parent, but this view must not claim it
-    // for the account the user has since switched to.
+    // The parent receives the guard so it can recheck after awaiting a save;
+    // this view must not claim the old operation for the new selection either.
     expect(host.textContent).not.toContain('已载入编辑器')
     expect(host.textContent).not.toContain('未载入编辑器')
   })
