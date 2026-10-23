@@ -99,7 +99,7 @@ def create_app(settings=None):
         await codex.close()
 
     private_schema = settings.production or settings.isolated
-    app=FastAPI(title="ACM Lab API",version="0.20.0",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=FastAPI(title="ACM Lab API",version="0.19.1",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     register_credential_checks(app,account_config)
     from .nowcoder_qr import register as register_nowcoder_qr
     register_nowcoder_qr(app, account_config, jobs)
@@ -146,7 +146,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.20.0"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.19.1"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
