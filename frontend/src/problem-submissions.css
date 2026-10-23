@@ -1,0 +1,153 @@
+.problem-submissions {
+  margin-top: 1.2rem;
+  border-top: 1px solid #e3e8ed;
+  padding-top: 1.1rem;
+}
+.problem-submissions h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.problem-submissions h4 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 1.2rem 0 0.6rem;
+}
+.problem-submit-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6a7288;
+  border: 1px solid #e2e6ef;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.problem-submit-controls {
+  display: flex;
+  gap: 0.7rem;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-top: 0.8rem;
+}
+.problem-submit-controls label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.problem-submit-controls select {
+  max-width: 100%;
+}
+.problem-submit-controls .problem-submit-primary {
+  background: #6c4de6;
+  border-color: #6c4de6;
+  color: #fff;
+}
+.problem-submit-controls .problem-submit-primary:disabled {
+  opacity: 0.55;
+}
+.problem-submit-controls button,
+.problem-submit-controls a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+.problem-submission-error {
+  color: #b32935;
+  overflow-wrap: anywhere;
+}
+.problem-submission-warning {
+  color: #8a6112;
+  overflow-wrap: anywhere;
+}
+.problem-submit-records {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.6rem;
+}
+.problem-submission {
+  border: 1px solid #e2e6ef;
+  border-radius: 14px;
+  padding: 0.8rem 0.9rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.problem-submission.is-ac {
+  border-color: #8acfaa;
+  background: #effbf3;
+}
+.problem-submission.is-error {
+  border-color: #efb1b6;
+  background: #fff4f4;
+}
+.problem-submission.history-selected {
+  box-shadow: 0 0 0 2px #8b79f0 inset;
+}
+.problem-submission-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.problem-submission-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 14px;
+}
+.problem-submission.is-ac .problem-submission-verdict {
+  color: #0c8650;
+}
+.problem-submission.is-error .problem-submission-verdict {
+  color: #b32935;
+}
+.problem-submission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  margin-top: 0.55rem;
+}
+.problem-submission-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.problem-submission-code {
+  margin-top: 0.6rem;
+  border-top: 1px dashed #dfe4ee;
+  padding-top: 0.6rem;
+  display: grid;
+  gap: 0.55rem;
+}
+.problem-submission-confirm {
+  display: flex;
+  align-items: start;
+  gap: 0.5rem;
+  line-height: 1.6;
+}
+.problem-submission-confirm input {
+  width: auto;
+  margin-top: 0.3rem;
+}
+.problem-submission-spin {
+  animation: problem-submission-spin 1.8s linear infinite;
+}
+@keyframes problem-submission-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .problem-submission-spin {
+    animation: none;
+  }
+}
+@media (max-width: 600px) {
+  .problem-submit-controls label,
+  .problem-submit-controls select {
+    width: 100%;
+  }
+}

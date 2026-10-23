@@ -326,7 +326,7 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
     }),
   )
   await page.request.put('/api/accounts', {
-    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
+    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })
   await open(page)
   await page.getByLabel('代码语言').selectOption('python3')
@@ -346,24 +346,38 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
     timeout: 15000,
   })
   expect(manualAiRequests).toHaveLength(1)
-  const form = page.locator('.wb-submission-form')
-  // A mistyped official ID should fail visibly and remain correctable.
-  await form.getByLabel('本次平台提交号').fill('999999')
-  await form.getByRole('checkbox').check()
-  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
-  await expect(page.getByText(/未在该账号最近 600 条本场比赛记录中找到提交号/).first()).toBeVisible(
-    { timeout: 15000 },
+  // One-click synchronization replaces the manual submission id and code-match tick.
+  await expect(page.locator('.wb-submission-form')).toHaveCount(0)
+  await expect(page.getByLabel('本次平台提交号')).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: /代码对应这条官方提交/ })).toHaveCount(0)
+  await page.getByRole('button', { name: '同步本题提交', exact: true }).click()
+  await expect(page.getByText(/已同步 \d+ 条本题提交/)).toBeVisible({ timeout: 25000 })
+  const waRecord = page.locator('article.problem-submission').filter({ hasText: '#920001' })
+  const acRecord = page.locator('article.problem-submission').filter({ hasText: '#920002' })
+  await expect(waRecord).toContainText('WA')
+  await expect(waRecord).toHaveClass(/is-error/)
+  await expect(acRecord).toHaveClass(/is-ac/)
+  await expect(waRecord.getByRole('link', { name: /官方记录/ })).toHaveAttribute(
+    'href',
+    'https://codeforces.com/contest/4/submission/920001',
   )
-  await expect
-    .poll(
-      async () =>
-        (await (await page.request.get('/api/workbench/problem/4-A')).json()).attempts.length,
-    )
-    .toBe(0)
+  // An unreadable source must never hide the synchronized judge result.
+  await page.route('**/api/problem-submissions/*/source', (route) =>
+    route.fulfill({ status: 400, json: { detail: '官方源码暂不可读（合成）' } }),
+  )
+  await waRecord.getByRole('button', { name: '获取本次代码' }).click()
+  await expect(waRecord.getByText(/判题已同步，源码暂不可读/)).toBeVisible()
+  await expect(waRecord).toContainText('WA')
+  await page.unroute('**/api/problem-submissions/*/source')
   await expect(editor).toHaveText('print("deliberately wrong")')
-  await form.getByLabel('本次平台提交号').fill('920001')
-  await form.getByRole('checkbox').check()
-  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  // The platform submit path creates the immutable code record used for review.
+  await page.getByRole('button', { name: '读取平台编译器', exact: true }).click()
+  await expect(page.getByLabel('实际平台编译器')).toHaveValue('31')
+  await page.getByRole('button', { name: '提交到平台', exact: true }).click()
+  await expect(page.getByRole('region', { name: '真实平台提交' })).toContainText(
+    'WA · 请查看判题结果',
+    { timeout: 25000 },
+  )
   const wa = page
     .locator('article.wb-attempt')
     .filter({ has: page.getByText('WA', { exact: true }) })
@@ -377,31 +391,31 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
   await wa.getByText('查看当次代码（只读）', { exact: true }).click()
   await expect(wa.locator('.wb-snapshot')).toHaveText('print("deliberately wrong")')
-  await form.getByLabel('本次平台提交号').fill('920002')
-  await form.getByRole('checkbox').check()
-  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  await page.getByLabel('源代码', { exact: true }).fill('print("fixture_correct")')
+  await page.getByRole('button', { name: '提交到平台', exact: true }).click()
   const ac = page
     .locator('article.wb-attempt')
     .filter({ has: page.getByText('AC', { exact: true }) })
     .last()
-  await expect(ac.getByText('AC', { exact: true })).toBeVisible({ timeout: 15000 })
+  await expect(ac.getByText('AC', { exact: true })).toBeVisible({ timeout: 25000 })
   await expect(ac.getByRole('button', { name: '分析本次错因（不提供答案）' })).toHaveCount(0)
   await page.getByRole('button', { name: '提交记录', exact: true }).click()
-  await expect(page.getByText('4-A · #920001', { exact: true })).toBeVisible()
-  await expect(page.getByText('4-A · #920002', { exact: true })).toBeVisible()
+  await expect(page.getByText('4-A · #930001', { exact: true })).toBeVisible()
+  await expect(page.getByText('4-A · #930002', { exact: true })).toBeVisible()
   await page.getByLabel('筛选判题结果').selectOption('WA')
-  await expect(page.getByText('4-A · #920001', { exact: true })).toBeVisible()
-  await expect(page.getByText('4-A · #920002', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('4-A · #930001', { exact: true })).toBeVisible()
+  await expect(page.getByText('4-A · #930002', { exact: true })).toHaveCount(0)
   await page
     .getByRole('row')
-    .filter({ hasText: '#920001' })
+    .filter({ hasText: '#930001' })
     .getByRole('button', { name: '在工作台查看' })
     .click()
-  await expect(page.getByRole('heading', { name: '本题历史提交' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '提交记录与错因复盘' })).toBeVisible()
+  await expect(
+    page.locator('article.problem-submission').filter({ hasText: '#930001' }),
+  ).toHaveClass(/history-selected/)
   await expect(page.getByText('先检查输入较小的一端。', { exact: true })).toBeVisible()
-  await expect(page.getByLabel('源代码', { exact: true })).toHaveText(
-    'print("corrected practice version")',
-  )
+  await expect(page.getByLabel('源代码', { exact: true })).toHaveText('print("fixture_correct")')
   await expect(page.locator('article.wb-attempt').getByText('AC', { exact: true })).toBeVisible()
   await expect(page.locator('article.wb-attempt').getByText('WA', { exact: true })).toBeVisible()
   await page.request.put('/api/accounts', {
@@ -412,7 +426,7 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   await expect(page.getByLabel('优先知识点（英文标签，逗号分隔）')).toBeVisible()
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await page.getByRole('button', { name: /^codeforces:4-A / }).click()
-  await expect(page.getByLabel('本次提交账号')).toHaveValue('FIXTURE_USER')
+  await expect(page.getByLabel('同步账号')).toHaveValue('FIXTURE_USER')
 })
 
 test('self-test clearly reports disabled service and never sends code', async ({ page }) => {
@@ -519,7 +533,7 @@ test('automatic error coaching needs opt-in and gives a small hint after a verif
     }),
   )
   await page.request.put('/api/accounts', {
-    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
+    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })
   await open(page)
   const toggle = page.getByRole('checkbox', { name: '开启自动错误提示', exact: true })
@@ -532,12 +546,11 @@ test('automatic error coaching needs opt-in and gives a small hint after a verif
   await expect(page.getByText(/已开启 · 使用 api \/ fixture-coach/)).toBeVisible()
   await page.getByLabel('代码语言').selectOption('python3')
   await page.getByLabel('源代码', { exact: true }).fill('print("automatic coach opt-in test")')
-  const form = page.locator('.wb-submission-form')
-  await form.getByLabel('本次平台提交号').fill('920001')
-  await form.getByRole('checkbox').check()
-  await form.getByRole('button', { name: '关联并核验本次提交' }).click()
+  const form = page.getByRole('region', { name: '真实平台提交', exact: true })
+  await page.getByRole('button', { name: '读取平台编译器', exact: true }).click()
+  await form.getByRole('button', { name: '提交到平台', exact: true }).click()
   const attempt = page.locator('article.wb-attempt').last()
-  await expect(attempt.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
+  await expect(attempt.getByText('WA', { exact: true })).toBeVisible({ timeout: 25000 })
   await expect(attempt.getByText(/仅针对本地快照检查边界/)).toBeVisible({ timeout: 15000 })
   // Automatic coaching stays opt-in; manual actions need only a chosen model and an explicit click.
   await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).toHaveCount(0)
