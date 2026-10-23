@@ -3,6 +3,7 @@ import { Check, ClipboardList, RefreshCw, ShieldCheck, UserPlus, X } from 'lucid
 import { api, date } from './api'
 import { TranslationStatement } from './translation-panel'
 import { AdministratorApproval } from './administrator-requests'
+import { SystemLogs } from './system-logs'
 
 type Row = Record<string, any>
 type Status = 'pending' | 'approved' | 'rejected' | 'revoked'
@@ -293,6 +294,8 @@ export function AdminPage({
       </section>
 
       <AdministratorApproval onError={onError} onNotice={onNotice} />
+
+      <SystemLogs />
 
       <section className="card admin-card">
         <div className="card-heading"><h2>最近安全审计</h2><span className="muted">仅显示最近 100 条</span></div>

@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from .codex_bridge import AIError
+from .runtime_logs import emit_event
 
 log = logging.getLogger('acmweb.startup')
 PLATFORMS = ('codeforces', 'atcoder', 'luogu', 'nowcoder')
@@ -226,10 +227,14 @@ def report_single(app):
     findings = _single_findings(app.state.settings, app.state.account_config,
                                 app.state.ai, app.state.selftest, app.state.codex)
     emit(findings, mode='个人')
+    emit_event(getattr(app.state, 'event_log', None), 'startup.checked', mode='single',
+               warning_count=sum(item['level'] == 'warning' for item in findings), finding_count=len(findings))
     return findings
 
 
-def report_multiuser(settings, identities, workspaces):
+def report_multiuser(settings, identities, workspaces, event_log=None):
     findings = _multiuser_findings(settings, identities, workspaces)
     emit(findings, mode='多人')
+    emit_event(event_log, 'startup.checked', mode='multi',
+               warning_count=sum(item['level'] == 'warning' for item in findings), finding_count=len(findings))
     return findings

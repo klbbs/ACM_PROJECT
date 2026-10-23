@@ -9,6 +9,7 @@ from argparse import Namespace
 from . import analytics
 from .catalog import refresh_catalog, recommendation_candidates, recommendation_status, refresh_recommendation_sessions
 from .codex_bridge import AIError
+from .runtime_logs import emit_event
 from ojcrawler.config import load
 from ojcrawler.cli import crawl
 
@@ -21,6 +22,7 @@ class Jobs:
         self.tasks={}
         self.accounts=accounts
         self.guard=None
+        self.event_log=None
 
     def list(self):
         with self.db.connect() as db:
@@ -38,6 +40,7 @@ class Jobs:
         now=int(time.time())
         with self.db.connect() as db:
             db.execute("INSERT INTO web_jobs VALUES(?,?,?,?,?,?,?)",(job_id,kind,"queued",now,now,None,None))
+        emit_event(self.event_log, 'job.queued', job_id=job_id, kind=kind, job_status='queued')
         task=asyncio.create_task(self._run(job_id,kind,payload or {}))
         self.tasks[job_id]=(kind,task)
         task.add_done_callback(lambda _:self.tasks.pop(job_id,None))
@@ -45,8 +48,14 @@ class Jobs:
 
     def update(self,job_id,status,result=None,error=None):
         with self.db.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            previous = db.execute('SELECT kind,status FROM web_jobs WHERE id=?', (job_id,)).fetchone()
             db.execute("UPDATE web_jobs SET status=?,updated_at=?,result=?,error=? WHERE id=?",
                        (status,int(time.time()),json.dumps(result,ensure_ascii=False) if result is not None else None,error,job_id))
+        if previous and previous['status'] != status and status in {'completed', 'partial', 'failed', 'interrupted'}:
+            level = 'ERROR' if status == 'failed' else ('WARNING' if status in {'partial', 'interrupted'} else 'INFO')
+            emit_event(self.event_log, 'job.' + status, level=level,
+                       job_id=job_id, kind=previous['kind'], job_status=status)
 
     async def _run(self,job_id,kind,payload):
         self.update(job_id,"running")

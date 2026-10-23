@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .codex_bridge import AIError
 from .credential_check import diagnostics, inspect_identity
 from .cookie_validation import valid_cookie
+from .runtime_logs import emit_event
 from ojcrawler.http import browser_headers
 
 ORIGIN = 'https://ac.nowcoder.com'
@@ -181,6 +182,10 @@ class NowcoderQR:
         self.expired = None
         self.expired_confirmed = False
 
+    def _event(self, event, *, level='INFO', **details):
+        emit_event(getattr(self.jobs, 'event_log', None), event, level=level,
+                   platform='nowcoder', **details)
+
     def _discard(self):
         flow = self.flow
         self.generation += 1
@@ -207,6 +212,8 @@ class NowcoderQR:
             if self.flow and self.flow['owner'] == owner and self.flow['id'] == login_id:
                 self.expired = (owner, login_id)
                 self.expired_confirmed = self.flow.get('confirmed', False)
+                self._event('platform.qr.expired', level='WARNING',
+                            reason='identity_verification_timeout' if self.expired_confirmed else 'qr_expired')
                 self._discard()
 
     def close(self):
@@ -312,6 +319,7 @@ class NowcoderQR:
             with self.lock:
                 flow['busy'] = False
                 if self.flow is flow:
+                    self._event('platform.qr.failed', level='WARNING', reason='qr_creation_failed')
                     self._discard()
                 else:
                     flow['session'].close()
@@ -345,6 +353,8 @@ class NowcoderQR:
             now = time.monotonic()
             if now >= flow['deadline']:
                 confirmed = flow['confirmed']
+                self._event('platform.qr.expired', level='WARNING',
+                            reason='identity_verification_timeout' if confirmed else 'qr_expired')
                 self._discard()
                 return self._expired_result(login_id, confirmed)
             if flow['busy'] or now - flow['last_poll'] < 3:
@@ -386,6 +396,8 @@ class NowcoderQR:
                 raise HTTPException(404, '扫码流程不存在')
             if time.monotonic() >= flow['deadline']:
                 confirmed = flow['confirmed']
+                self._event('platform.qr.expired', level='WARNING',
+                            reason='identity_verification_timeout' if confirmed else 'qr_expired')
                 self._discard()
                 return self._expired_result(login_id, confirmed)
             if status == 'waiting':
@@ -397,6 +409,8 @@ class NowcoderQR:
                 if diagnostic != flow['last_diagnostic']:
                     # No ticket, URL, UID, cookie, response body or exception text.
                     log.warning('牛客扫码检测暂未完成：phase=%s reason=%s http=%s code=%s', *diagnostic)
+                    self._event('platform.qr.retry', level='WARNING', reason=reason,
+                                upstream_status=upstream_status, upstream_code=flow['upstream_code'])
                     flow['last_diagnostic'] = diagnostic
                 if status == 'unverified':
                     message = '微信扫码已确认，牛客当前身份尚未就绪；正在继续核验，无需再次扫码。'
@@ -415,14 +429,17 @@ class NowcoderQR:
                             upstream_code=flow['upstream_code'], poll_after_seconds=5)
             if status == 'verified':
                 if flow['expected'] and flow['expected'] != uid:
+                    self._event('platform.qr.failed', level='WARNING', reason='account_mismatch')
                     self._discard()
                     return self._result(login_id, 'failed', '扫码账号与指定 UID 不一致，原绑定未修改')
                 if any(kind == 'crawl' and not task.done() for kind, task in self.jobs.tasks.values()):
+                    self._event('platform.qr.failed', level='WARNING', reason='crawl_in_progress')
                     self._discard()
                     raise HTTPException(409, '正在采集，请完成后重新扫码绑定')
                 try:
                     accounts = self.accounts.bind_verified_account('nowcoder', uid, cookie, flow['revision'], login_method='qr')
                 except AIError as exc:
+                    self._event('platform.qr.failed', level='WARNING', reason='binding_failed')
                     self._discard()
                     raise HTTPException(409, str(exc)) from None
                 _, digest = self.checker.credential('nowcoder', uid)
@@ -432,10 +449,13 @@ class NowcoderQR:
                     retry_after_seconds=10, cached=False, matched_account=uid, upstream_status=200))
                 with self.checker.lock:
                     self.checker.cache[('nowcoder', uid)] = (digest, result)
+                self._event('platform.qr.verified', reason='identity_verified')
                 self._discard()
                 return dict(self._result(login_id, 'verified', '牛客当前登录身份已验证并绑定'), verified_uid=uid, accounts=accounts)
             reason = 'account_incomplete' if status == 'incomplete' else (flow['upstream_reason'] or 'upstream_status_rejected')
             log.warning('牛客扫码已停止：reason=%s code=%s', reason, flow['upstream_code'])
+            self._event('platform.qr.failed', level='WARNING', reason=reason,
+                        upstream_code=flow['upstream_code'])
             self._discard()
             message = {
                 'account_incomplete': '请前往牛客官方页面完善账号后重新扫码，或使用 Cookie 绑定',

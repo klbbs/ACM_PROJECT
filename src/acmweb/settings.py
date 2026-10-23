@@ -32,6 +32,8 @@ class Settings:
     # moderated translation store while keeping generated translations local.
     translation_database: Path | None = field(default=None, repr=False)
     translation_owner: str = field(default='local', repr=False)
+    # Inherited by isolated workspaces so operational events share one root store.
+    log_directory: Path | None = field(default=None, repr=False)
 
     @property
     def database(self):

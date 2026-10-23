@@ -120,6 +120,8 @@ class Workspaces:
 
 
 def create_multi_app(settings, factory):
+    from .runtime_logs import get_event_log, emit_event, register_admin_logs, user_id_context
+    event_log = get_event_log(settings.log_directory or settings.data_dir / 'logs')
     identities = Users(settings.data_dir/'users.sqlite3')
     workspaces = Workspaces(settings,factory)
     assets = factory(replace(settings,multi_user=False,access_token=secrets.token_urlsafe(40),
@@ -141,6 +143,7 @@ def create_multi_app(settings, factory):
             identities.normalize_administrator()
             cleanup = None
             try:
+                emit_event(event_log, 'service.started', mode='multi')
                 # Restore existing user workspaces on server restart.
                 with identities.connect() as db:
                     users = db.execute('SELECT id FROM users WHERE active=1').fetchall()
@@ -148,7 +151,7 @@ def create_multi_app(settings, factory):
                     if (settings.data_dir/'users'/user['id']/'accounts.sqlite3').exists():
                         await workspaces.get(user['id'])
                 from .startup_diagnostics import report_multiuser
-                report_multiuser(settings, identities, workspaces)
+                report_multiuser(settings, identities, workspaces, event_log=event_log)
                 cleanup = asyncio.create_task(idle_cleanup())
                 yield
             finally:
@@ -156,9 +159,11 @@ def create_multi_app(settings, factory):
                     cleanup.cancel()
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
+                emit_event(event_log, 'service.stopped', mode='multi')
 
-    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.2',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.3',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
+    app.state.event_log = event_log
 
     def owner_valid(uid, owner):
         now = int(time.time())
@@ -195,6 +200,7 @@ def create_multi_app(settings, factory):
                 if not user:
                     identities.limit('ip:'+digest(peer),300,60)
                 request.state.user = user
+                user_id_context.set(user['id'] if user else None)
                 public = path in {'/api/health','/api/auth/status','/api/auth/setup','/api/auth/login','/api/auth/register'}
                 if not public:
                     require(request)
@@ -241,7 +247,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.2','mode':'multi-user'}
+        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.3','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -458,6 +464,12 @@ def create_multi_app(settings, factory):
         with identities.connect() as db:
             rows = db.execute('SELECT a.*,u.username FROM audit a LEFT JOIN users u ON a.actor=u.id ORDER BY a.id DESC LIMIT 100').fetchall()
         return {'items':[dict(r) for r in rows]}
+
+    def authorize_logs(request):
+        actor = require(request, True)
+        identities.limit('admin-logs:' + actor['id'], 60, 60)
+
+    register_admin_logs(app, event_log, authorize_logs)
 
     @app.get('/api/shared')
     def shared(request:Request,search:str=Query(default='',max_length=100),offset:int=Query(default=0,ge=0),limit:int=Query(default=30,ge=1,le=50),trashed:bool=False):

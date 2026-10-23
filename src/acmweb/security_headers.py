@@ -62,4 +62,9 @@ class SecureFastAPI(FastAPI):
             self.add_exception_handler(Exception, safe_server_error)
 
     def build_middleware_stack(self):
-        return SecurityHeaders(super().build_middleware_stack(), production=self.security_production)
+        secured = SecurityHeaders(super().build_middleware_stack(), production=self.security_production)
+        store = getattr(self.state, 'event_log', None)
+        if store is not None:
+            from .runtime_logs import RuntimeLogMiddleware
+            return RuntimeLogMiddleware(secured, store)
+        return secured

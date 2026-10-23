@@ -5,6 +5,8 @@ from .app import create_app
 
 
 def main():
+    from .runtime_logs import configure_console
+    configure_console()
     parser=argparse.ArgumentParser(description="ACM Lab 网页服务")
     parser.add_argument("--host",default="127.0.0.1")
     parser.add_argument("--port",type=int,default=8000)

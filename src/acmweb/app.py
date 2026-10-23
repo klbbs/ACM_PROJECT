@@ -78,6 +78,10 @@ class Training(BaseModel):
 def create_app(settings=None):
     settings=settings or Settings()
     settings.validate()
+    from .runtime_logs import get_event_log, emit_event, register_admin_logs
+    if settings.log_directory is None:
+        settings.log_directory = settings.data_dir / 'logs'
+    event_log = get_event_log(settings.log_directory)
     if settings.multi_user:
         from .multiuser import create_multi_app
         return create_multi_app(settings, create_app)
@@ -89,23 +93,32 @@ def create_app(settings=None):
     from .credential_check import register as register_credential_checks
     ai=AIProvider(database,settings,codex)
     jobs=Jobs(database,settings,ai,account_config)
+    jobs.event_log = event_log
     @asynccontextmanager
     async def lifespan(app):
         if not settings.isolated:
             from .startup_diagnostics import report_single
+            emit_event(event_log, 'service.started', mode='single')
             report_single(app)
-        yield
-        app.state.remote_submissions.closed = True
-        app.state.nowcoder_qr.close()
-        await app.state.browser_login.aclose()
-        await jobs.close()
-        app.state.translations.close()
-        await codex.close()
+        try:
+            yield
+        finally:
+            app.state.remote_submissions.closed = True
+            app.state.nowcoder_qr.close()
+            await app.state.browser_login.aclose()
+            await jobs.close()
+            app.state.translations.close()
+            await codex.close()
+            if not settings.isolated:
+                emit_event(event_log, 'service.stopped', mode='single')
 
     private_schema = settings.production or settings.isolated
-    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.20.2",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.20.3",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     app.state.settings=settings
     app.state.account_config=account_config
+    app.state.event_log=event_log
+    if not settings.isolated and settings.translation_owner != 'assets':
+        register_admin_logs(app, event_log)
     register_credential_checks(app,account_config)
     from .nowcoder_qr import register as register_nowcoder_qr
     register_nowcoder_qr(app, account_config, jobs)
@@ -147,7 +160,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.20.2"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.20.3"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
