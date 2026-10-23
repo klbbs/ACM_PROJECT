@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Languages, RefreshCw, Upload } from 'lucide-react'
 import { api, date } from './api'
 
@@ -73,76 +73,114 @@ export function TranslationPanel({
   const [generationJobId, setGenerationJobId] = useState('')
   const [reviews, setReviews] = useState<Row[] | null>(null),
     [reviewNotes, setReviewNotes] = useState<Record<string, string>>({})
-  const pendingGeneration = useRef<{ engine: string; model: string; before: Set<string> } | null>(
-    null,
-  )
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
+  // Workbench snapshots are re-created while jobs refresh; only changed contents
+  // should invalidate the reader selection and an in-flight translation request.
+  const statementKey = JSON.stringify(statement)
+  const context = useMemo(() => ({ problemId, statementKey }), [problemId, statementKey])
+  const latestContext = useRef(context)
+  latestContext.current = context
+  const mounted = useRef(false)
+  const refreshSequence = useRef(0)
+  const pendingGeneration = useRef<{
+    context: typeof context
+    translationId?: string
+    completionRequested?: boolean
+  } | null>(null)
   const active = jobs.some(
     (job) => job.kind === 'translation' && ['running', 'queued'].includes(job.status),
   )
   const fail = (error: unknown) => onError(error instanceof Error ? error.message : '翻译请求失败')
   useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  useEffect(() => {
     pendingGeneration.current = null
     setGenerationJobId('')
     setTranslationError('')
+    setRefreshError('')
     setNotice('')
     setSelected('')
     setData(null)
-  }, [problemId])
-  useEffect(() => {
-    let alive = true
-    api(`/workbench/problem/${encodeURIComponent(problemId)}/translations`)
-      .then((result) => {
-        if (!alive) return
-        setData(result)
-        const wanted = pendingGeneration.current
-        if (wanted) {
-          const added = result.items.find(
-            (item: Row) =>
-              !wanted.before.has(item.id) &&
-              item.engine === wanted.engine &&
-              (wanted.engine !== 'ai' || item.model === wanted.model),
-          )
-          if (added) {
-            setSelected(added.id)
-            pendingGeneration.current = null
-            setNotice('译文仅在服务器内存暂存 30 分钟，服务重启后清除；需要共享时请及时上传审核。')
-          }
-        }
-        setSelected((id) => (result.items.some((item: Row) => item.id === id) ? id : ''))
-      })
-      .catch((error) => {
-        if (alive) fail(error)
-      })
-    return () => {
-      alive = false
+    setBusy(false)
+    setReviews(null)
+    setReviewNotes({})
+  }, [context])
+  const reload = useCallback(async () => {
+    if (!mounted.current || latestContext.current !== context) return
+    const sequence = ++refreshSequence.current
+    setRefreshing(true)
+    try {
+      const result = await api(`/workbench/problem/${encodeURIComponent(context.problemId)}/translations`)
+      if (!mounted.current || latestContext.current !== context || sequence !== refreshSequence.current) return
+      setData(result)
+      setRefreshError('')
+      const wanted = pendingGeneration.current
+      const generated = wanted?.context === context && wanted.translationId &&
+        result.items.some((item: Row) => item.id === wanted.translationId)
+      if (generated && wanted) {
+        setSelected(wanted.translationId!)
+        pendingGeneration.current = null
+        setGenerationJobId('')
+        setNotice('翻译已完成，可在下方切换阅读；个人译文仅在内存暂存 30 分钟。')
+      } else {
+        setSelected((id) => result.items.some((item: Row) => item.id === id) ? id : '')
+      }
+      return result
+    } catch (error) {
+      if (mounted.current && latestContext.current === context && sequence === refreshSequence.current) {
+        setRefreshError(error instanceof Error ? error.message : '无法连接共享译文服务')
+      }
+    } finally {
+      if (mounted.current && latestContext.current === context && sequence === refreshSequence.current) {
+        setRefreshing(false)
+      }
     }
-  }, [problemId, revision, statement])
+  }, [context])
+  useEffect(() => { void reload() }, [reload, revision])
+  useEffect(() => {
+    const refreshVisible = () => {
+      if (document.visibilityState !== 'hidden') void reload()
+    }
+    const timer = window.setInterval(refreshVisible, 30_000)
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+    }
+  }, [reload])
   useEffect(() => {
     if (!generationJobId) return
+    const wanted = pendingGeneration.current
+    if (!wanted || wanted.context !== context) return
     const job = jobs.find((item) => item.id === generationJobId && item.kind === 'translation')
     if (job?.status === 'failed' || job?.status === 'interrupted') {
       pendingGeneration.current = null
-      setTranslationError(job.error || '翻译任务中断，请检查连接后重新发起。')
-    } else if (
-      job?.status === 'completed' &&
-      data?.items.some((item: Row) => item.id === job.result?.translation_id)
-    ) {
-      setSelected(job.result.translation_id)
-      pendingGeneration.current = null
       setGenerationJobId('')
-      setNotice('翻译已完成，可在下方切换阅读；个人译文仅在内存暂存 30 分钟。')
+      setTranslationError(job.error || '翻译任务中断，请检查连接后重新发起。')
+    } else if (job?.status === 'completed' && !wanted.completionRequested) {
+      wanted.completionRequested = true
+      if (typeof job.result?.translation_id !== 'string' || !job.result.translation_id) {
+        pendingGeneration.current = null
+        setGenerationJobId('')
+        setTranslationError('翻译任务未返回对应译文，请刷新共享译文或重新翻译。')
+        return
+      }
+      wanted.translationId = job.result.translation_id
+      // Select only the exact job result, including an existing shared translation.
+      // Matching by model can accidentally select another user's newly approved item.
+      void reload()
     }
-  }, [jobs, data, generationJobId])
-  const reload = async () => {
-    const result = await api(`/workbench/problem/${encodeURIComponent(problemId)}/translations`)
-    setData(result)
-    return result
-  }
+  }, [jobs, generationJobId, context, reload])
   const current: Row | undefined = data?.items.find((item: Row) => item.id === selected)
   const configured = engine === 'ai' || data?.services?.[engine]?.configured
   const refreshReviews = async () => {
     const result = await api('/translations/review?status=pending')
-    setReviews(result.items)
+    if (mounted.current && latestContext.current === context) setReviews(result.items)
   }
   const generate = async () => {
     if (busy || active || !configured || (engine === 'ai' && !model)) return
@@ -150,11 +188,7 @@ export function TranslationPanel({
     setNotice('')
     setTranslationError('')
     setGenerationJobId('')
-    const pending = {
-      engine,
-      model,
-      before: new Set<string>((data?.items || []).map((item: Row) => item.id)),
-    }
+    const pending = { context }
     pendingGeneration.current = pending
     try {
       const response = await run(`/workbench/problem/${encodeURIComponent(problemId)}/translate`, {
@@ -172,7 +206,7 @@ export function TranslationPanel({
       setTranslationError(error instanceof Error ? error.message : '翻译请求失败')
       fail(error)
     } finally {
-      setBusy(false)
+      if (mounted.current && latestContext.current === context) setBusy(false)
     }
   }
   const upload = async () => {
@@ -181,12 +215,14 @@ export function TranslationPanel({
     setNotice('')
     try {
       await api(`/translations/${encodeURIComponent(current.id)}/upload`, 'POST', {})
+      if (!mounted.current || latestContext.current !== context) return
       await reload()
+      if (!mounted.current || latestContext.current !== context) return
       setNotice('已上传，等待管理员审核；通过前不会公开给其他用户。')
     } catch (error) {
-      fail(error)
+      if (mounted.current && latestContext.current === context) fail(error)
     } finally {
-      setBusy(false)
+      if (mounted.current && latestContext.current === context) setBusy(false)
     }
   }
   const review = async (item: Row, decision: string) => {
@@ -196,15 +232,17 @@ export function TranslationPanel({
         decision,
         note: reviewNotes[item.id] || '',
       })
+      if (!mounted.current || latestContext.current !== context) return
       await refreshReviews()
       await reload()
+      if (!mounted.current || latestContext.current !== context) return
       setNotice(
         decision === 'approved' ? '译文已审核通过，可供其他用户免费选用。' : '已拒绝该译文。',
       )
     } catch (error) {
-      fail(error)
+      if (mounted.current && latestContext.current === context) fail(error)
     } finally {
-      setBusy(false)
+      if (mounted.current && latestContext.current === context) setBusy(false)
     }
   }
   return (
@@ -274,7 +312,9 @@ export function TranslationPanel({
                 try {
                   const { statementMarkdown } = await import('./statement-view')
                   await navigator.clipboard.writeText(statementMarkdown(statement))
-                  setNotice('题面已复制，请粘贴到官方翻译页面。')
+                  if (mounted.current && latestContext.current === context) {
+                    setNotice('题面已复制，请粘贴到官方翻译页面。')
+                  }
                 } catch {
                   onError('无法复制，请选择题面文本后手动复制。')
                 }
@@ -353,6 +393,17 @@ export function TranslationPanel({
           </details>
         )}
       </details>
+      <div className="translation-actions">
+        <button className="secondary" disabled={refreshing} onClick={() => void reload()}>
+          <RefreshCw size={14} /> {refreshing ? '正在刷新共享译文…' : '刷新共享译文'}
+        </button>
+        <span className="muted">页面可见时每 30 秒同步；只获取已有译文，不调用 AI。</span>
+      </div>
+      {refreshError && (
+        <p className="help" role="alert">
+          共享译文刷新失败：{refreshError}。原题和已有译文仍可阅读，请点击“刷新共享译文”重试。
+        </p>
+      )}
       <label className="translation-selection">
         阅读内容
         <select

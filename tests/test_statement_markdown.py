@@ -49,12 +49,16 @@ def test_literal_math_placeholder_text_does_not_collide_with_generated_tokens():
     assert html_markdown(f'<p>{literal} and $$$x_i$$$.</p>') == literal + ' and $x_i$.'
 
 
-def test_old_rich_cf_cache_upgrades_without_network_and_invalidates_translation():
+def test_old_rich_cf_cache_upgrades_without_network_and_preserves_translation():
     old = {'id': 'codeforces:4-A', 'body_html': '<p><b>Read</b> $$$x_i$$$.</p>', 'sections': ['Read\nx_i'], 'render_version': 2}
     upgraded = upgrade_statement(old)
     assert old['render_version'] == 2
     assert upgraded['markdown'] == '**Read** $x_i$.' and upgraded['render_version'] == 4
-    assert fingerprint(old) != fingerprint(upgraded)
+    assert fingerprint(old) == fingerprint(upgraded)
+    changed_prose = {**upgraded, 'body_html': '<p><b>Print</b> $$$x_i$$$.</p>'}
+    changed_formula = {**upgraded, 'body_html': '<p><b>Read</b> $$$x_i + 1$$$.</p>'}
+    assert fingerprint(upgraded) != fingerprint(changed_prose)
+    assert fingerprint(upgraded) != fingerprint(changed_formula)
     assert upgrade_statement(upgraded) is upgraded
     plain = {'id': 'codeforces:4-A', 'sections': ['old plain text']}
     assert upgrade_statement(plain) is plain

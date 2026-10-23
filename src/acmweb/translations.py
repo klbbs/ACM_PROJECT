@@ -21,6 +21,7 @@ from typing import Literal
 
 from .codex_bridge import AIError
 from .workbench import normalize, source_url
+from .statement_markdown import upgrade_statement
 
 
 class Strict(BaseModel):
@@ -53,11 +54,19 @@ class Revocation(Strict):
 
 
 def fingerprint(statement):
-    # Only immutable statement content contributes; fetch metadata never does.
-    keys = ('id', 'url', 'title', 'body_html', 'sections', 'samples', 'images', 'time_limit', 'memory_limit')
-    if statement.get('id', '').startswith('codeforces:') and statement.get('render_version', 0) >= 3:
-        keys += ('render_version', 'markdown')
+    # Derived Markdown/sections can change when the renderer is upgraded, even
+    # though the original official statement and its translation still match.
+    keys = ('id', 'url', 'title', 'samples', 'images', 'time_limit', 'memory_limit')
+    keys += ('body_html',) if statement.get('body_html') else ('sections', 'markdown')
     content = {key: statement.get(key) for key in keys}
+    if statement.get('body_html') and statement.get('id', '').startswith('codeforces:'):
+        # Older CF sanitizers kept section-title containers as divs; newer
+        # ones turn them into h2s. Preserve their text, order, attributes,
+        # formulae, links and examples, but ignore this presentation-only tag.
+        body = BeautifulSoup(statement['body_html'], 'html.parser')
+        for heading in body.find_all('h2'):
+            heading.name = 'div'
+        content['body_html'] = str(body)
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -170,6 +179,7 @@ class SharedTranslations:
             CREATE TABLE IF NOT EXISTS translations (id TEXT PRIMARY KEY,owner TEXT NOT NULL,private_id TEXT NOT NULL,problem_id TEXT NOT NULL,fingerprint TEXT NOT NULL,target TEXT NOT NULL,model_key TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,source_statement TEXT NOT NULL,submitted_at INTEGER NOT NULL,reviewed_at INTEGER,reviewer TEXT,review_note TEXT NOT NULL DEFAULT '');
             DROP INDEX IF EXISTS translation_active;
             CREATE UNIQUE INDEX translation_active ON translations(problem_id,fingerprint,target,model_key) WHERE status IN ('pending','approved','revoked');
+            CREATE INDEX IF NOT EXISTS translation_shared_lookup ON translations(problem_id,target,status,submitted_at DESC);
             CREATE TABLE IF NOT EXISTS translation_audit (id INTEGER PRIMARY KEY,at INTEGER NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,target TEXT NOT NULL);
             ''')
         path.chmod(0o600)
@@ -188,12 +198,26 @@ class SharedTranslations:
         item.update(id=row['id'], scope='shared', status=row['status'], submitted_at=row['submitted_at'], review_note=row['review_note'])
         # Public consumers receive the actual model identity, never the submitting account.
         if source: item['source_statement'] = json.loads(row['source_statement'])
+        # Render legacy approved CF translations with today's renderer too.
+        item['statement'] = upgrade_statement(item['statement'])
         return item
 
-    def approved(self, pid, fp):
+    def approved(self, pid, fp, statement=None):
         with self.connect() as db:
-            rows = db.execute("SELECT * FROM translations WHERE problem_id=? AND fingerprint=? AND status='approved' ORDER BY submitted_at DESC", (pid, fp)).fetchall()
-        return [self.public(r) for r in rows]
+            rows = db.execute("SELECT * FROM translations WHERE problem_id=? AND target='zh-CN' AND status='approved' ORDER BY submitted_at DESC,rowid DESC", (pid,)).fetchall()
+        # Legacy rows retain their original hash. Compare the stored official
+        # source as well; never fall back to matching only the problem ID.
+        items, models = [], set()
+        for row in rows:
+            if row['fingerprint'] != fp and not (
+                    statement is not None and fingerprint(json.loads(row['source_statement'])) == fp):
+                continue
+            # Older renderer-specific hashes may have admitted multiple copies
+            # of the same source/model. Keep the latest approved contribution.
+            if row['model_key'] not in models:
+                items.append(self.public(row))
+                models.add(row['model_key'])
+        return items
 
     def own_status(self, owner, private_id):
         with self.connect() as db:
@@ -209,6 +233,11 @@ class SharedTranslations:
             raise HTTPException(409, '原题版本已更新或非官方来源，请重新翻译')
         sid, now = uuid.uuid4().hex, int(time.time())
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute("SELECT source_statement FROM translations WHERE problem_id=? AND target='zh-CN' AND model_key=? AND status IN ('pending','approved','revoked')",
+                                  (item['problem_id'], item['model_key'])).fetchall()
+            if any(fingerprint(json.loads(row['source_statement'])) == item['fingerprint'] for row in existing):
+                raise HTTPException(409, '该题面版本的同一模型已有待审核、已通过或已撤回译文')
             try:
                 db.execute("INSERT INTO translations VALUES(?,?,?,?,?, 'zh-CN',?, 'pending',?,?,?,NULL,NULL,'')", (sid, owner, tid, item['problem_id'], item['fingerprint'], item['model_key'], json.dumps(item, ensure_ascii=False), json.dumps(statement, ensure_ascii=False), now))
             except sqlite3.IntegrityError:
@@ -332,7 +361,7 @@ class Translations:
             private = [copy.deepcopy(entry[2]) for entry in reversed(list(self.ephemeral.values()))
                        if entry[2]['problem_id'] == pid and entry[2]['fingerprint'] == fp]
         private = [{**item, **self.shared.own_status(self.owner, item['id'])} for item in private]
-        shared = self.shared.approved(pid, fp) if self.shareable(statement) else []
+        shared = self.shared.approved(pid, fp, statement) if self.shareable(statement) else []
         url = quote(source_url(pid), safe='')
         return {'fingerprint': fp, 'shareable': self.shareable(statement), 'items': private + shared, 'services': self.services(), 'links': {'google': f'https://translate.google.com/?sl=auto&tl=zh-CN&op=websites&text={url}', 'bing': f'https://www.bing.com/translator?from=auto&to=zh-Hans&text={url}'}, 'private_ttl_seconds': self.private_ttl, 'note': '个人译文仅在内存暂存 30 分钟，服务重启后清除；仅主动上传的共享译文持久保存。共享译文经过人工审核；AI 译文可能有误，请结合原题。普通翻译使用管理员配置的官方付费 API，未配置时可打开官方翻译网页。'}
 
@@ -351,7 +380,7 @@ class Translations:
                 expected = {'channel': 'codex', 'endpoint': 'codex://official', 'vendor': 'openai',
                             'protocol': 'codex', 'model': payload.model.strip()}
             expected_key = model_identity(expected)
-            cached = self.shared.approved(pid, fp)
+            cached = self.shared.approved(pid, fp, statement)
             match = next((item for item in cached if item['model_key'] == expected_key), None)
             if match:
                 return {'translation_id': match['id'], 'reused': True}

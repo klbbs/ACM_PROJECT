@@ -1,4 +1,6 @@
 import asyncio
+import copy
+import hashlib
 import json
 import time
 
@@ -8,7 +10,8 @@ from fastapi.testclient import TestClient
 from acmweb.ai import AIResult, ProviderConfig
 from acmweb.app import create_app
 from acmweb.settings import Settings
-from acmweb.translations import Document, fingerprint, Translations, Translate, fragment_blocks
+from acmweb.translations import Document, fingerprint, Translations, Translate, fragment_blocks, model_identity
+from acmweb.statement_markdown import RENDER_VERSION, html_markdown
 from acmweb.codex_bridge import AIError
 from fastapi import HTTPException
 from acmweb.users import csrf_token
@@ -18,6 +21,23 @@ from acmweb.workbench import parse_statement
 HTML = '''<div class="problem-statement"><div class="header"><div class="title">A. Translate me</div></div>
 <div><p>Find the value of <span>$$x + 1$$</span>.</p><p>Use https://example.test/a.</p></div>
 <div class="sample-tests"><div class="sample-test"><div class="input"><pre>1</pre></div><div class="output"><pre>2</pre></div></div></div></div>'''
+
+# Synthetic section-title containers model the sanitizer's div-to-h2 upgrade.
+CF_SECTION_DIV_HTML = '''<p>Compute the value of $$x + 1$$.</p>
+<div class="section-title">Input</div><p>One integer x is given.</p>
+<div class="section-title">Output</div><p>Print one integer.</p>
+<div class="section-title">Note</div><p>See the diagram.</p>
+<img alt="Synthetic diagram" src="https://example.test/synthetic-diagram.png"/>'''
+
+
+def _cf_section_statement(statement, tag='div', render_version=3):
+    body = CF_SECTION_DIV_HTML
+    if tag == 'h2':
+        body = body.replace('<div class="section-title">', '<h2 class="section-title">').replace('</div>', '</h2>')
+    markdown = html_markdown(body)
+    return {**copy.deepcopy(statement), 'body_html': body, 'render_version': render_version,
+            'markdown': markdown, 'sections': [markdown],
+            'images': ['https://example.test/synthetic-diagram.png']}
 
 
 @pytest.fixture
@@ -183,6 +203,123 @@ def test_translation_fingerprint_excludes_fetch_metadata(workspace):
     before = fingerprint(statement)
     changed = {**statement, 'fetched_at': int(time.time()) + 100, 'diagnostics': {'warnings': ['temporary']}}
     assert fingerprint(changed) == before
+
+
+def _legacy_translation_fingerprint(statement):
+    """Historical hash fixture, independent of the implementation under test."""
+    keys = ('id', 'url', 'title', 'body_html', 'sections', 'samples', 'images', 'time_limit', 'memory_limit')
+    if statement.get('id', '').startswith('codeforces:') and statement.get('render_version', 0) >= 3:
+        keys += ('render_version', 'markdown')
+    content = {key: statement.get(key) for key in keys}
+    return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _seed_legacy_shared_translation(workspace, status='approved'):
+    """Synthetic stored contribution: this does not contact any real platform."""
+    app, _, statement = workspace
+    service = app.state.translations
+    source = {**copy.deepcopy(statement), 'render_version': 2,
+              'sections': ['Old HTML-derived text'], 'markdown': 'Old renderer output'}
+    doc = Document(source)
+    translated = doc.apply({'blocks': [
+        {'id': block['id'], 'text': '共享译文 ' + block['text']} for block in doc.blocks
+    ]})
+    config = service.ai.config()
+    provenance = {'channel': 'api', 'endpoint': config['base_url'], 'vendor': config['vendor'],
+                  'protocol': config['protocol'], 'model': 'legacy-fixture-model'}
+    item = {'id': 'legacy-private-fixture', 'problem_id': source['id'],
+            'fingerprint': fingerprint(statement), 'engine': 'ai', 'model': provenance['model'],
+            'model_key': model_identity(provenance), 'provenance': provenance,
+            'statement': translated, 'scope': 'private', 'shareable': True,
+            'status': 'private', 'created_at': 1}
+    service._remember(item)
+    sid = service.shared.upload(service, 'other-user-fixture', item['id'])['id']
+    service._expire(item['id'])
+    item['fingerprint'] = _legacy_translation_fingerprint(source)
+    with service.shared.connect() as db:
+        db.execute('UPDATE translations SET fingerprint=?,source_statement=?,data=?,status=? WHERE id=?',
+                   (item['fingerprint'], json.dumps(source), json.dumps(item), status, sid))
+    return sid, item, source
+
+
+def test_translation_fingerprint_ignores_only_derived_html_rendering(workspace):
+    statement = workspace[2]
+    rendered = {**statement, 'render_version': RENDER_VERSION + 1,
+                'sections': ['New renderer output'], 'markdown': '# New rendering'}
+    assert fingerprint(rendered) == fingerprint(statement)
+    without_html = {**statement, 'body_html': '', 'sections': ['Original text'], 'markdown': 'Original text'}
+    assert fingerprint({**without_html, 'sections': ['Changed prose']}) != fingerprint(without_html)
+    assert fingerprint({**without_html, 'markdown': 'Changed prose'}) != fingerprint(without_html)
+
+
+def test_cf_section_heading_tag_upgrade_keeps_original_content_fingerprint(workspace):
+    legacy = _cf_section_statement(workspace[2], tag='div', render_version=3)
+    current = _cf_section_statement(workspace[2], tag='h2', render_version=RENDER_VERSION)
+    assert legacy['body_html'] != current['body_html']
+    assert legacy['markdown'] != current['markdown']
+    assert fingerprint(legacy) == fingerprint(current)
+    # Also cover unchanged h2 source whose historical hash included only the
+    # previous render version, as well as the genuinely older div sanitizer.
+    assert fingerprint({**current, 'render_version': 3}) == fingerprint(current)
+    assert _legacy_translation_fingerprint({**current, 'render_version': 3}) != _legacy_translation_fingerprint(current)
+
+
+@pytest.mark.parametrize('change', ['paragraph', 'formula', 'sample', 'image_html', 'image_list', 'heading_text'])
+def test_cf_heading_compatibility_does_not_hide_real_content_changes(workspace, change):
+    legacy = _cf_section_statement(workspace[2], tag='div', render_version=3)
+    current = _cf_section_statement(workspace[2], tag='h2', render_version=RENDER_VERSION)
+    if change == 'paragraph':
+        current['body_html'] = current['body_html'].replace('One integer x is given.', 'Two integers are given.')
+    elif change == 'formula':
+        current['body_html'] = current['body_html'].replace('$$x + 1$$', '$$x + 2$$')
+    elif change == 'sample':
+        current['samples'] = [{'input': '7', 'output': '8'}]
+    elif change == 'image_html':
+        current['body_html'] = current['body_html'].replace('synthetic-diagram.png', 'changed-diagram.png')
+    elif change == 'image_list':
+        current['images'] = ['https://example.test/changed-diagram.png']
+    else:
+        current['body_html'] = current['body_html'].replace('>Input</h2>', '>Different input</h2>')
+    assert fingerprint(legacy) != fingerprint(current)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('body_html', '<p>Different official problem statement</p>'),
+    ('samples', [{'input': '8', 'output': '9'}]),
+    ('time_limit', '3 seconds'),
+    ('memory_limit', '512 megabytes'),
+])
+def test_legacy_shared_translation_is_not_reused_for_changed_official_content(workspace, field, value):
+    app, client, statement = workspace
+    sid, _, _ = _seed_legacy_shared_translation(workspace)
+    changed = {**statement, field: value}
+    app.state.workbench.store_statement('codeforces:4-A', changed)
+    listing = client.get('/api/workbench/problem/4-A/translations')
+    assert listing.status_code == 200, listing.text
+    assert sid not in {item['id'] for item in listing.json()['items']}
+    assert app.state.translation_store.approved(statement['id'], fingerprint(changed), changed) == []
+
+
+@pytest.mark.parametrize('status', ['pending', 'rejected', 'revoked'])
+def test_legacy_unapproved_shared_translation_is_not_public(workspace, status):
+    app, client, statement = workspace
+    sid, _, _ = _seed_legacy_shared_translation(workspace, status)
+    listing = client.get('/api/workbench/problem/4-A/translations')
+    assert listing.status_code == 200, listing.text
+    assert sid not in {item['id'] for item in listing.json()['items']}
+    assert app.state.translation_store.approved(statement['id'], fingerprint(statement), statement) == []
+
+
+@pytest.mark.parametrize('status', ['pending', 'approved', 'revoked'])
+def test_same_model_cannot_upload_duplicate_of_legacy_shared_version(workspace, status):
+    app, client, statement = workspace
+    _, legacy, _ = _seed_legacy_shared_translation(workspace, status)
+    current = {**legacy, 'id': 'current-private-fixture', 'fingerprint': fingerprint(statement)}
+    app.state.translations._remember(current)
+    uploaded = client.post(f"/api/translations/{current['id']}/upload", json={})
+    assert uploaded.status_code == 409, uploaded.text
+    with app.state.translation_store.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM translations').fetchone()[0] == 1
 
 
 def test_ai_translation_batches_long_statements_and_saves_only_complete_result(workspace, monkeypatch):
@@ -368,9 +505,10 @@ def test_official_translation_splits_a_single_large_markdown_block(monkeypatch, 
 
 def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_path, monkeypatch):
     settings = Settings(data_dir=tmp_path, multi_user=True, enable_codex=False,
-                        access_token='initialization-secret-long-enough', allowed_hosts=('testserver',))
+                        access_token='initialization-secret-long-enough', allowed_hosts=('testserver',),
+                        ai_allowed_hosts=('api.example.test',))
     app = create_app(settings)
-    html_statement = parse_statement(HTML, 'codeforces:4-A')
+    html_statement = _cf_section_statement(parse_statement(HTML, 'codeforces:4-A'))
     html_statement['source'] = 'official'
     with TestClient(app, base_url='https://testserver') as client:
         def request(who, method, path, body=None):
@@ -395,6 +533,8 @@ def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_
 
         assert request(owner, 'GET', '/api/workbench/problem/4-A').status_code == 200
         owner_child = app.state.workspaces.apps[owner['user']['id']][0]
+        owner_child.state.ai.save(ProviderConfig(base_url='https://api.example.test/v1',
+                                                vendor='custom', protocol='chat'))
         owner_child.state.workbench.store_statement('codeforces:4-A', html_statement)
 
         async def complete(task, provider, model, payload, schema):
@@ -432,11 +572,72 @@ def test_multiuser_translation_store_is_central_and_statement_stays_private(tmp_
         assert request(member, 'POST', f'/api/translations/{shared_id}/review', {'decision': 'approved'}).status_code == 403
         assert request(owner, 'POST', f'/api/translations/{shared_id}/review', {'decision': 'approved'}).status_code == 200
 
+        # Synthetic historical contributions cover both sanitizer generations:
+        # old div headings and h2 headings whose render_version was still 3.
+        legacy_source = _cf_section_statement(html_statement, tag='div', render_version=3)
+        legacy_translation = owner_child.state.translations.get(tid)
+        legacy_translation['fingerprint'] = _legacy_translation_fingerprint(legacy_source)
+        legacy_translation['statement']['render_version'] = 3
+        with app.state.translation_store.connect() as db:
+            db.execute('UPDATE translations SET fingerprint=?,source_statement=?,data=?,submitted_at=100 WHERE id=?',
+                       (legacy_translation['fingerprint'], json.dumps(legacy_source),
+                        json.dumps(legacy_translation), shared_id))
+
         assert request(member, 'GET', '/api/workbench/problem/4-A').status_code == 200
         member_child = app.state.workspaces.apps[member['user']['id']][0]
-        member_child.state.workbench.store_statement('codeforces:4-A', html_statement)
+        current_source = _cf_section_statement(html_statement, tag='h2', render_version=RENDER_VERSION)
+        member_child.state.workbench.store_statement('codeforces:4-A', current_source)
+        old_div_visible = request(member, 'GET', '/api/workbench/problem/4-A/translations')
+        assert old_div_visible.status_code == 200, old_div_visible.text
+        assert [item['id'] for item in old_div_visible.json()['items']] == [shared_id]
+
+        newer_source = _cf_section_statement(html_statement, tag='h2', render_version=3)
+        newer_translation = copy.deepcopy(legacy_translation)
+        newer_translation.update(id='newer-private-synthetic', fingerprint=_legacy_translation_fingerprint(newer_source))
+        translated_body = newer_translation['statement']['body_html']
+        translated_body = translated_body.replace('<div class="section-title">', '<h2 class="section-title">').replace('</div>', '</h2>')
+        newer_translation['statement'].update(body_html=translated_body, render_version=3,
+                                               markdown=html_markdown(translated_body),
+                                               sections=[html_markdown(translated_body)])
+        newer_shared_id = 'newer-approved-synthetic'
+        assert newer_translation['fingerprint'] != legacy_translation['fingerprint']
+        assert fingerprint(newer_source) == fingerprint(legacy_source) == fingerprint(current_source)
+        with app.state.translation_store.connect() as db:
+            db.execute('''INSERT INTO translations
+                SELECT ?,owner,?,problem_id,?,target,model_key,status,?,?,200,reviewed_at,reviewer,review_note
+                FROM translations WHERE id=?''',
+                (newer_shared_id, newer_translation['id'], newer_translation['fingerprint'],
+                 json.dumps(newer_translation), json.dumps(newer_source), shared_id))
+
         visible = request(member, 'GET', '/api/workbench/problem/4-A/translations')
         assert visible.status_code == 200, visible.text
         assert visible.json()['can_review'] is False
-        assert any(item['id'] == shared_id and item['scope'] == 'shared' for item in visible.json()['items'])
+        assert [item['id'] for item in visible.json()['items']] == [newer_shared_id]
+        shared = visible.json()['items'][0]
+        assert shared['model_key'] == legacy_translation['model_key']
+        assert shared['scope'] == 'shared'
+        assert shared['statement']['render_version'] == RENDER_VERSION
+        assert shared['statement']['markdown'] == html_markdown(shared['statement']['body_html'])
+        assert shared['statement']['sections'] == [shared['statement']['markdown']]
+        assert '译文 ' in shared['statement']['markdown']
         assert member_child.state.translations.shared.path == tmp_path / 'translations.sqlite3'
+
+        member_child.state.ai.save(ProviderConfig(base_url='https://api.example.test/v1',
+                                                 vendor='custom', protocol='chat'))
+
+        async def should_not_translate(*args, **kwargs):
+            raise AssertionError('another user must reuse the approved historical translation for free')
+
+        monkeypatch.setattr(member_child.state.ai, 'complete', should_not_translate)
+        reused = asyncio.run(member_child.state.translations.generate('4-A', Translate(
+            model='mock-model', consent=True)))
+        assert reused == {'translation_id': newer_shared_id, 'reused': True}
+        assert member_child.state.translations.ephemeral == {}
+        # Reading a legacy shared translation upgrades its presentation without
+        # mutating the archived contribution or persisting a private copy.
+        with app.state.translation_store.connect() as db:
+            stored = db.execute('SELECT data FROM translations WHERE id=?', (shared_id,)).fetchone()
+            newer_stored = db.execute('SELECT data FROM translations WHERE id=?', (newer_shared_id,)).fetchone()
+            assert db.execute("SELECT COUNT(*) FROM translations WHERE status='approved'").fetchone()[0] == 2
+        assert json.loads(stored['data'])['statement']['render_version'] == 3
+        assert json.loads(newer_stored['data'])['statement']['render_version'] == 3
