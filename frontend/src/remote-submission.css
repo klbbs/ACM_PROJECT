@@ -1,0 +1,127 @@
+.remote-submission {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #dce2eb);
+  padding-top: 1rem;
+}
+.remote-submission h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.remote-submit-controls {
+  display: flex;
+  gap: 0.7rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.remote-submit-controls label {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.remote-submit-controls select {
+  max-width: 100%;
+}
+.remote-submit-controls button,
+.remote-submit-controls a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+.remote-submit-controls .remote-send-primary {
+  background: #6c4de6;
+  border-color: #6c4de6;
+  color: #fff;
+}
+.remote-submit-controls .remote-send-primary:disabled {
+  opacity: 0.55;
+}
+.remote-submit-error {
+  color: #b32935;
+  overflow-wrap: anywhere;
+}
+.remote-submit-warning {
+  color: #8a6112;
+  overflow-wrap: anywhere;
+}
+.remote-submit-records {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1rem;
+}
+.remote-submit-record {
+  border: 1px solid var(--border, #dce2eb);
+  border-radius: 14px;
+  padding: 0.85rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.remote-submit-verdict {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.remote-submit-record.is-ac {
+  border-color: #8acfaa;
+  background: #effbf3;
+}
+.remote-submit-record.is-ac .remote-submit-verdict {
+  color: #0c8650;
+  animation: remote-ac-pop 0.35s ease-out;
+}
+.remote-submit-record.is-error {
+  border-color: #efb1b6;
+  background: #fff4f4;
+}
+.remote-submit-record.is-error .remote-submit-verdict {
+  color: #b32935;
+}
+.remote-status-spin {
+  animation: remote-spin 2s linear infinite;
+}
+@keyframes remote-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes remote-ac-pop {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .remote-status-spin,
+  .remote-submit-record.is-ac .remote-submit-verdict {
+    animation: none;
+  }
+}
+@media (max-width: 600px) {
+  .remote-submit-controls label {
+    width: 100%;
+  }
+  .remote-submit-controls select {
+    width: 100%;
+  }
+}
+.remote-submit-dismiss {
+  display: grid;
+  gap: 0.5rem;
+  border-top: 1px dashed var(--border, #dce2eb);
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+}
+.remote-submit-dismiss label {
+  display: flex;
+  align-items: start;
+  gap: 0.5rem;
+}
+.remote-submit-dismiss button {
+  justify-self: start;
+}

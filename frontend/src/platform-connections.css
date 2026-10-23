@@ -41,3 +41,8 @@
     text-align: center;
   }
 }
+.nowcoder-login-method button[aria-pressed='true'] {
+  border-color: #775be8;
+  background: #f1edff;
+  color: #5c3fbd;
+}

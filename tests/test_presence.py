@@ -11,7 +11,7 @@ def test_presence_is_authenticated_scoped_and_expires(site):
     visible = request(member, 'GET', '/api/presence').json()['items']
     assert {r['username'] for r in visible} == {'kendas', 'member'}
     assert next(r for r in visible if r['self'])['username'] == 'member'
-    assert all(set(r) == {'id', 'username', 'self'} for r in visible)
+    assert all(set(r) == {'username', 'self'} for r in visible)
     with app.state.identities.connect() as db:
         db.execute('UPDATE online_presence SET seen_at=? WHERE user_id=?', (int(time.time())-91, admin['user']['id']))
     assert [r['username'] for r in request(member,'GET','/api/presence').json()['items']] == ['member']

@@ -164,7 +164,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       <h4>微信扫码绑定牛客</h4>
       <p className="help">
         通过牛客官方微信登录入口，在手机上确认授权，无需填写牛客密码。二维码约 2
-        分钟有效，只能本人扫描。扫码后还需验证真实牛客 UID，验证通过才会绑定。
+        分钟有效，只能本人扫描。扫码后自动验证真实牛客 UID 并保存登录会话，无需再导入 Cookie。
       </p>
       <label>
         绑定目标
@@ -202,7 +202,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       {session && (
         <p role="status" aria-live="polite">
           {session.status === 'verified'
-            ? `牛客身份验证通过，已绑定 UID：${session.verified_uid ?? '请查看账号列表'}。`
+            ? `牛客身份验证通过，已绑定 UID：${session.verified_uid ?? '请查看账号列表'}。登录会话已保存，无需再次导入 Cookie。`
             : session.message ||
               (session.status === 'authorizing'
                 ? '微信已确认，正在验证牛客身份…'
@@ -215,7 +215,9 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       )}
       {error && <p role="alert">{error}</p>}
       <p className="help">
-        不使用微信？仍可在牛客官网登录后，通过油猴助手或 F12 获取 Cookie，在下方手动绑定并检测。
+        扫码登录与 Cookie
+        导入二选一。当前扫码方式不需要你在浏览器额外登录；不使用微信时，可切换上方“导入浏览器
+        Cookie”。
       </p>
     </section>
   )

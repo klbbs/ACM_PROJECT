@@ -44,8 +44,10 @@ def load(path):
         raise ValueError("配置仅支持 crawler 和 accounts")
     accounts, seen = [], set()
     for item in doc.get("accounts", []):
-        if set(item) - {"platform", "handle", "cookie_env", "enrich", "cookie"}:
+        if set(item) - {"platform", "handle", "cookie_env", "enrich", "cookie", "login_method"}:
             raise ValueError("accounts 存在未知字段")
+        if item.get('login_method') is not None and item['login_method'] not in {'qr', 'cookie', 'browser', 'public'}:
+            raise ValueError('login_method 必须为受支持的登录方式')
         platform, handle = item.get("platform"), str(item.get("handle", "")).strip()
         if platform not in ADAPTERS or not handle:
             raise ValueError("账号需填写支持的 platform 和非空 handle")

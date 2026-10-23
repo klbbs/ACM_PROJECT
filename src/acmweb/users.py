@@ -13,6 +13,19 @@ from contextlib import contextmanager
 from fastapi import HTTPException
 
 HASH_SLOTS = threading.BoundedSemaphore(2)
+AUTH_SLOTS = threading.BoundedSemaphore(2)
+
+
+@contextmanager
+def authentication_slot():
+    # Bound expensive work while it is running, rather than locking every
+    # visitor out for a whole window after someone fills a global counter.
+    if not AUTH_SLOTS.acquire(blocking=False):
+        raise HTTPException(503, '认证服务暂时繁忙，请稍后重试', headers={'Retry-After':'1'})
+    try:
+        yield
+    finally:
+        AUTH_SLOTS.release()
 
 
 @contextmanager
@@ -184,32 +197,48 @@ class Users:
             return db.execute('SELECT COUNT(*) FROM users').fetchone()[0]
 
     def create(self, username, password, *, setup=False, invitation='', max_users=100):
-        hashed = password_hash(password)
         uid, now = uuid.uuid4().hex, int(time.time())
-        with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+        invitation_digest = digest(invitation)
+
+        def validate(db):
             count = db.execute('SELECT COUNT(*) FROM users').fetchone()[0]
             if setup and count:
                 raise HTTPException(409, '管理员已初始化')
-            if count >= max_users:
-                raise HTTPException(409, '已达到本站用户上限')
             if not setup:
-                row = db.execute('SELECT * FROM invitations WHERE hash=? AND used_by IS NULL AND expires_at>?',(digest(invitation),now)).fetchone()
+                row = db.execute('SELECT * FROM invitations WHERE hash=? AND used_by IS NULL AND expires_at>?',(invitation_digest,int(time.time()))).fetchone()
                 if not row:
                     raise HTTPException(400, '邀请码无效或已过期')
+                if username.lower() in {'admin', 'kendas', 'kds'}:
+                    raise HTTPException(409, '用户名不可用')
+            if count >= max_users:
+                raise HTTPException(409, '已达到本站用户上限')
+            if db.execute('SELECT 1 FROM users WHERE username=?',(username,)).fetchone():
+                raise HTTPException(409, '用户名不可用')
+
+        # Reject invalid invitations without doing scrypt or disclosing whether
+        # a particular account exists/is reserved. Do not hold a write lock
+        # while hashing. Recheck under the final write transaction for races.
+        with self.connect() as db:
+            validate(db)
+        with authentication_slot():
+            hashed = password_hash(password)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            validate(db)
             try:
                 db.execute('INSERT INTO users VALUES(?,?,?,?,1,?)',(uid,username,hashed,'admin' if setup else 'member',now))
             except sqlite3.IntegrityError:
                 raise HTTPException(409, '用户名不可用') from None
             if not setup:
-                db.execute('UPDATE invitations SET used_by=? WHERE hash=?',(uid,digest(invitation)))
+                db.execute('UPDATE invitations SET used_by=? WHERE hash=?',(uid,invitation_digest))
             self.audit('user.created',uid,uid,db)
         return uid
 
     def authenticate(self, username, password):
         with self.connect() as db:
             row = db.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
-        valid = verify_password(password, row['password_hash'] if row else self.dummy_hash)
+        with authentication_slot():
+            valid = verify_password(password, row['password_hash'] if row else self.dummy_hash)
         if not row or not valid or not row['active']:
             self.audit('login.failed')
             raise HTTPException(401, '用户名或密码不正确')

@@ -2,5 +2,8 @@
 # Caddy 需与应用位于同一台主机；若 Caddy 也在容器中，请将目标改为 web:8000 并加入同一网络。
 acm.example.com {
     encode zstd gzip
+    header -Server
+    # The application owns CSP and the other security response headers.
+    # Do not add a second set here. Caddy preserves the original Host.
     reverse_proxy 127.0.0.1:8000
 }

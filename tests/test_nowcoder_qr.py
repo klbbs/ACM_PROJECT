@@ -291,6 +291,9 @@ def test_owner_throttle_and_verified_binding(tmp_path):
             assert 'SYNTHETIC' not in str(result)
             assert value.checker.statuses()['items'][0]['login_verified'] is True
             assert value.accounts.document()['accounts'][0]['cookie'] == 'test_session=SYNTHETIC'
+            assert value.accounts.document()['accounts'][0]['login_method'] == 'qr'
+            public = value.accounts.public()['items'][0]
+            assert public['login_method'] == 'qr' and public['has_cookie'] is True
             assert value.flow is None
         finally: value.close()
     asyncio.run(run())

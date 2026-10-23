@@ -51,7 +51,7 @@ def source_url(pid):
     pid = normalize(pid); platform, key = pid.split(':',1)
     if platform == 'codeforces':
         a,b=key.split('-'); return f'https://codeforces.com/problemset/problem/{a}/{b}'
-    if platform == 'atcoder': return f'https://atcoder.jp/contests/{key.rsplit("_",1)[0]}/tasks/{key}'
+    if platform == 'atcoder': return f'https://atcoder.jp/contests/{"abs" if key == "practice_1" else key.rsplit("_",1)[0]}/tasks/{key}'
     if platform == 'luogu': return f'https://www.luogu.com.cn/problem/{key}'
     if key.startswith('contest-'):
         _, contest,index=key.split('-'); return f'https://ac.nowcoder.com/acm/contest/{contest}/{index}'
@@ -143,7 +143,8 @@ def fetch_statement(pid,accounts):
 def capabilities(pid,accounts):
     pid=normalize(pid);platform,key=pid.split(':',1); matched=[a for a in accounts if a.get('platform')==platform]
     url=source_url(pid)
-    if platform=='atcoder': url=f'https://atcoder.jp/contests/{key.rsplit("_",1)[0]}/submit?taskScreenName={key}'
+    if platform=='atcoder': url=f'https://atcoder.jp/contests/{"abs" if key == "practice_1" else key.rsplit("_",1)[0]}/submit?taskScreenName={key}'
     elif platform=='codeforces': url=f'https://codeforces.com/problemset/submit?contestId={key.split("-")[0]}&submittedProblemIndex={key.split("-")[1]}'
     elif platform=='luogu':url+='#submit'
-    return {'platform':platform,'statement':True,'auto_submit':False,'official_submit_url':url,'account_configured':bool(matched),'cookie_configured':any(a.get('cookie') for a in matched),'login_verified':False,'judge_sync':True,'notice':'请先在官方平台登录，再前往官方提交页提交。本站未自动代交代码；'+('可关联官方提交号核验结果。' if platform=='codeforces' else '请先采集此平台账号信息，再关联已采集的官方提交号；结果非实时且未核验远程源码。')}
+    enabled = platform in {'codeforces','atcoder'}
+    return {'platform':platform,'statement':True,'auto_submit':enabled,'official_submit_url':url,'account_configured':bool(matched),'cookie_configured':any(a.get('cookie') for a in matched),'login_verified':False,'judge_sync':True,'notice':('可在编辑器下方选择账号及官方编译器后直接提交，判题结果自动同步；平台要求重新登录或浏览器验证时会明确停止，不会自动重复交题。' if enabled else '此平台远程交题尚未完成真实适配，请在官方页面提交；可先同步账号记录，再关联提交号。')}

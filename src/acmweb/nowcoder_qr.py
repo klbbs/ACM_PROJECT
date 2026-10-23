@@ -321,7 +321,7 @@ class NowcoderQR:
                     self._discard()
                     raise HTTPException(409, '正在采集，请完成后重新扫码绑定')
                 try:
-                    accounts = self.accounts.bind_verified_account('nowcoder', uid, cookie, flow['revision'])
+                    accounts = self.accounts.bind_verified_account('nowcoder', uid, cookie, flow['revision'], login_method='qr')
                 except AIError as exc:
                     self._discard()
                     raise HTTPException(409, str(exc)) from None

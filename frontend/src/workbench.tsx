@@ -11,6 +11,7 @@ import { WorkbenchSplit } from './workbench-split'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
 import { ProblemRecordEditor } from './problem-records'
+import { RemoteSubmissionPanel } from './remote-submission'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
@@ -236,7 +237,8 @@ export function WorkbenchPage({
     setBusy(true)
     try {
       const state = await api(`/workbench/resolve?problem=${encodeURIComponent(value)}`)
-      if (!window.dispatchEvent(new Event('acm:before-problem-change', { cancelable: true }))) return
+      if (!window.dispatchEvent(new Event('acm:before-problem-change', { cancelable: true })))
+        return
       currentPid.current = state.id
       setPid(state.id)
       setData(state)
@@ -286,8 +288,8 @@ export function WorkbenchPage({
           <p>读题、独立思考、逐步提示、记录每次尝试。代码保存在你的个人空间。</p>
         </div>
         <p className="muted">
-          当前流程：自动保存代码 → 前往题目所属平台提交 → CF
-          可即时核验，其他平台先同步账号信息，再用已采集的提交号关联判题。
+          CF、AtCoder：自动保存代码 → 选择官方编译器并提交 → 自动取得判题和错因提示。
+          平台验证未通过时会停止提交；其他平台仍可使用官方页面与手动关联。
         </p>
         <div className="wb-metrics">
           <span>
@@ -582,6 +584,16 @@ export function WorkbenchPage({
                     code={code}
                     language={language}
                     samples={statement?.samples || []}
+                  />
+                  <RemoteSubmissionPanel
+                    key={pid}
+                    problemId={pid}
+                    handles={data?.capabilities?.handles || []}
+                    language={language}
+                    code={code}
+                    save={async () => ((await save()) ? draftRevision.current : null)}
+                    onError={onError}
+                    onChanged={() => refresh()}
                   />
                   <details className="wb-shortcuts">
                     <summary>编辑器快捷键与补全说明</summary>

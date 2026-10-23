@@ -62,7 +62,7 @@ class Accounts:
         with self.lock:
             return self._revision(self.document())
 
-    def bind_verified_account(self, platform, handle, cookie, revision):
+    def bind_verified_account(self, platform, handle, cookie, revision, *, login_method='browser'):
         """Merge a freshly verified credential atomically, preserving other accounts."""
         with self.lock:
             doc = self.document()
@@ -78,7 +78,9 @@ class Accounts:
                 target = AccountInput(platform=platform, handle=handle)
                 items.append(target)
             target.cookie = cookie
-            return self.save(AccountList(items=items))
+            if login_method not in {'qr', 'browser'}:
+                raise ValueError('Unsupported verified login method')
+            return self.save(AccountList(items=items), verified_login=(platform, handle, login_method))
 
     @property
     def effective_path(self):
@@ -105,10 +107,11 @@ class Accounts:
                 'items': [{'platform': a['platform'], 'handle': a['handle'], 'enrich': a.get('enrich', False),
                            'has_cookie': bool(a.get('cookie') or a.get('cookie_env')),
                            'cookie_info': credential_info(a),
+                           'login_method': a.get('login_method', 'cookie' if a.get('cookie') or a.get('cookie_env') else 'public'),
                            'credential_source': 'environment' if a.get('cookie_env') else ('saved' if a.get('cookie') else 'public')}
                           for a in doc.get('accounts', [])]}
 
-    def save(self, payload):
+    def save(self, payload, *, verified_login=None):
         with self.lock:
             doc = self.document()
             previous = {(a['platform'], str(a['handle'])): a for a in doc.get('accounts', [])}
@@ -126,6 +129,8 @@ class Accounts:
                 if item.cookie is None:
                     old = previous.get(key, {})
                     account.update({k: old[k] for k in ('cookie', 'cookie_env') if old.get(k)})
+                    if old.get('login_method') in {'qr', 'browser', 'cookie'} and (account.get('cookie') or account.get('cookie_env')):
+                        account['login_method'] = old['login_method']
                     # Repair safe single-header copy artifacts on explicit save.
                     # Unrelated legacy credentials are retained, but public()
                     # reports their precise syntax error instead of pretending
@@ -138,8 +143,11 @@ class Accounts:
                 elif item.cookie:
                     try:
                         account['cookie'] = prepare_cookie(item.cookie)
+                        account['login_method'] = 'cookie'
                     except ValueError as error:
                         raise AIError(str(error)) from None
+                if verified_login and key == verified_login[:2]:
+                    account['login_method'] = verified_login[2]
                 accounts.append(account)
             crawler = dict(doc.get('crawler', {}))
             crawler.update(database=str(self.settings.database), output_dir=str(self.settings.data_dir / 'runs'))

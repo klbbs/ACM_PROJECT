@@ -66,6 +66,7 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
   const [checks, setChecks] = useState<Record<string, any>>({})
   const epoch = useRef(0)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
+  const [nowcoderMethod, setNowcoderMethod] = useState<'qr' | 'cookie'>('qr')
   useEffect(() => {
     const values = Object.values(checks)
     if (!values.length) return
@@ -124,9 +125,11 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
     <section className="card settings-card">
       <h2>平台信息、登录检测与交题</h2>
       <p className="help">
-        Codeforces、AtCoder 使用油猴助手获取 Cookie，按提示确认完整性后保存检测；洛谷支持官方登录窗口，牛客支持微信扫码。
-        公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。
-        本站目前通过官方页面交题，不支持用 Cookie 自动代提交。官方页仍需在你当前浏览器中登录。
+        Codeforces、AtCoder 使用油猴助手获取
+        Cookie，按提示确认完整性后保存检测；洛谷支持官方登录窗口，牛客支持微信扫码。
+        公开资料可采集不代表登录成功；检测只读取官方页面，不会提交代码。 牛客扫码与 Cookie
+        导入二选一；扫码验证成功会自动保存会话，无需再次去浏览器登录或复制 Cookie。 CF、AtCoder
+        的真实交题入口在工作台编辑器下方，提交前读取官方编译器并检查会话；官方备用页仍使用浏览器自己的登录状态。
       </p>
       <div className="platform-action-grid">
         {items.map((p) => (
@@ -169,10 +172,46 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
               <BrowserPlatformLogin platform="luogu" onBound={onBound || (() => {})} />
             )}
             {p.platform === 'nowcoder' && (
-              <NowcoderQrLogin
-                handles={(p.accounts || []).map((a: any) => a.handle)}
-                onBound={onBound || (() => {})}
-              />
+              <div className="nowcoder-login-method">
+                <p>
+                  <strong>登录方式（二选一）</strong>
+                </p>
+                <div className="platform-browser-actions" role="group" aria-label="牛客登录方式">
+                  <button
+                    className="secondary"
+                    aria-pressed={nowcoderMethod === 'qr'}
+                    onClick={() => setNowcoderMethod('qr')}
+                  >
+                    微信扫码（推荐）
+                  </button>
+                  <button
+                    className="secondary"
+                    aria-pressed={nowcoderMethod === 'cookie'}
+                    onClick={() => setNowcoderMethod('cookie')}
+                  >
+                    导入浏览器 Cookie
+                  </button>
+                </div>
+                {nowcoderMethod === 'qr' ? (
+                  <NowcoderQrLogin
+                    handles={(p.accounts || []).map((a: any) => a.handle)}
+                    onBound={onBound || (() => {})}
+                  />
+                ) : (
+                  <div className="cookie-helper-note">
+                    <p>
+                      已有浏览器登录会话时，可在下方平台账号中填写数字 UID、粘贴 Cookie
+                      并保存检测；选择此方式无需扫码。
+                    </p>
+                    <p>
+                      两种方式都会保存一份平台会话。平台若限制多处登录，另一次登录可能使旧会话失效，请选择一种方式持续使用。
+                    </p>
+                    <a href={officialPages.nowcoder} target="_blank" rel="noreferrer">
+                      打开牛客浏览器会话 ↗
+                    </a>
+                  </div>
+                )}
+              </div>
             )}
             {p.accounts?.map((a: any) => {
               const key = `${p.platform}:${a.handle}`
@@ -205,6 +244,12 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
                         : labels[result.status] || '无法确认登录'
                       : '尚未检测'}
                   </p>
+                  {p.platform === 'nowcoder' && a.login_method === 'qr' && (
+                    <p className="help">
+                      已通过微信扫码保存牛客会话，无需额外填写
+                      Cookie。会话失效时重新扫码即可；浏览器另行登录可能影响现有会话。
+                    </p>
+                  )}
                   {a.cookie_info && (
                     <p className="help">
                       {a.cookie_info.status === 'valid'

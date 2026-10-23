@@ -215,4 +215,4 @@ def test_inflight_poll_cannot_overwrite_changed_config_or_pass_deadline(qr_site,
     else:
         assert response.status_code == 200 and response.json()['status'] == 'expired',response.text
         expected='sid=KEEP-SYNTHETIC'
-    assert manager.accounts.document()['accounts'] == [{'platform':'atcoder','handle':'fixture','enrich':False,'cookie':expected}]
+    assert manager.accounts.document()['accounts'] == [{'platform':'atcoder','handle':'fixture','enrich':False,'cookie':expected,'login_method':'cookie'}]

@@ -31,6 +31,39 @@ def main():
                     'message':'隔离合成身份验证' if cookie else '未保存 Cookie；公开信息仍可采集，登录凭据尚未检测。'}
         app.state.credential_checks.check = fixture_login_check
 
+        # Exercise the actual queue, persistence and UI with a synthetic OJ transport.
+        # This replacement exists only in this explicitly guarded fixture process.
+        remote_receipts = {}
+        class FixtureRemoteJudge:
+            before_send = None
+
+            def options(self, pid, handle):
+                return [{'id':'89','name':'Synthetic GNU C++20'},
+                        {'id':'31','name':'Synthetic Python 3'}]
+
+            def submit(self, pid, handle, code, compiler):
+                if self.before_send:
+                    self.before_send()
+                sid = str(930001 + len(remote_receipts))
+                remote_receipts[sid] = {'id':sid, 'problem_id':pid.split(':',1)[1],
+                    'account':handle, 'submitted_at':int(time.time()),
+                    'verdict':'AC' if 'fixture_correct' in code else 'WA',
+                    'language':'Synthetic Python 3',
+                    'url':f'https://codeforces.com/contest/4/submission/{sid}'}
+                return {'id':sid, 'url':remote_receipts[sid]['url'], 'compiler_name':'Synthetic Python 3'}
+
+            def judge(self, pid, handle, sid):
+                return remote_receipts[sid]
+
+            def close(self):
+                pass
+
+        app.state.remote_submissions._driver = lambda *_: FixtureRemoteJudge()
+
+        @app.post('/_fixture/remote-count')
+        def remote_count():
+            return {'sent':len(remote_receipts)}
+
         # Test-process-only substitutes: never post code or call paid AI APIs.
         from acmweb import workbench
         async def fixture_ai(model, prompt, schema):
@@ -79,10 +112,12 @@ def main():
             if any(not task.done() for _, task in app.state.jobs.tasks.values()):
                 raise HTTPException(409, 'Previous fixture job is still running')
             with app.state.database.connect() as db:
-                for table in ('wb_auto_reviews', 'wb_hints', 'wb_attempts', 'wb_drafts', 'wb_problems',
+                for table in ('wb_remote_submissions', 'wb_submission_code_claims',
+                              'wb_auto_reviews', 'wb_hints', 'wb_attempts', 'wb_drafts', 'wb_problems',
                               'submissions', 'accounts', 'snapshots', 'runs', 'practice_feedback'):
                     db.execute('DELETE FROM ' + table)
                 db.executemany('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements)
+            remote_receipts.clear()
             return {'ok': True}
 
         uvicorn.run(app, host='127.0.0.1', port=18766, access_log=False)

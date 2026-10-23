@@ -8,9 +8,10 @@ type Props = {
   saved?: boolean
   info?: Info
   disabled?: boolean
+  loginMethod?: string
 }
 
-export function AccountCookieField({ value, onChange, saved, info, disabled }: Props) {
+export function AccountCookieField({ value, onChange, saved, info, disabled, loginMethod }: Props) {
   const id = useId()
   const [visible, setVisible] = useState(false)
   useEffect(() => {
@@ -18,6 +19,11 @@ export function AccountCookieField({ value, onChange, saved, info, disabled }: P
   }, [value])
   return (
     <div className="account-cookie-field">
+      {saved && loginMethod === 'qr' && (
+        <p className="help">
+          本账号已通过扫码保存登录会话，不需要额外导入 Cookie；留空即可保留扫码会话。
+        </p>
+      )}
       {saved && (
         <p className="help" role="status">
           {info?.status === 'invalid'

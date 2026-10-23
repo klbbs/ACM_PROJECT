@@ -151,6 +151,8 @@ def inspect_identity(platform, html):
 def diagnostics(result):
     """Expose only fixed local text and official entrypoints, never challenge HTML."""
     reason=result['reason']; status=result['status']
+    result['auto_submit_supported'] = bool(result['platform'] in {'codeforces','atcoder'} and result.get('login_verified'))
+    result['submission_method'] = 'workbench' if result['auto_submit_supported'] else 'official_page'
     messages={
         'captcha':'平台要求验证码或人机验证，当前无法确认 Cookie 是否有效。',
         'browser_challenge':'平台正在进行浏览器验证，服务器请求尚未通过验证。',
@@ -164,7 +166,7 @@ def diagnostics(result):
     result['message']=messages.get(reason,{
         'invalid':COOKIE_ERROR,
         'missing':'未保存 Cookie；公开信息仍可采集，登录凭据尚未检测。',
-        'authenticated':'官方返回的当前登录身份与绑定账号一致；交题仍需在官方页面完成。',
+        'authenticated':('官方返回的当前登录身份与绑定账号一致；可在工作台读取官方编译器并提交。提交时仍会重新核验会话与表单。' if result['platform'] in {'codeforces','atcoder'} else '官方返回的当前登录身份与绑定账号一致；会话已保存，无需再导入 Cookie。交题仍需在官方页面完成。'),
         'account_mismatch':'当前 Cookie 的登录账号与绑定账号不一致，请重新获取正确账号的 Cookie。',
         'expired':'平台返回登录页面或未登录状态，请重新登录并更新 Cookie。',
         'blocked':'平台返回验证或访问限制，无法判断 Cookie 是否有效。',

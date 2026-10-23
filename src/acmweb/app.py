@@ -91,13 +91,15 @@ def create_app(settings=None):
     @asynccontextmanager
     async def lifespan(app):
         yield
+        app.state.remote_submissions.closed = True
         app.state.nowcoder_qr.close()
         await app.state.browser_login.aclose()
         await jobs.close()
         app.state.translations.close()
         await codex.close()
 
-    app=FastAPI(title="ACM Lab API",version="0.19.1",lifespan=lifespan,docs_url=None if settings.production else "/api/docs",openapi_url="/api/openapi.json")
+    private_schema = settings.production or settings.isolated
+    app=FastAPI(title="ACM Lab API",version="0.19.1",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     register_credential_checks(app,account_config)
     from .nowcoder_qr import register as register_nowcoder_qr
     register_nowcoder_qr(app, account_config, jobs)
@@ -109,8 +111,7 @@ def create_app(settings=None):
     from .browser_login_routes import register as register_browser_login
     register_browser_login(app, account_config)
 
-    if not settings.access_token:
-        app.add_middleware(TrustedHostMiddleware,allowed_hosts=["127.0.0.1","localhost","[::1]","testserver"])
+    app.add_middleware(TrustedHostMiddleware,allowed_hosts=list(settings.allowed_hosts))
     session_value=hmac.new((settings.access_token or secrets.token_urlsafe(32)).encode(),b"acm-lab-session",hashlib.sha256).hexdigest()
 
     @app.middleware("http")
@@ -145,7 +146,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok","version":"0.19.1"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.19.1"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -277,6 +278,13 @@ def create_app(settings=None):
     from .workbench import Workbench, register
     app.state.workbench = Workbench(database, ai, account_config)
     register(app, app.state.workbench, jobs, app.state.daily)
+
+    from .remote_submissions import RemoteSubmissions, register as register_remote_submissions
+    app.state.remote_submissions = RemoteSubmissions(database, account_config, app.state.workbench, jobs, app.state.daily)
+    register_remote_submissions(app, app.state.remote_submissions)
+    from .problem_submissions import ProblemSubmissions, register as register_problem_submissions
+    app.state.problem_submissions = ProblemSubmissions(database, account_config, app.state.workbench, app.state.remote_submissions, jobs)
+    register_problem_submissions(app, app.state.problem_submissions)
 
     from .problem_records import ProblemRecords, register as register_problem_records
     app.state.problem_records = ProblemRecords(database)

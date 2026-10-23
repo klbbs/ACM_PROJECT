@@ -124,7 +124,7 @@ def test_cookie_csrf_host_origin_and_setup_guards(site):
     assert 'HttpOnly' in response.headers['set-cookie'] and 'SameSite=strict' in response.headers['set-cookie']
     assert request(admin,'POST','/api/shared',{'title':'x','body':'x'*530000}).status_code == 413
     result = request(None,'POST','/api/auth/login',{'username':'owner','password':'PRIVATE'})
-    assert result.status_code == 422 and 'PRIVATE' not in result.text
+    assert result.status_code == 401 and 'PRIVATE' not in result.text
 
 
 def test_sessions_logout_and_password_change(site):
@@ -161,7 +161,8 @@ def test_invitation_single_use_expiry_and_limits(site):
     with app.state.identities.connect() as db:
         db.execute('INSERT INTO rate_limits VALUES(?,?,?,?)',('login-name:'+digest('blocked'),int(time.time())//900,10,int(time.time())+900))
     response = request(None,'POST','/api/auth/login',{'username':'blocked','password':PASSWORD})
-    assert response.status_code == 429 and response.headers.get('Retry-After')
+    # Legacy username-only counters no longer let someone lock another peer out.
+    assert response.status_code == 401
 
 
 def test_session_expiration_logout_all_and_missing_csrf(site):

@@ -502,7 +502,7 @@ def test_workbench_uses_cached_credential_check_without_network(workspace, monke
     caps = service.state('4-A')['capabilities']
     assert caps['login_verified'] is True
     assert caps['credential_check']['handle'] == 'demo'
-    assert caps['auto_submit'] is False
+    assert caps['auto_submit'] is True
 
 
 def test_prepare_submission_respects_case_sensitive_accounts(workspace, monkeypatch):

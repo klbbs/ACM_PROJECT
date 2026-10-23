@@ -9,6 +9,49 @@ vi.mock('./api', () => ({
 }))
 import { api } from './api'
 
+it('Nowcoder QR and Cookie import are alternatives, and a QR session needs no extra import', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  vi.mocked(api)
+    .mockReset()
+    .mockImplementation(async (path: string) => {
+      if (path === '/platforms')
+        return {
+          items: [
+            {
+              platform: 'nowcoder',
+              accounts: [{ handle: '123', has_cookie: true, login_method: 'qr' }],
+            },
+          ],
+        } as never
+      return { items: [] } as never
+    })
+  try {
+    await act(async () =>
+      root.render(<PlatformConnections revision={1} run={vi.fn()} onError={vi.fn()} />),
+    )
+    expect(host.querySelector('.nowcoder-qr-login')).not.toBeNull()
+    expect(host.textContent).toContain('无需额外填写 Cookie')
+    const methods = host.querySelector('[aria-label="牛客登录方式"]')!
+    const cookie = [...methods.querySelectorAll('button')].find(
+      (b) => b.textContent === '导入浏览器 Cookie',
+    )!
+    await act(async () => cookie.click())
+    expect(cookie.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('.nowcoder-qr-login')).toBeNull()
+    expect(host.textContent).toContain('选择此方式无需扫码')
+    expect(api).not.toHaveBeenCalledWith(
+      '/platform-login/nowcoder/start',
+      expect.anything(),
+      expect.anything(),
+    )
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
 it('offers Cookie-helper guidance for Codeforces and AtCoder, Luogu login, and Nowcoder QR', async () => {
   const host = document.createElement('div')
   document.body.append(host)
@@ -96,7 +139,7 @@ it('checks saved credentials explicitly and discards successful status after con
       handle: 'demo',
     })
     expect(host.textContent).toContain('已验证登录')
-    expect(host.textContent).toContain('不支持用 Cookie 自动代提交')
+    expect(host.textContent).toContain('真实交题入口在工作台编辑器下方')
     await act(async () =>
       root.render(<PlatformConnections revision={2} run={vi.fn()} onError={onError} />),
     )

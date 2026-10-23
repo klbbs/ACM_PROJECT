@@ -1072,9 +1072,7 @@ function App() {
               onError={setError}
             />
           )}
-          {page === 'social' && auth.multi_user && (
-            <SocialPage onOpenProblem={openProblem} />
-          )}
+          {page === 'social' && auth.multi_user && <SocialPage onOpenProblem={openProblem} />}
           {page === 'community' && auth.multi_user && (
             <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}
@@ -2277,14 +2275,21 @@ function SettingsPage({
               value={editingAccount.cookie}
               saved={editingAccount.has_cookie}
               info={editingAccount.cookie_info}
+              loginMethod={editingAccount.login_method}
               disabled={accountSaving || editingAccount.clearCookie}
               onChange={(cookie) => setEditingAccount({ ...editingAccount, cookie })}
             />
             <p className="help">
-              公开数据可以先不填 Cookie。需要登录时，先用本页提供的油猴脚本获取并复制 Cookie，或按
-              F12
-              教程手动获取，粘贴保存后自动检测，之后也可手动重检。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
-              F12。
+              {editingAccount.platform === 'nowcoder' ? (
+                '牛客登录方式二选一：使用上方微信扫码并绑定后，无需在此填写 Cookie；已有浏览器会话时才选择导入 Cookie。编辑已扫码账号时留空会保留会话。'
+              ) : (
+                <>
+                  公开数据可以先不填 Cookie。需要登录时，先用本页提供的油猴脚本获取并复制
+                  Cookie，或按 F12
+                  教程手动获取，粘贴保存后自动检测，之后也可手动重检。无需服务器安装浏览器；脚本只在你主动点击后尝试读取当前平台，不支持时请使用
+                  F12。
+                </>
+              )}
             </p>
             <label className="checkbox">
               <input

@@ -3,7 +3,7 @@ import { Users } from 'lucide-react'
 import { api } from './api'
 
 export function OnlineUsers() {
-  const [items, setItems] = useState<{ id: string; username: string; self: boolean }[]>([])
+  const [items, setItems] = useState<{ username: string; self: boolean }[]>([])
   const [error, setError] = useState('')
   useEffect(() => {
     let alive = true
@@ -39,7 +39,7 @@ export function OnlineUsers() {
           <p role="status">{error}</p>
         ) : (
           items.map((item) => (
-            <p key={item.id}>
+            <p key={item.username}>
               <span className="online-dot" />
               {item.username}
               {item.self ? '（我）' : ''}

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS wb_drafts (problem_id TEXT PRIMARY KEY,language TEXT 
 CREATE TABLE IF NOT EXISTS wb_hints (problem_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(problem_id,seq));
 CREATE TABLE IF NOT EXISTS wb_attempts (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,language TEXT NOT NULL,code TEXT NOT NULL,code_hash TEXT NOT NULL,created_at INTEGER NOT NULL,handle TEXT,submission_id INTEGER,verdict TEXT NOT NULL DEFAULT 'UNLINKED',judge_data TEXT,review TEXT,last_synced INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS wb_submission_code_claims (attempt_id TEXT PRIMARY KEY,code_hash TEXT NOT NULL,confirmed_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS wb_official_sources (attempt_id TEXT PRIMARY KEY,code_hash TEXT NOT NULL,fetched_at INTEGER NOT NULL);
 CREATE TRIGGER IF NOT EXISTS wb_submission_code_claims_cleanup AFTER DELETE ON wb_attempts
 BEGIN DELETE FROM wb_submission_code_claims WHERE attempt_id=OLD.id; END;
 CREATE TABLE IF NOT EXISTS wb_auto_reviews (fingerprint TEXT PRIMARY KEY,created_at INTEGER NOT NULL);
@@ -390,18 +391,20 @@ class Workbench:
                 'submission_id': str(row['submission_id']) if row['submission_id'] else None,
                 'platform': platform, 'account': row['handle'], 'verdict': row['verdict'],
                 'submitted_at': row['created_at'], 'url': source_url(pid)}
-            item.update(attempt_id=row['id'], has_local_code=True, code_verified=False,
-                        code_provenance='local_unverified', language=row['language'],
+            verified = self.decode(row)['code_verified']
+            item.update(attempt_id=row['id'], has_local_code=True, code_verified=verified,
+                        code_provenance='official' if verified else 'local_unverified', language=row['language'],
                         review=json.loads(row['review']) if row['review'] and item['verdict'] == row['verdict'] else None)
             merged[key] = item
         return {'problem_id': pid, 'items': sorted(merged.values(), key=lambda row: row['submitted_at'], reverse=True)[:200]}
 
-    @staticmethod
-    def decode(row):
+    def decode(self, row):
         result = dict(row)
         for key in ('judge_data', 'review'):
             result[key] = json.loads(result[key]) if result[key] else None
-        result['code_verified'] = False
+        with self.db.connect() as conn:
+            source = conn.execute('SELECT code_hash FROM wb_official_sources WHERE attempt_id=?', (row['id'],)).fetchone()
+        result['code_verified'] = bool(source and source['code_hash'] == row['code_hash'])
         return result
 
     def attempt(self, aid):
@@ -612,7 +615,7 @@ def register(app, service, jobs, daily=None):
     def platforms():
         from .problem_sources import HOSTS
         accounts=service.accounts.public()['items']
-        return {'items':[{'platform':p,'account_collection':True,'statement':True,'ai_hint':True,'auto_submit':False,'judge_sync':True,'accounts':[a for a in accounts if a['platform']==p]} for p in HOSTS]}
+        return {'items':[{'platform':p,'account_collection':True,'statement':True,'ai_hint':True,'auto_submit':p in {'codeforces','atcoder'},'judge_sync':True,'accounts':[a for a in accounts if a['platform']==p]} for p in HOSTS]}
 
     @app.post('/api/platforms/{platform}/collect')
     async def collect_platform(platform: str):
