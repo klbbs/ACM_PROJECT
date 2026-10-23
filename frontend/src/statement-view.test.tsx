@@ -49,7 +49,7 @@ it('renders Markdown, TeX, structured HTML and image fallback without running ra
 it('renders server Markdown directly with tables, code, images and math instead of stale HTML', async () => {
   const statement = {
     id: 'codeforces:4-A',
-    render_version: 3,
+    render_version: 4,
     markdown:
       '## 输入\n\n给定 $x_i^2$。\n\n- 第一项\n- 第二项\n\n| A | B |\n| --- | --- |\n| x | 2 |\n\n```cpp\nif (x < y) {\n\n    a_b();\n}\n```\n\n![图](<https://codeforces.com/a.png>)',
     body_html: '<p>STALE ORIGINAL</p>',
@@ -70,6 +70,30 @@ it('renders server Markdown directly with tables, code, images and math instead 
   expect(host.querySelector('img')?.getAttribute('src')).toBe('https://codeforces.com/a.png')
   expect(host.textContent).not.toContain('STALE')
   expect(host.textContent).not.toContain('## 输入')
+  await act(async () => root.unmount())
+  host.remove()
+})
+
+it('preserves Codeforces teletype operators and literal != inside TeX', async () => {
+  expect(
+    statementMarkdown({
+      body_html:
+        '<p><span class="tex-font-style-tt">a != b</span> and $$$a != b$$$.</p>',
+    }),
+  ).toContain('`a != b` and $a \\texttt{!=} b$.')
+
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  await act(async () =>
+    root.render(
+      <StatementView
+        statement={{ markdown: 'Code: `a != b` and formula $a \\texttt{!=} b$.' }}
+      />,
+    ),
+  )
+  expect(host.querySelector('code')?.textContent).toBe('a != b')
+  expect(host.querySelector('.katex .texttt')?.textContent).toBe('!=')
   await act(async () => root.unmount())
   host.remove()
 })

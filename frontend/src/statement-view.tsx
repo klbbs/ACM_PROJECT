@@ -18,6 +18,15 @@ export function statementMarkdown(statement: Record<string, any>) {
   if (typeof statement.markdown === 'string') return statement.markdown
   if (!statement.body_html) return (statement.sections || []).join('\n\n').replace(/\$\$\$/g, '$')
   const converter = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
+  converter.addRule('codeforcesTeletype', {
+    filter: (node) =>
+      node.nodeName === 'SPAN' && (node as HTMLElement).classList.contains('tex-font-style-tt'),
+    replacement: (_content, node) => {
+      const value = node.textContent || ''
+      const fence = '`'.repeat(Math.max(1, ...Array.from(value.matchAll(/`+/g), (m) => m[0].length + 1)))
+      return value.includes('`') ? `${fence} ${value} ${fence}` : `${fence}${value}${fence}`
+    },
+  })
   // CF uses triple dollars for inline TeX. Keep text nodes contiguous;
   // get_text(separator="\\n") used to split every inline formula into fragments.
   converter.addRule('tex', {
@@ -68,7 +77,7 @@ export function statementMarkdown(statement: Record<string, any>) {
     (_all: string, cf: string, inline: string, block: string) => {
       const decode = document.createElement('textarea')
       decode.innerHTML = cf ?? inline ?? block
-      const tex = decode.value
+      const tex = decode.value.replace(/(?<![\\=!])!=(?![=])/g, String.raw`\texttt{!=}`)
       const token = `ACMFORMULATOKEN${formulas.length}END`
       formulas.push(block !== undefined ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`)
       return token

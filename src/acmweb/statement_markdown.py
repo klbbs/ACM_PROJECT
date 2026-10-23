@@ -7,8 +7,15 @@ from urllib.parse import quote, urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString
 
-RENDER_VERSION = 3
+RENDER_VERSION = 4
 MATH = re.compile(r'\$\$\$([\s\S]*?)\$\$\$|\\\(([\s\S]*?)\\\)|\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$|(?<!\\)\$([^$\n]+?)(?<!\\)\$')
+
+
+def _tex_with_literal_operators(tex):
+    # Codeforces sometimes puts programming operators inside its TeX spans.
+    # KaTeX treats ASCII != as the mathematical not-equal glyph (slash-over-=),
+    # which changes the source text; render that operator as literal monospace.
+    return re.sub(r'(?<![\\=!])!=(?![=])', r'\\texttt{!=}', tex)
 
 
 def _url(raw):
@@ -35,6 +42,7 @@ def html_markdown(html):
         def protect(match):
             inline = match[1] if match[1] is not None else match[2] if match[2] is not None else match[5]
             tex = inline if inline is not None else match[3] if match[3] is not None else match[4]
+            tex = _tex_with_literal_operators(tex)
             formulas.append(f'${tex}$' if inline is not None else f'\n\n$$\n{tex}\n$$\n\n')
             return f'{prefix}{len(formulas) - 1}END'
 
@@ -65,6 +73,10 @@ def html_markdown(html):
             fence = '`' * max(3, max((len(x) + 1 for x in re.findall(r'`+', value)), default=3))
             return f'\n\n{fence}\n{value}\n{fence}\n\n'
         if name == 'code':
+            value = node.get_text('', strip=False)
+            fence = '`' * max(1, max((len(x) + 1 for x in re.findall(r'`+', value)), default=1))
+            return f'{fence} {value} {fence}' if '`' in value else f'{fence}{value}{fence}'
+        if name == 'span' and 'tex-font-style-tt' in node.get('class', []):
             value = node.get_text('', strip=False)
             fence = '`' * max(1, max((len(x) + 1 for x in re.findall(r'`+', value)), default=1))
             return f'{fence} {value} {fence}' if '`' in value else f'{fence}{value}{fence}'

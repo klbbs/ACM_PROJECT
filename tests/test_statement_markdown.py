@@ -16,7 +16,7 @@ RICH = '''<div class="problem-statement"><div class="header"><div class="title">
 def test_cf_response_has_canonical_markdown_and_separate_samples():
     result = parse_statement(RICH, 'codeforces:4-A')
     md = result['markdown']
-    assert result['render_version'] == 3 and result['sections'] == [md]
+    assert result['render_version'] == 4 and result['sections'] == [md]
     assert '$a_i \\le 10^9$' in md and '$$$' not in md
     assert '**two**' in md and '- First' in md and '## Input' in md
     assert '![Diagram](<https://codeforces.com/diagram.png>)' in md
@@ -35,6 +35,14 @@ def test_converter_preserves_code_line_breaks_and_rejects_unsafe_links():
     assert html_markdown('<p>Read\n    one\n    number.</p>') == 'Read one number.'
 
 
+def test_cf_teletype_and_ascii_not_equal_keep_the_original_operator():
+    md = html_markdown(
+        '<p><span class="tex-font-style-tt">a != b</span> and $$$a != b$$$.</p>'
+    )
+    assert '`a != b`' in md
+    assert '$a \\texttt{!=} b$' in md
+
+
 def test_literal_math_placeholder_text_does_not_collide_with_generated_tokens():
     literal = 'ACMMATHPLACEHOLDER0END ACMMATHPLACEHOLDERX9END'
     assert html_markdown(f'<p>{literal}</p>') == literal
@@ -45,7 +53,7 @@ def test_old_rich_cf_cache_upgrades_without_network_and_invalidates_translation(
     old = {'id': 'codeforces:4-A', 'body_html': '<p><b>Read</b> $$$x_i$$$.</p>', 'sections': ['Read\nx_i'], 'render_version': 2}
     upgraded = upgrade_statement(old)
     assert old['render_version'] == 2
-    assert upgraded['markdown'] == '**Read** $x_i$.' and upgraded['render_version'] == 3
+    assert upgraded['markdown'] == '**Read** $x_i$.' and upgraded['render_version'] == 4
     assert fingerprint(old) != fingerprint(upgraded)
     assert upgrade_statement(upgraded) is upgraded
     plain = {'id': 'codeforces:4-A', 'sections': ['old plain text']}

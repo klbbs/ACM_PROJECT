@@ -11,6 +11,7 @@ from acmweb.accounts import AccountList
 from acmweb.settings import Settings
 from acmweb.daily import Settings as DailySettings
 from acmweb.codex_bridge import AIError
+from acmweb.statement_markdown import RENDER_VERSION
 from acmweb.workbench import Draft, Link, Coach, CoachSettings, normalize, parse_statement, training_evidence
 from ojcrawler.models import Collection, Submission, verdict
 from ojcrawler.storage import Store
@@ -369,7 +370,7 @@ def test_rich_statement_preserves_images_structure_and_math_safely():
     assert data['images']==[{'url':'https://codeforces.com/predownloaded/a.png','alt':''}]
     assert '<ul>' in data['body_html'] and '$$$x^2$$$' in data['body_html']
     assert 'onerror' not in data['body_html'] and 'javascript:' not in data['body_html']
-    assert data['diagnostics']['warnings'] and data['render_version']==3
+    assert data['diagnostics']['warnings'] and data['render_version']==RENDER_VERSION
 
 
 def test_state_migrates_rich_cf_markdown_cache_without_refetch(workspace, monkeypatch):
