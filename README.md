@@ -66,6 +66,8 @@ cd ..
 
 打开 **http://127.0.0.1:8000**。本机默认仅监听回环地址；本机个人模式不强制访问令牌。`bootstrap.py` 生成的 `.env` 用于 Docker/systemd，不会由本机 CLI 自动加载。
 
+服务启动时会在控制台输出配置巡检，指出未绑定的平台、AI/代码自测/翻译服务缺项、前端资源缺失等可能不可用的功能。巡检只读本地配置，不会访问平台或 AI 服务；Cookie 只检查格式，不代表登录有效，AI 与外部服务是否连通仍需在设置页手动检测。日志不会输出账号名、Cookie、密码或 API Key。
+
 后续也可从任意目录执行 `bash /项目路径/scripts/start_local.sh` 启动；已有桌面采集项目的保留数据升级步骤见 [迁移与备份](docs/DEPLOYMENT.md#迁移与备份)。
 
 发布包自带 `frontend/dist`，可以跳过 Node.js 构建。开发时分别启动后端和 `cd frontend && npm run dev`，Vite 会将 `/api` 代理到后端 8000 端口。

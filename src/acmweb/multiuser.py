@@ -147,6 +147,8 @@ def create_multi_app(settings, factory):
                 for user in users:
                     if (settings.data_dir/'users'/user['id']/'accounts.sqlite3').exists():
                         await workspaces.get(user['id'])
+                from .startup_diagnostics import report_multiuser
+                report_multiuser(settings, identities, workspaces)
                 cleanup = asyncio.create_task(idle_cleanup())
                 yield
             finally:

@@ -91,6 +91,9 @@ def create_app(settings=None):
     jobs=Jobs(database,settings,ai,account_config)
     @asynccontextmanager
     async def lifespan(app):
+        if not settings.isolated:
+            from .startup_diagnostics import report_single
+            report_single(app)
         yield
         app.state.remote_submissions.closed = True
         app.state.nowcoder_qr.close()
@@ -101,6 +104,8 @@ def create_app(settings=None):
 
     private_schema = settings.production or settings.isolated
     app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.20.2",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app.state.settings=settings
+    app.state.account_config=account_config
     register_credential_checks(app,account_config)
     from .nowcoder_qr import register as register_nowcoder_qr
     register_nowcoder_qr(app, account_config, jobs)
