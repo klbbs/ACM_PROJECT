@@ -12,6 +12,7 @@ real Docker or systemd acceptance run (this machine has no Docker).
 """
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -948,7 +949,7 @@ def test_lock_blocks_a_second_update(site):
 # frontend build
 
 
-def test_frontend_build_runs_in_candidate_with_reused_node_modules(site):
+def test_frontend_build_installs_locked_dependencies_in_candidate(site):
     site.release({'src/acmweb/__init__.py': 'VERSION = 2\n',
                   'frontend/src/app.tsx': 'export const app = 1\n'})
     assert site.run('--mode', 'systemd',
@@ -956,14 +957,14 @@ def test_frontend_build_runs_in_candidate_with_reused_node_modules(site):
                     '--health-url', site.health.url) == 0
     npm_calls = site.calls('npm ')
     assert any(line.startswith('npm run build') for line in npm_calls)
-    assert not any(line.startswith('npm ci') for line in npm_calls)
+    assert any(line.startswith('npm ci --no-audit --no-fund') for line in npm_calls)
     dist = site.project / 'frontend' / 'dist' / 'index.html'
     assert 'candidate build' in dist.read_text()
 
 
-def test_frontend_build_runs_npm_ci_when_lockfile_changes(site):
-    site.release({'src/acmweb/__init__.py': 'VERSION = 2\n',
-                  'frontend/package-lock.json': '{"lockfileVersion":3,"changed":true}\n'})
+def test_frontend_build_recovers_when_existing_node_modules_is_missing(site):
+    shutil.rmtree(site.project / 'frontend' / 'node_modules')
+    site.release({'src/acmweb/__init__.py': 'VERSION = 2\n'})
     assert site.run('--mode', 'systemd',
                     '--python', str(site.stubs / 'fake-python'),
                     '--health-url', site.health.url) == 0

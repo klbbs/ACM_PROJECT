@@ -1296,7 +1296,7 @@ def build_plan(cfg, runner, logger, fetch):
         if not venv_python.exists():
             raise Refused(f'未找到现有虚拟环境 {venv_python}；请确认这是原生 systemd 部署')
         if not cfg.skip_frontend_build and not shutil.which('npm'):
-            raise Refused('原生部署前端构建需要 npm（Node.js）；安装后重试，或确认现有 dist 后使用 --skip-frontend-build')
+            raise Refused('原生部署前端构建需要 Node.js/npm；请先安装 Node.js 22+ 后重试，或确认现有 dist 后使用 --skip-frontend-build')
         if cfg.skip_frontend_build and not (project / 'frontend/dist/index.html').is_file():
             raise Refused('使用 --skip-frontend-build 时现有 frontend/dist/index.html 必须存在')
         if not cfg.python and not shutil.which('python3'):
@@ -1386,26 +1386,14 @@ def build_frontend(cfg, candidate, project, runner, logger):
         return None
     npm = shutil.which('npm')
     if not npm:
-        raise Refused('前端构建需要 npm（Node.js）；请安装后重试，或确认现有 dist 后使用 --skip-frontend-build')
-    node_modules = Path(project) / 'frontend' / 'node_modules'
-    if not node_modules.is_dir():
-        raise Refused('前端构建需要现有 frontend/node_modules；请先在项目里执行 npm ci')
-    old_lock = Path(project) / 'frontend' / 'package-lock.json'
-    new_lock = frontend / 'package-lock.json'
-    lock_changed = not (
-        old_lock.is_file() and new_lock.is_file() and old_lock.read_bytes() == new_lock.read_bytes()
-    )
-    if lock_changed:
-        logger.info('前端依赖锁有变化，在候选目录执行 npm ci')
-        runner.run([npm, 'ci', '--no-audit', '--no-fund'], cwd=frontend, timeout=3600)
-    else:
-        link = frontend / 'node_modules'
-        if link.is_symlink() or link.exists():
-            if link.is_symlink():
-                link.unlink()
-            else:
-                shutil.rmtree(link)
-        os.symlink(node_modules.resolve(), link, target_is_directory=True)
+        raise Refused('前端构建需要 Node.js/npm；请先安装 Node.js 22+ 后重试，或确认现有 dist 后使用 --skip-frontend-build')
+    if not (frontend / 'package-lock.json').is_file():
+        raise Refused('目标版本缺少 frontend/package-lock.json，无法可靠安装前端依赖')
+    # Build from the candidate lockfile every time. This repairs missing or
+    # stale local node_modules and keeps downloaded packages isolated from the
+    # currently running version until the candidate is ready.
+    logger.info('按目标版本 package-lock.json 在候选目录安装前端依赖（npm ci）')
+    runner.run([npm, 'ci', '--no-audit', '--no-fund'], cwd=frontend, timeout=3600)
     runner.run([npm, 'run', 'build'], cwd=frontend, timeout=3600)
     dist = frontend / 'dist'
     if not (dist / 'index.html').is_file():

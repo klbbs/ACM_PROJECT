@@ -37,7 +37,8 @@
 - 项目目录是 Git 仓库根目录，当前在跟踪上游的分支上（不是游离 HEAD）；
 - 已跟踪文件与索引干净（未跟踪的私人文件允许存在，更新不会删除它们）；
 - systemd 方式需要 root（停止/启动服务、备份数据、创建候选 venv），以及 Python 3.10+；
-  前端默认需要 `npm` 和现有 `frontend/node_modules`（依赖锁变化时会先 `npm ci`）；
+  前端构建需要已安装 Node.js 22+ 与 npm；每次更新都会在候选目录执行 `npm ci` 自动下载锁定的前端依赖，
+  不依赖或修改现有 `frontend/node_modules`；
 - Docker 方式需要可用的 `docker` 与 Compose v2；`.env` 需能解析 `compose.yaml`；旧镜像必须还在
   （否则没有可回滚镜像，会拒绝）；
 - 需要网络：`git fetch`、原生方式的 pip/npm 下载；
@@ -51,6 +52,12 @@
 ./update.sh --mode systemd --service acm-lab.service
 ./update.sh --mode docker --compose-file compose.yaml --compose-file compose.browser.yaml
 ```
+
+`./update.sh --check` 会读取本地提交并查询上游 `main` 的最新提交，显示是否有更新且不写入项目；
+`./update.sh` 会再次检查版本，自动下载最新提交、安装候选版 Python 与前端依赖，再构建、备份、切换和健康检查。
+其中 Python 包由候选虚拟环境的 `pip` 按 `requirements.lock` 安装，前端包由 `npm ci` 按
+`frontend/package-lock.json` 安装；Docker 部署由候选 Dockerfile 在镜像构建阶段自动下载这些依赖。
+更新器不会替操作系统安装 Python、Node.js、Docker 或 systemd，也不会自行创建首次部署。
 
 `acm-update`（安装包提供的命令）与 `scripts/update.py` 等价；但 `./update.sh` 额外设置了
 `PYTHONDONTWRITEBYTECODE=1`，适合干净部署的首次预检。直接使用 `acm-update` 时如需完全避免
@@ -104,7 +111,7 @@ systemd 单元是否受支持。目标提交本地尚不存在时，会在预检
    当前 HEAD 的后代（快进）。本地已有未推送提交时也可快进（它们包含在目标历史中）。
 4. **准备候选**：`git archive` 导出目标提交到 `.acm-update/candidates/<时间>-<SHA>`；
    归档中的符号链接、设备文件、越界路径会被拒绝（在停服之前）。
-   - systemd：前端在候选目录构建（依赖锁未变时复用现有 `node_modules`，变了则 `npm ci`）；
+   - systemd：前端在候选目录执行 `npm ci` 下载锁定依赖并构建；
      然后创建**新的** venv，用该 venv 的 pip 安装**候选源码**（`pip install -c requirements.lock <候选目录>`），
      绝不在旧 venv 里原地安装；候选目录权限放开到服务用户可读可执行。
    - Docker：用**候选版本自己的 compose 文件**解析目标服务（image、build target 等），
