@@ -3,6 +3,9 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 RELEASES = [
+    {'id': '0.20.1', 'date': '2026-10-23', 'title': '修正生产容器检查契约', 'items': [
+        '容器冒烟测试现在遵循生产健康接口的最小响应约定；生产接口不暴露运行模式。',
+    ]},
     {'id': '0.20.0', 'date': '2026-10-23', 'title': '工作台模板、题面显示与安全更新', 'items': [
         'Codeforces 题面以规范 Markdown 显示，保留公式、图片、表格、代码和样例；旧缓存可刷新修复。',
         '编辑器支持多个私人代码模板、中文触发词和 Tab 补全；自测仍紧跟编辑器。',

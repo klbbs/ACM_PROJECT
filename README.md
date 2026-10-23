@@ -1,6 +1,6 @@
 # ACM Lab
 
-当前版本为 0.20.0。本轮完成代码级验收及本地打包校验；没有部署到服务器。线上代理/WAF 与真实平台登录仍按文档所述边界处理。
+当前版本为 0.20.1。本轮完成代码级验收及本地打包校验；没有部署到服务器。线上代理/WAF 与真实平台登录仍按文档所述边界处理。
 
 支持个人训练与受邀成员协作的算法工作台：连接 Codeforces、洛谷、牛客和 AtCoder，聚合提交记录，调用 AI 生成能力分析与训练计划，再从真实题库中选择合适的练习。
 
@@ -145,7 +145,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.20.0.zip
+python3 scripts/verify_release.py releases/acm-lab-0.20.1.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

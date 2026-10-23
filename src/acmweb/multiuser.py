@@ -155,7 +155,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.0',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.1',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
 
     def owner_valid(uid, owner):
@@ -239,7 +239,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.0','mode':'multi-user'}
+        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.1','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
