@@ -19,6 +19,7 @@ from ojcrawler.storage import codeforces_judge_verdict
 from .catalog import recommendation_candidates, recommendation_status
 from .codex_bridge import AIError
 from .daily import Complete
+from .statement_markdown import RENDER_VERSION, html_markdown, upgrade_statement
 
 DDL = '''
 CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,fetched_at INTEGER NOT NULL);
@@ -50,6 +51,10 @@ def parse_statement(html, pid):
     for node in root.select('script,style,iframe,form,button,object,svg'):
         node.decompose()
     body = BeautifulSoup(''.join(str(c) for c in root.find_all(recursive=False) if not set(c.get('class', [])) & {'header', 'sample-tests'}), 'html.parser')
+    for heading in body.select('.section-title'):
+        heading.name = 'h2'
+    for line in body.select('pre .test-example-line'):
+        line.append('\n')
     images = []
     allowed = {'div','p','span','strong','b','em','i','u','ol','ul','li','table','thead','tbody','tr','td','th','img','br','sup','sub','pre','code','h1','h2','h3','h4','blockquote','hr','a'}
     for tag in list(body.find_all(True)):
@@ -86,18 +91,14 @@ def parse_statement(html, pid):
     result = {'id': pid, 'title': title, 'url': source_url(pid), 'samples': samples,
               'time_limit': content(root.select_one('.time-limit')), 'memory_limit': content(root.select_one('.memory-limit')),
               'sections': []}
-    for child in root.find_all(recursive=False):
-        if 'header' in child.get('class', []) or 'sample-tests' in child.get('class', []):
-            continue
-        text = child.get_text('\n', strip=True)
-        if text:
-            result['sections'].append(text)
+    result['markdown'] = html_markdown(body_html)
+    result['sections'] = [result['markdown']]
     if sum(map(len, result['sections'])) > 70000 or len(json.dumps(result)) > 150000:
         raise AIError('题面过大，请使用原题页面')
     result['has_images'] = bool(root.select('img'))
     result['body_html'] = body_html
     result['images'] = images
-    result['render_version'] = 2
+    result['render_version'] = RENDER_VERSION
     result['diagnostics'] = {'sections': len(result['sections']), 'samples': len(samples), 'images': len(images), 'math': bool(re.search(r'\$|\\\(|\\\[', body_html)), 'warnings': (['部分图片未提供可用 HTTPS 地址，请查看原题'] if len(images) < len(root.select('img')) else [])}
     return result
 
@@ -271,6 +272,11 @@ class Workbench:
             draft = conn.execute('SELECT * FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
             hints = conn.execute('SELECT data FROM wb_hints WHERE problem_id=? ORDER BY seq', (pid,)).fetchall()
             attempts = conn.execute('SELECT * FROM wb_attempts WHERE problem_id=? ORDER BY created_at DESC,id DESC LIMIT 30', (pid,)).fetchall()
+        cached_statement = json.loads(statement['data']) if statement else None
+        upgraded_statement = upgrade_statement(cached_statement)
+        if upgraded_statement is not cached_statement:
+            with self.db.connect() as conn:
+                conn.execute('UPDATE wb_problems SET data=? WHERE id=? AND data=?', (json.dumps(upgraded_statement, ensure_ascii=False), pid, statement['data']))
         accounts = self.accounts.document().get('accounts', [])
         caps = capabilities(pid, accounts)
         # Linking is independent of recommendation eligibility and login-check expiry.
@@ -280,7 +286,7 @@ class Workbench:
         caps['credential_checks'] = checks
         caps['credential_check'] = max(checks, key=lambda r: r['checked_at']) if checks else None
         caps['login_verified'] = bool(len([a for a in self.accounts.document().get('accounts', []) if a.get('platform') == caps['platform']]) == 1 and caps['credential_check'] and caps['credential_check']['login_verified'])
-        return {'id': pid, 'capabilities': caps, 'url': source_url(pid), 'statement': json.loads(statement['data']) if statement else None,
+        return {'id': pid, 'capabilities': caps, 'url': source_url(pid), 'statement': upgraded_statement,
                 'fetched_at': statement['fetched_at'] if statement else None,
                 'fetch_status': self.db.get('statement_status:'+pid, {}),
                 'draft': dict(draft) if draft else {'language': 'cpp17', 'code': '', 'revision': 0},

@@ -15,6 +15,7 @@ const safeUrl = (url?: string) => {
   }
 }
 export function statementMarkdown(statement: Record<string, any>) {
+  if (typeof statement.markdown === 'string') return statement.markdown
   if (!statement.body_html) return (statement.sections || []).join('\n\n').replace(/\$\$\$/g, '$')
   const converter = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
   // CF uses triple dollars for inline TeX. Keep text nodes contiguous;
@@ -103,6 +104,13 @@ function ProblemImage({ src, alt }: { src?: string; alt?: string }) {
 export function StatementView({ statement }: { statement: Record<string, any> }) {
   const markdown = useMemo(() => statementMarkdown(statement), [statement])
   const diagnostics = statement.diagnostics
+  // Luogu supplies native Markdown sections. A CF version marker alone does
+  // not mean its old cache retained headings, images or inline structure.
+  const structured = Boolean(
+    statement.markdown ||
+    statement.body_html ||
+    (statement.id?.startsWith('luogu:') && statement.render_version >= 2),
+  )
   return (
     <>
       <details className="statement-check">
@@ -111,15 +119,15 @@ export function StatementView({ statement }: { statement: Record<string, any> })
           组样例 · {statement.images?.length || 0} 张图片
         </summary>
         <p>
-          {statement.body_html
-            ? '已保留正文结构，渲染 Markdown、列表、代码及数学公式。图片使用原站链接，加载失败仍可打开原链接。'
-            : '这是旧版纯文本缓存；已尝试重新获取。刷新成功后才能恢复原有图片和排版。'}
+          {structured
+            ? '正文使用 Markdown 渲染，支持列表、表格、代码及数学公式。图片使用原站链接，加载失败仍可打开原链接。'
+            : '这是旧版纯文本缓存；请刷新题面以恢复图片和排版。'}
         </p>
         {diagnostics?.warnings?.map((w: string) => (
           <p key={w}>{w}</p>
         ))}
       </details>
-      {!statement.body_html && statement.has_images && (
+      {!structured && statement.has_images && (
         <p className="wb-warning">旧缓存未保存图片地址，请刷新题面以恢复配图。</p>
       )}
       <div className="statement-body">

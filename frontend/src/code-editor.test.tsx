@@ -10,6 +10,15 @@ import CodeEditor from './code-editor'
 import { EditorBoundary } from './editor-shell'
 import { localCompletion } from './editor-completions'
 import { codeBytes, defaultEditorSettings, type CodeEditorProps } from './editor-settings'
+import type { CodeTemplate } from './template-types'
+
+const personalTemplate: CodeTemplate = {
+  id: 'template-one',
+  title: '我的循环',
+  trigger: '循环',
+  language: 'cpp',
+  body: 'for (int ${i} = 0; ${i} < ${n}; ++${i}) {\n    ${}\n}',
+}
 
 let host: HTMLDivElement, root: Root, props: CodeEditorProps
 beforeEach(() => {
@@ -40,6 +49,24 @@ const render = async (changes: Partial<CodeEditorProps> = {}) => {
 }
 
 describe('local completions', () => {
+  it('matches Chinese custom triggers and applies language filtering and personal precedence', () => {
+    const state = EditorState.create({ doc: '循' })
+    const custom = localCompletion('cpp20', () => true, [personalTemplate])(
+      new CompletionContext(state, 1, false),
+    )!
+    expect(custom.from).toBe(0)
+    expect(custom.options.find((c) => c.label === '循环')?.detail).toBe('我的模板 · 我的循环')
+    const python = localCompletion('python3', () => true, [personalTemplate])(
+      new CompletionContext(state, 1, true),
+    )!
+    expect(python.options.some((c) => c.label === '循环')).toBe(false)
+    const ownMain = { ...personalTemplate, trigger: 'main' }
+    const repeated = localCompletion('cpp17', () => true, [ownMain])(
+      new CompletionContext(EditorState.create({ doc: 'main' }), 4, true),
+    )!
+    expect(repeated.options.filter((c) => c.label === 'main')).toHaveLength(1)
+    expect(repeated.options.find((c) => c.label === 'main')?.detail).toContain('我的模板')
+  })
   it.each(['cpp17', 'cpp20', 'python3', 'java17'])(
     'offers keywords, snippets and current-document words for %s',
     (language) => {
@@ -58,6 +85,37 @@ describe('local completions', () => {
     const state = EditorState.create({ doc: 'fo' })
     expect(localCompletion('cpp17', () => false)(new CompletionContext(state, 2, true))).toBeNull()
   })
+})
+
+it('updates private templates without replacing the view or losing undo and accepts them with Tab', async () => {
+  const view = await render({ value: '循' })
+  await act(async () => view.dispatch({ selection: { anchor: 1 } }))
+  expect(await render({ templates: [personalTemplate] })).toBe(view)
+  expect(view.state.selection.main.head).toBe(1)
+  await act(async () => {
+    view.focus()
+    expect(startCompletion(view)).toBe(true)
+    await vi.waitFor(() => expect(completionStatus(view.state)).toBe('active'))
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    )
+  })
+  expect(view.state.doc.toString()).toContain('for (int i = 0; i < n; ++i)')
+  expect(
+    view.state.doc.sliceString(view.state.selection.main.from, view.state.selection.main.to),
+  ).toBe('i')
+  await act(async () =>
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    ),
+  )
+  expect(
+    view.state.doc.sliceString(view.state.selection.main.from, view.state.selection.main.to),
+  ).toBe('n')
+  await act(async () => {
+    expect(undo(view)).toBe(true)
+  })
+  expect(view.state.doc.toString()).toBe('循')
 })
 
 it('retains editor identity, selection and undo while preferences and language change', async () => {
@@ -114,14 +172,23 @@ it('uses Tab to accept a completion while Enter inserts a newline', async () => 
     await vi.waitFor(() => expect(completionStatus(view.state)).toBe('active'))
   })
   expect(host.querySelector('.cm-tooltip-autocomplete')).not.toBeNull()
-  await act(async () => view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+  await act(async () =>
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    ),
+  )
   expect(view.state.doc.toString()).toContain('\n')
   expect(host.querySelector('.cm-tooltip-autocomplete')).toBeNull()
   await act(async () => {
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'int mai' }, selection: { anchor: 7 } })
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: 'int mai' },
+      selection: { anchor: 7 },
+    })
     expect(startCompletion(view)).toBe(true)
     await vi.waitFor(() => expect(completionStatus(view.state)).toBe('active'))
-    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    )
   })
   expect(view.state.doc.toString()).toContain('main')
 })
@@ -179,8 +246,8 @@ it('preserves an accessible fallback when the enhanced editor fails to render', 
 it('C++20 completion includes signatures, headers and constrained function snippets', async () => {
   const { languageCompletions } = await import('./editor-completions')
   const options = languageCompletions('cpp20')
-  expect(options.find(c => c.label === 'std::ranges::sort')?.detail).toContain('C++20')
-  expect(options.some(c => c.label === 'include-concepts')).toBe(true)
-  expect(options.some(c => c.label === 'concept-function')).toBe(true)
-  expect(options.find(c => c.label === 'contains')?.detail).toContain('非类型推断')
+  expect(options.find((c) => c.label === 'std::ranges::sort')?.detail).toContain('C++20')
+  expect(options.some((c) => c.label === 'include-concepts')).toBe(true)
+  expect(options.some((c) => c.label === 'concept-function')).toBe(true)
+  expect(options.find((c) => c.label === 'contains')?.detail).toContain('非类型推断')
 })

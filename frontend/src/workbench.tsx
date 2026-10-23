@@ -12,6 +12,8 @@ import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
 import { ProblemRecordEditor } from './problem-records'
 import { RemoteSubmissionPanel } from './remote-submission'
+import { EditorTemplates } from './editor-templates'
+import type { CodeTemplate } from './template-types'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
 type Props = {
@@ -63,6 +65,7 @@ export function WorkbenchPage({
   const [coachSettingsReady, setCoachSettingsReady] = useState(false)
   const [coachSettingsBusy, setCoachSettingsBusy] = useState(false)
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(defaultEditorSettings)
+  const [codeTemplates, setCodeTemplates] = useState<CodeTemplate[]>([])
   const [settingsReady, setSettingsReady] = useState(false),
     [settingsBusy, setSettingsBusy] = useState(false)
   const [editorFullscreen, setEditorFullscreen] = useState(false)
@@ -583,6 +586,7 @@ export function WorkbenchPage({
                     value={code}
                     language={language}
                     settings={editorSettings}
+                    templates={codeTemplates}
                     readOnly={busy}
                     onChange={(value) => {
                       setCode(value)
@@ -598,6 +602,7 @@ export function WorkbenchPage({
                     language={language}
                     samples={statement?.samples || []}
                   />
+                  <EditorTemplates onChanged={setCodeTemplates} />
                   <RemoteSubmissionPanel
                     key={pid}
                     problemId={pid}

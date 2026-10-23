@@ -79,6 +79,11 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
             login_id: login.login_id,
           })
           if (generation.current !== epoch) return
+          if (
+            result.login_id !== login.login_id ||
+            !['waiting', 'authorizing', 'verified', 'expired', 'failed', 'cancelled'].includes(result.status) ||
+            (result.status === 'verified' && !/^[1-9][0-9]{0,19}$/.test(result.verified_uid ?? ''))
+          ) throw new Error('扫码结果缺少有效身份或流程不匹配，尚未确认绑定；请刷新账号列表后重试。')
           if (result.status === 'waiting' || result.status === 'authorizing') {
             const next = {
               ...login,
@@ -100,13 +105,17 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
               }
             }
           }
-        } catch {
+        } catch (error: unknown) {
           if (generation.current !== epoch) return
           active.current = null
           setSession({
             login_id: login.login_id,
             status: 'failed',
-            message: '扫码状态检测失败，请重新申请二维码。',
+            // api() only exposes the backend's safe JSON detail. Keep reasons
+            // such as configuration conflicts and revoked site sessions visible.
+            message: error instanceof Error && error.message
+              ? error.message
+              : '扫码状态检测失败，请重新申请二维码。',
           })
           void discard(login.login_id).catch(() => {})
         }
@@ -134,6 +143,10 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
         void discard(result.login_id).catch(() => {})
         return
       }
+      if (result.status === 'expired' && result.login_id) {
+        setSession({ ...result, qr_image: undefined })
+        return
+      }
       if (
         result.status !== 'waiting' ||
         !result.login_id ||
@@ -152,7 +165,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
           error instanceof Error && error.message && error.message !== 'invalid response'
             ? error.message
             : '无法申请牛客二维码，请稍后重试。'
-        setError(`${reason} 也可使用下方 Cookie 绑定。`)
+        setError(`${reason} 也可切换上方“导入浏览器 Cookie”。`)
       }
     } finally {
       if (generation.current === epoch) setBusy(false)
@@ -163,7 +176,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
     <section className="nowcoder-qr-login" aria-label="牛客微信扫码登录">
       <h4>微信扫码绑定牛客</h4>
       <p className="help">
-        通过牛客官方微信登录入口，在手机上确认授权，无需填写牛客密码。二维码约 2
+        请先在牛客官方账号设置中关联本人微信，再通过官方微信登录入口扫码确认授权，无需填写牛客密码。二维码约 2
         分钟有效，只能本人扫描。扫码后自动验证真实牛客 UID 并保存登录会话，无需再导入 Cookie。
       </p>
       <label>
@@ -202,7 +215,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       {session && (
         <p role="status" aria-live="polite">
           {session.status === 'verified'
-            ? `牛客身份验证通过，已绑定 UID：${session.verified_uid ?? '请查看账号列表'}。登录会话已保存，无需再次导入 Cookie。`
+            ? `牛客身份验证通过，已绑定 UID：${session.verified_uid}。登录会话已保存，无需再次导入 Cookie。`
             : session.message ||
               (session.status === 'authorizing'
                 ? '微信已确认，正在验证牛客身份…'

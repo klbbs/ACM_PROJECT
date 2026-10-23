@@ -135,7 +135,7 @@ it('shows the backend safe failure reason and retains Cookie fallback guidance',
   vi.mocked(api).mockRejectedValueOnce(Error('申请过于频繁，请稍后重试。'))
   await begin()
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('申请过于频繁，请稍后重试。')
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('下方 Cookie 绑定')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('导入浏览器 Cookie')
   expect(host.querySelector('img')).toBeNull()
 })
 it('cancels on unmount and never polls again', async () => {
@@ -165,4 +165,40 @@ it('expires locally and rejects external QR image URLs', async () => {
   await act(async () => vi.advanceTimersByTimeAsync(3000))
   expect(host.textContent).toContain('二维码已过期')
   expect(host.querySelector('img')).toBeNull()
+})
+
+it.each([
+  { login_id: 'test-session', status: 'verified' },
+  { login_id: 'test-session', status: 'verified', verified_uid: '0' },
+  { login_id: 'other-session', status: 'verified', verified_uid: '123' },
+  { login_id: 'test-session', status: 'unexpected' },
+])('does not claim a binding from an incomplete or mismatched poll result', async result => {
+  const onBound = await render()
+  vi.mocked(api).mockResolvedValueOnce(pending()).mockResolvedValueOnce(result).mockResolvedValue({ status: 'cancelled' })
+  await begin()
+  await act(async () => vi.advanceTimersByTimeAsync(3000))
+  expect(onBound).not.toHaveBeenCalled()
+  expect(host.textContent).not.toContain('牛客身份验证通过，已绑定 UID')
+  expect(host.textContent).toContain('尚未确认绑定')
+  expect(host.querySelector('img')).toBeNull()
+})
+it('shows a safe configuration conflict instead of hiding the binding failure', async () => {
+  const onBound = await render()
+  vi.mocked(api).mockResolvedValueOnce(pending()).mockRejectedValueOnce(Error('账号配置已变化，请重新扫码绑定')).mockResolvedValue({ status: 'cancelled' })
+  await begin()
+  await act(async () => vi.advanceTimersByTimeAsync(3000))
+  expect(host.textContent).toContain('账号配置已变化，请重新扫码绑定')
+  expect(onBound).not.toHaveBeenCalled()
+  expect(host.querySelector('img')).toBeNull()
+})
+it('shows an expired start response without treating it as an unknown protocol failure', async () => {
+  const onBound = await render()
+  vi.mocked(api).mockResolvedValueOnce({ login_id: 'test-session', status: 'expired', message: '二维码获取期间已过期，请重新获取' })
+  await begin()
+  expect(host.textContent).toContain('二维码获取期间已过期')
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+  expect(host.querySelector('img')).toBeNull()
+  expect(onBound).not.toHaveBeenCalled()
+  await act(async () => vi.advanceTimersByTimeAsync(9000))
+  expect(api).toHaveBeenCalledTimes(1)
 })

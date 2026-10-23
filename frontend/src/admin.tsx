@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Check, ClipboardList, RefreshCw, ShieldCheck, UserPlus, X } from 'lucide-react'
 import { api, date } from './api'
 import { TranslationStatement } from './translation-panel'
+import { AdministratorApproval } from './administrator-requests'
 
 type Row = Record<string, any>
 type Status = 'pending' | 'approved' | 'rejected' | 'revoked'
@@ -277,6 +278,10 @@ export function AdminPage({
                         <button className="text-button" disabled={busy} onClick={() => action(() => api(`/admin/users/${member.id}`, 'PUT', { role: member.role, active: !member.active }).then(() => undefined))}>
                           {member.active ? '停用' : '启用'}
                         </button>
+                        {member.role === 'admin' && <button className="text-button" disabled={busy} onClick={() => action(async () => {
+                          await api(`/admin/users/${member.id}`, 'PUT', { role: 'member', active: !!member.active })
+                          onNotice('管理员权限已撤销，对方需要重新登录')
+                        })}>撤销管理员权限</button>}
                       </div>
                     )}
                   </td>
@@ -286,6 +291,8 @@ export function AdminPage({
           </table>
         </div>
       </section>
+
+      <AdministratorApproval onError={onError} onNotice={onNotice} />
 
       <section className="card admin-card">
         <div className="card-heading"><h2>最近安全审计</h2><span className="muted">仅显示最近 100 条</span></div>

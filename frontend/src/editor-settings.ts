@@ -11,6 +11,7 @@ export const defaultEditorSettings: EditorSettings = {
 export const CODE_LIMIT = 65536
 export const codeBytes = (value: string) => new TextEncoder().encode(value).byteLength
 export type CodeEditorProps = {
+  templates?: import('./template-types').CodeTemplate[]
   documentId: string
   value: string
   language: string

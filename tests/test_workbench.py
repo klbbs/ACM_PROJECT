@@ -369,7 +369,20 @@ def test_rich_statement_preserves_images_structure_and_math_safely():
     assert data['images']==[{'url':'https://codeforces.com/predownloaded/a.png','alt':''}]
     assert '<ul>' in data['body_html'] and '$$$x^2$$$' in data['body_html']
     assert 'onerror' not in data['body_html'] and 'javascript:' not in data['body_html']
-    assert data['diagnostics']['warnings'] and data['render_version']==2
+    assert data['diagnostics']['warnings'] and data['render_version']==3
+
+
+def test_state_migrates_rich_cf_markdown_cache_without_refetch(workspace, monkeypatch):
+    _, service, _ = workspace
+    old = {'id': 'codeforces:4-A', 'title': 'Old', 'body_html': '<p><strong>Read</strong> $$$n$$$.</p>', 'sections': ['Read\nn'], 'render_version': 2}
+    with service.db.connect() as conn:
+        conn.execute('UPDATE wb_problems SET data=?,fetched_at=123 WHERE id=?', (json.dumps(old), 'codeforces:4-A'))
+    monkeypatch.setattr('acmweb.workbench.Client.get', lambda *a, **k: pytest.fail('cache migration must not require network'))
+    state = service.state('4-A')
+    assert state['statement']['markdown'] == '**Read** $n$.' and state['fetched_at'] == 123
+    with service.db.connect() as conn:
+        persisted = json.loads(conn.execute('SELECT data FROM wb_problems WHERE id=?', ('codeforces:4-A',)).fetchone()[0])
+    assert persisted == state['statement']
 
 @pytest.mark.parametrize('platform,pid',[('atcoder','abc001_1'),('luogu','P1001'),('nowcoder','14301')])
 def test_collected_platform_verdict_sync(workspace,platform,pid):

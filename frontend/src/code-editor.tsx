@@ -248,7 +248,7 @@ export default function CodeEditor(props: CodeEditorProps) {
     editor.dispatch({
       effects: completion.current.reconfigure(
         autocompletion({
-          override: [localCompletion(props.language, canComplete)],
+          override: [localCompletion(props.language, canComplete, props.templates)],
           defaultKeymap: false,
           activateOnTyping: true,
           activateOnTypingDelay: 150,
@@ -256,6 +256,10 @@ export default function CodeEditor(props: CodeEditorProps) {
         }),
       ),
     })
+  }, [props.language, props.templates])
+
+  useEffect(() => {
+    const editor = view.current!
     let cancelled = false
     const loader = props.language.startsWith('cpp')
       ? import('@codemirror/lang-cpp').then((m) => m.cpp())

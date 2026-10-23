@@ -8,10 +8,15 @@ import tempfile
 import zipfile
 from datetime import datetime,timezone
 from pathlib import Path
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 ROOT=Path(__file__).resolve().parent.parent
+VERSION=tomllib.loads((ROOT/'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
 DIRECTORIES=('src/acmweb','src/ojcrawler','tests','docs','examples','scripts','deploy','frontend/src','frontend/e2e','frontend/public','frontend/dist','.github')
-FILES=('README.md','CHANGELOG.md','pyproject.toml','requirements.lock','requirements-browser.lock','accounts.example.toml','.env.example','.gitignore','.dockerignore','Dockerfile','compose.yaml','compose.browser.yaml','frontend/package.json','frontend/package-lock.json','frontend/index.html','frontend/tsconfig.json','frontend/vite.config.ts','frontend/vitest.config.ts','frontend/playwright.config.ts','.prettierrc.json')
+FILES=('README.md','CHANGELOG.md','pyproject.toml','requirements.lock','requirements-browser.lock','accounts.example.toml','.env.example','.gitignore','.dockerignore','Dockerfile','compose.yaml','compose.browser.yaml','update.sh','frontend/package.json','frontend/package-lock.json','frontend/index.html','frontend/tsconfig.json','frontend/vite.config.ts','frontend/vitest.config.ts','frontend/playwright.config.ts','.prettierrc.json')
 
 
 def package(output,skip_build=False):
@@ -36,10 +41,11 @@ def package(output,skip_build=False):
             if path.is_symlink():raise RuntimeError(f'发布包不接受符号链接: {relative}')
             data=path.read_bytes()
             target=base/relative;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+            target.chmod(path.stat().st_mode & 0o777)
             manifest.append(hashlib.sha256(data).hexdigest()+'  '+relative.as_posix())
         (base/'MANIFEST.sha256').write_text('\n'.join(manifest)+'\n')
-        (base/'BUILD_INFO.json').write_text(json.dumps({'version':'0.19.1','commit':commit,'built_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
-        prefix='acm-lab-0.19.1'
+        (base/'BUILD_INFO.json').write_text(json.dumps({'version':VERSION,'commit':commit,'built_at':datetime.now(timezone.utc).isoformat()},indent=2)+'\n')
+        prefix=f'acm-lab-{VERSION}'
         with tarfile.open(output/(prefix+'.tar.gz'),'w:gz') as archive:
             for path in sorted(base.rglob('*')):
                 if path.is_file():archive.add(path,arcname=prefix+'/'+path.relative_to(base).as_posix())

@@ -13,7 +13,7 @@
 | 3 未认证保留管理员名枚举 | 已修复并复现 | 未知/保留/停用账号登录均为同一 401 正文；未知账号照样付出校验成本 |
 | 4 全站共享限流桶误伤 | 已修复并复现 | 无 `auth-global` 计数；改为 2 槽并发门，503+`Retry-After`，释放即恢复 |
 | 5 成员可读 OpenAPI | 已修复并复现 | 匿名 401、成员/管理员 404、单用户生产 404 |
-| 6 版本/模式/初始化信息 | 已收敛，保留 2 项残留 | 生产 health 仅 `{"status":"ok"}`；500 无栈；`setup_required` 有意公开 |
+| 6 版本/模式/初始化信息 | 应用侧已收敛 | 生产 health 仅 `{"status":"ok"}`；500 固定 JSON 且带安全头；`setup_required` 有意公开 |
 | 7 presence 内部 ID | 已修复并复现 | 仅 `{username,self}` 与 `expires_after`，精确键集合断言 |
 | 8 公开源码与版本对齐 | 有意公开，未当作漏洞 | 三处版本一致；327 个跟踪文件中无数据库/配置/凭据 |
 | 9 Host 校验是否真生效 | 已生效并强化示例 | 令牌开关均安装；未知 Host 400 且带安全头；样例改用 `$host` |
@@ -49,7 +49,7 @@
 - 复现：占满两个槽后，登录与注册（有效邀请码）都返回 503+`Retry-After`，释放后登录立即 200。
 - 会员不消耗匿名 IP 桶：即使预置 `ip:<对端>` 与旧 `auth-global` 满额，已登录成员仍 200。
 - 测试：`test_auth_capacity_gate_covers_login_and_registration_without_a_global_window`、`test_authenticated_visitors_do_not_share_anonymous_ip_budget`、`test_auth_capacity_recovers_immediately_without_global_window_lockout`。
-- 边界（未改，属设计取舍）：`auth-ip:<对端>` 30 次/15 分钟，跨 login/register/setup 共用，同一 NAT 出口的多人可互相影响；匿名请求另有 300 次/分钟的同 IP 桶（仅 status/login 等少数匿名路径）。
+- 本轮后续已拆分 `auth-ip:<endpoint>:<对端>`：登录 120 次/15 分钟，注册与初始化各 30 次/15 分钟，互不消耗。单一对端、单一账号仍有 10 次/15 分钟的登录限制；匿名请求另有 300 次/分钟的同 IP 桶。共享 NAT 出口仍存在有限配额，不能据此承诺无任何误伤。
 
 ### 5 成员读取 OpenAPI
 
@@ -59,10 +59,10 @@
 
 ### 6 版本、模式与初始化信息
 
-- 生产 health 仅 `{"status":"ok"}`；单用户与多用户 `auth/status` 均不含版本或运行模式；未捕获异常返回 `Internal Server Error`，不含栈、路径或内部消息。
+- 生产 health 仅 `{"status":"ok"}`；单用户与多用户 `auth/status` 均不含版本或运行模式；未捕获异常返回固定 JSON，不含栈、路径或内部消息，并由最外层安全头包装器覆盖。
 - `setup_required` 仍然公开：初始化向导必须知道站点是否已有管理员；创建管理员仍需部署令牌，且 30 次/15 分钟限制在认证路径上。
 - 测试：`test_production_health_and_status_hide_version_and_mode`、`test_production_500_page_does_not_leak_internals`、`test_public_status_reveals_setup_state_but_no_identity`。
-- 残留（建议主代理处理，见下文 R1/R2）：单用户生产响应缺少 HSTS 与 Permissions-Policy；500 响应不带安全头（`ServerErrorMiddleware` 位于用户中间件之外）。
+- 本轮后续已补齐：单/多用户统一使用 `SecureFastAPI`，在 Starlette 的错误层之外写入安全头；生产 500 使用固定 JSON，包含 HSTS、Permissions-Policy、CSP form-action，正常响应、认证拒绝、Host 拒绝和子工作区响应均去重。已开始发送的流式正文无法替换；代理自身错误仍由代理处理。
 
 ### 7 presence 内部 ID
 
@@ -74,7 +74,7 @@
 
 - 公开仓库与版本号是用户明确要求的产品行为，本轮**不**将其当作漏洞，也不据此声称凭据安全；结论只覆盖“公开内容与代码一致、私有内容不进入仓库”。
 - 版本一致性：`pyproject.toml`、`frontend/package.json`、FastAPI 应用版本、最新公告 `RELEASES[0].id` 四处相同（测试守护）；发布公告与代码版本不一致时测试失败。
-- 私有内容：`git ls-files` 共 327 个文件，无 `data/`、`releases/`、`account.toml`、`.env`、`*.sqlite3`、`codex/`；`data/`、`account.toml`、`.env` 均被忽略。
+- 私有内容：已跟踪源码无 `data/`、`releases/`、`account.toml`、`.env`、`*.sqlite3`、`codex/`；`data/`、`account.toml`、`.env` 均被忽略。
 - 测试：`test_shipped_version_metadata_is_aligned`；命令见文末。
 
 ### 9 Host 校验
@@ -82,7 +82,7 @@
 - 单用户与多用户应用都安装 `TrustedHostMiddleware`（与访问令牌是否启用无关）；生产环境拒绝通配符配置；示例代理不再用固定合法域名覆盖 Host。
 - 复现：未知 Host 400 `Invalid host header` 且仍带应用安全头；`testserver:443` 通过；`TESTserver`、`testserver.` 400（精确匹配，测试 `test_host_matching_is_exact_and_case_sensitive` 固定该行为）。
 - 本轮把 nginx 示例改为 `proxy_set_header Host $host`：仍是客户端请求派生的主机（大写、端口、尾点归一化），不是常量，应用白名单继续生效，同时避免大小写/尾点导致的误拒。
-- 建议（R3）：在 `Settings.validate()` 对 `allowed_hosts` 统一小写，并在应用内归一化入站 Host；否则运维写入大写域名会全部 400。
+- 本轮后续已在 `Settings.validate()` 对白名单配置去空白、转小写、去尾点并去重，在 `PUBLIC_ORIGIN` 检查前执行。入站 Host 仍沿用 Starlette 严格匹配，代理样例的 `$host` 负责归一化；直连大写或尾点 Host 不扩大白名单接受范围。
 
 ### 10 两层代理的安全头与错误页
 
@@ -108,7 +108,7 @@
 - 扩充 `tests/test_security_report.py`（8 → 20 项）：逐条复现上述行为，含第 1/3/4/5/6/7/8/9/11 项的新增断言。
 - `deploy/nginx.conf.example`：TLS 协议/会话、请求头与请求体限制、`$host` 归一化说明、Docker 网关信任说明。
 - `deploy/Caddyfile.example`：说明安全头归属、`handle_errors` 风险、`trusted_proxies` 只对已核实网段启用。
-- 未改任何现有运行代码（`users.py`、`multiuser.py`、`admin.tsx` 属管理员代理；`app.py`/`settings.py` 的残留见建议），未改版本号与公告，未打包或部署。
+- Hermes 首轮仅改上述检查器、配置与证据；主代理与安全收尾代理随后补齐运行代码和回归，见后续处理。未改版本号或公告，未打新发布包或部署。
 
 ## 仍需部署者配置
 
@@ -117,22 +117,23 @@
 3. 证书路径、是否监听 IPv6（示例中 IPv6 行需按主机能力开启）。
 4. CDN：nginx 仅对已核实的 CDN 网段配置 `set_real_ip_from` + `real_ip_header`；Caddy 仅在全局块配置 `trusted_proxies static <网段>`。
 5. 边缘限流/WAF：分布式猜密码、NAT 出口突发、匿名扫描需要部署侧策略，应用侧刻意不做“用户名级全站桶”。
-6. 若使用**单用户**生产模式（非默认 Compose 路径），需在代理补 HSTS。
+6. 应用现在统一负责单/多用户安全头，代理不要重复加 HSTS/CSP；代理自身生成的错误响应另行配置并实测。
 
-## 建议主代理处理（本轮无权限修改）
+## 首轮建议的后续处理
 
-- R1 `app.py`：单用户生产中间件补 `Strict-Transport-Security`、`Permissions-Policy`、CSP 的 `form-action`，与多用户一致。
-- R2 500 响应：`ServerErrorMiddleware` 位于用户中间件之外，异常页缺少安全头；建议在应用最外层补统一响应头。
-- R3 `Settings.validate()`：对 `allowed_hosts` 去空白、转小写、去尾点，或至少在启动时拒绝大写/尾点配置。
-- R4 `.env.example` / `compose.yaml` 注释：明确 Docker + 宿主 nginx 的网关地址场景（nginx 示例已写，env 模板仍可能被照抄成 `127.0.0.1`）。
-- R5 `auth-ip` 30/900 跨 login/register/setup 按 IP 共享：NAT 部署下偏紧，可按端点拆分或调高，并在运维文档写明取舍。
-- R6 文档：明确“无账号级登录桶”是有意取舍（防止第 1 项的定向锁定），账号级保护由边缘承担。
+- R1/R2 已补齐：`security_headers.py` 最外层 ASGI 安全头覆盖单/多用户正常、早退与未捕获 500 响应，生产错误正文不含内部信息。`tests/test_security_headers.py` 提供 focused 开发自检；这不代表其他业务正式验收。
+- R3 已补齐：配置域名归一化，`tests/test_settings_host_normalization.py` 验证归一化先于 HTTPS 来源检查。入站 Host 保持严格守卫。
+- R4 已补齐：`.env.example` 和 `compose.yaml` 注明宿主代理到容器时应填写实际 Docker 网关/代理 IP，而不是照抄回环地址。
+- R5 已补齐：认证 IP 配额按端点拆分，登录调整为 120/900；保留来源与账号组合桶，注册配额耗尽不再连带封锁登录和初始化。
+- R6 设计取舍：不使用全站账号失败桶，防止他人跨 IP 定向锁定账号；分布式猜密码仍需部署侧风控。边缘策略也应避免对 NAT 出口过度封禁。
+
+以上完成应用代码与示例配置层面的处理。第 10、11 项涉及实际代理/CDN/WAF 的部分仍未实测，不将静态样例通过称为线上问题已修复。
 
 ## 可复查命令
 
 ```bash
-# 安全报告与代理链自检（54 项）
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests/test_security_report.py tests/test_proxy_security.py -q
+# 安全报告、统一安全头与代理链开发自检
+env -u PYTHONPATH .venv/bin/python -m pytest tests/test_security_report.py tests/test_security_headers.py tests/test_proxy_security.py -q
 
 # 示例配置静态自检（退出码 1 表示漂移）
 PYTHONPATH=src .venv/bin/python -m acmweb.deploy_check

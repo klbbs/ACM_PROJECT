@@ -356,3 +356,46 @@ def test_start_expired_during_network_and_old_id_cannot_clear_replacement(tmp_pa
         assert cancelled['login_id'] == current['login_id'] and cancelled['status'] == 'cancelled'
         value.close()
     asyncio.run(run())
+
+
+def test_verified_qr_replaces_cookie_alternative_without_requesting_another_cookie(tmp_path):
+    from acmweb.accounts import AccountList
+    async def run():
+        value = manager(tmp_path)
+        value.accounts.save(AccountList(items=[
+            {'platform': 'nowcoder', 'handle': '123', 'cookie': 'old_session=OLD-SYNTHETIC'},
+            {'platform': 'atcoder', 'handle': 'fixture', 'cookie': 'sid=KEEP-SYNTHETIC'},
+        ]))
+        before = value.accounts.public()['items'][0]
+        assert before['login_method'] == 'cookie'
+        started = await value.start('owner', True, '123')
+        try:
+            value.flow['session'].result = {'code': 0, 'data': None}
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'verified' and result['verified_uid'] == '123'
+            saved = value.accounts.document()['accounts']
+            assert saved[0]['cookie'] == 'test_session=SYNTHETIC'
+            assert saved[0]['login_method'] == 'qr'
+            assert saved[1]['cookie'] == 'sid=KEEP-SYNTHETIC'
+            assert 'SYNTHETIC' not in str(result)
+        finally:
+            value.close()
+    asyncio.run(run())
+
+
+def test_unbound_wechat_scan_does_not_replace_existing_account_credentials(tmp_path):
+    from acmweb.accounts import AccountList
+    async def run():
+        value = manager(tmp_path)
+        value.accounts.save(AccountList(items=[{'platform': 'nowcoder', 'handle': '123', 'cookie': 'old_session=KEEP-SYNTHETIC'}]))
+        before = value.accounts.path.read_bytes()
+        started = await value.start('owner', True)
+        try:
+            value.flow['session'].result = {'code': 0, 'data': {'needComplete': True}}
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'failed'
+            assert '完善账号' in result['message']
+            assert value.accounts.path.read_bytes() == before
+        finally:
+            value.close()
+    asyncio.run(run())

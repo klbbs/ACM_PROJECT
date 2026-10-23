@@ -13,6 +13,14 @@ from acmweb.users import AUTH_SLOTS, digest
 from test_multiuser import site, PASSWORD
 
 
+@pytest.fixture(autouse=True)
+def stable_rate_limit_window(monkeypatch):
+    # Repeated scrypt checks can otherwise straddle a real 15-minute boundary
+    # and legitimately reset the counter halfway through a throttling test.
+    instant = time.time()
+    monkeypatch.setattr(time, 'time', lambda: instant)
+
+
 def test_login_flood_from_other_peer_cannot_lock_out_correct_password(site):
     _, _, _, app, _, _ = site
     headers = {'X-ACM-Request':'1','Origin':'https://testserver'}
@@ -201,9 +209,13 @@ def test_auth_capacity_gate_covers_login_and_registration_without_a_global_windo
 def test_anonymous_auth_budget_is_per_peer_and_spares_signed_in_members(site):
     _, admin, member, app, *_ = site
     noisy = peer(app, '198.51.100.61')
-    for index in range(30):
-        # Distinct names keep the per-pair login bucket out of the way.
-        sign_in(noisy, f'probe_{index}', 'wrong-password-123')
+    # Login has its own 120/900s source budget. Seed its boundary so this
+    # regression does not perform 120 deliberately expensive password hashes.
+    now = int(time.time())
+    with app.state.identities.connect() as db:
+        db.execute('INSERT OR REPLACE INTO rate_limits VALUES(?,?,?,?)',
+                   ('auth-ip:login:'+digest('198.51.100.61'), now//900, 119, now+900))
+    assert sign_in(noisy, 'probe_boundary', 'wrong-password-123').status_code == 401
     blocked = sign_in(noisy, 'member', PASSWORD)
     assert blocked.status_code == 429
     # The exhausted anonymous budget belongs to that peer only.
@@ -254,11 +266,12 @@ def test_production_500_page_does_not_leak_internals(tmp_path, monkeypatch):
     client = TestClient(app, base_url='https://testserver', raise_server_exceptions=False)
     response = client.get('/api/auth/status')
     assert response.status_code == 500
-    assert response.text.strip() == 'Internal Server Error'
+    assert response.json() == {'detail': '服务器暂时无法完成请求，请稍后重试'}
     assert 'internal-detail' not in response.text and 'Traceback' not in response.text
-    # Residual (reported to the main agent): ServerErrorMiddleware sits outside the
-    # app middleware, so 500 responses currently carry no security headers.
-    assert 'x-content-type-options' not in response.headers
+    assert response.headers['x-content-type-options'] == 'nosniff'
+    assert response.headers['permissions-policy'] == 'camera=(), microphone=(), geolocation=()'
+    assert response.headers['strict-transport-security'] == 'max-age=31536000'
+    assert "form-action 'self'" in response.headers['content-security-policy']
 
 
 def test_presence_payload_contains_only_display_fields(site):

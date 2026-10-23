@@ -38,6 +38,10 @@ class Settings:
         return self.data_dir / "accounts.sqlite3"
 
     def validate(self):
+        # Domain names are case insensitive. Normalize configuration before
+        # comparing PUBLIC_ORIGIN or installing Starlette's exact Host guard.
+        self.allowed_hosts = tuple(dict.fromkeys(host.strip().lower().rstrip('.')
+                                                for host in self.allowed_hosts if host.strip()))
         if not self.allowed_hosts or (self.production and any('*' in host for host in self.allowed_hosts)):
             raise RuntimeError('生产环境 ACM_ALLOWED_HOSTS 必须列出实际域名，不能使用通配符')
         if self.public_origin:

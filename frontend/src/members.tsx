@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, date } from './api'
+import { AdministratorApplication } from './administrator-requests'
 
 type Row = Record<string, any>
 
@@ -422,6 +423,7 @@ export function MemberPage({
           </div>
         </section>
       )}
+      {user.role !== 'admin' && <AdministratorApplication onError={onError} onNotice={onNotice} />}
       <section className="card settings-card">
         <h2>账号安全</h2>
         <p className="help">当前用户：{user.username}。修改密码后全部设备需重新登录。</p>

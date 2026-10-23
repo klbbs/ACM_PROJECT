@@ -8,13 +8,14 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .users import Users, csrf_token, digest, password_hash, instance_lock
+from .security_headers import SecureFastAPI
 
 COOKIE = 'acm_user_session'
 
@@ -47,6 +48,17 @@ class UserUpdate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     role: Literal['admin','member']
     active: bool
+
+
+class AdministratorRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class AdministratorReview(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    decision: Literal['approved', 'rejected']
+    note: str = Field(default='', max_length=1000)
 
 
 class Entry(BaseModel):
@@ -143,7 +155,7 @@ def create_multi_app(settings, factory):
                     await asyncio.gather(cleanup,return_exceptions=True)
                 await workspaces.close()
 
-    app = FastAPI(title='ACM Lab users',version='0.19.1',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.0',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
 
     def owner_valid(uid, owner):
@@ -211,31 +223,23 @@ def create_multi_app(settings, factory):
                     except asyncio.TimeoutError:
                         raise HTTPException(408,'请求上传超时') from None
                     if path in {'/api/auth/setup','/api/auth/login','/api/auth/register'}:
-                        identities.limit('auth-ip:'+digest(peer),30,900)
+                        operation = path.rsplit('/', 1)[-1]
+                        identities.limit('auth-ip:'+operation+':'+digest(peer),120 if operation == 'login' else 30,900)
                     elif user and path == '/api/platform-login/nowcoder/start':
                         identities.limit('platform-login-start:'+user['id'],6,60)
                         identities.limit('platform-login-start-global',30,60)
-                    elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/problem-submissions/') or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings')) or path.startswith('/api/remote-submissions') and not path.endswith('/dismiss') or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
+                    elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/problem-submissions/') or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings','/code-templates')) or path.startswith('/api/remote-submissions') and not path.endswith('/dismiss') or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
             else:
                 response = await call_next(request)
         except HTTPException as exc:
             response = JSONResponse({'detail':exc.detail},status_code=exc.status_code,headers=exc.headers)
-        response.headers.update({
-            'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'same-origin',
-            'Permissions-Policy':'camera=(), microphone=(), geolocation=()',
-            'Content-Security-Policy':"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
-        })
-        if path.startswith('/api/'):
-            response.headers['Cache-Control'] = 'no-store'
-        if settings.production:
-            response.headers['Strict-Transport-Security'] = 'max-age=31536000'
         return response
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.19.1','mode':'multi-user'}
+        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.0','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -309,6 +313,82 @@ def create_multi_app(settings, factory):
         response.delete_cookie(COOKIE,secure=settings.production,httponly=True,samesite='strict')
         return {'ok':True}
 
+    def current_admin(db, actor, request):
+        # Recheck privileges and this exact session while holding the write lock.
+        now = int(time.time())
+        valid = db.execute("""SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id
+            WHERE u.id=? AND u.role='admin' AND u.active=1 AND s.hash=?
+            AND s.expires_at>? AND s.seen_at>?""",
+            (actor['id'], digest(request.cookies.get(COOKIE, '')), now, now-7200)).fetchone()
+        if not valid:
+            raise HTTPException(403, '管理员身份已变更，请重新登录')
+
+    @app.get('/api/auth/administrator-requests')
+    def own_administrator_requests(request:Request):
+        user = require(request)
+        with identities.connect() as db:
+            rows = db.execute("""SELECT r.id,r.reason,r.status,r.created_at,r.reviewed_at,
+                r.review_note,a.username AS reviewer FROM administrator_requests r
+                LEFT JOIN users a ON a.id=r.reviewed_by WHERE r.user_id=?
+                ORDER BY r.created_at DESC,r.rowid DESC LIMIT 20""", (user['id'],)).fetchall()
+        return {'items': [dict(r) for r in rows]}
+
+    @app.post('/api/auth/administrator-requests')
+    def request_administrator(payload:AdministratorRequest, request:Request):
+        user = require(request)
+        reason = payload.reason.strip()
+        if not reason:
+            raise HTTPException(422, '请填写申请理由')
+        identities.limit('administrator-request:'+user['id'], 3, 86400)
+        rid, now = uuid.uuid4().hex, int(time.time())
+        with identities.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT role,active FROM users WHERE id=?', (user['id'],)).fetchone()
+            if not current or not current['active'] or current['role'] == 'admin':
+                raise HTTPException(409, '当前账号无需或无法申请管理员')
+            if db.execute("SELECT 1 FROM administrator_requests WHERE user_id=? AND status='pending'", (user['id'],)).fetchone():
+                raise HTTPException(409, '已有待审核申请，请等待管理员处理')
+            db.execute("INSERT INTO administrator_requests(id,user_id,reason,status,created_at) VALUES(?,?,?,'pending',?)",
+                       (rid, user['id'], reason, now))
+            identities.audit('administrator.requested', user['id'], rid, db)
+        return {'id': rid, 'status': 'pending'}
+
+    @app.get('/api/admin/administrator-requests')
+    def administrator_requests(request:Request):
+        require(request, True)
+        with identities.connect() as db:
+            rows = db.execute("""SELECT r.*,u.username,a.username AS reviewer
+                FROM administrator_requests r JOIN users u ON u.id=r.user_id
+                LEFT JOIN users a ON a.id=r.reviewed_by
+                ORDER BY (r.status='pending') DESC,r.created_at DESC,r.rowid DESC LIMIT 100""").fetchall()
+        return {'items': [dict(r) for r in rows]}
+
+    @app.post('/api/admin/administrator-requests/{rid}/review')
+    def review_administrator(rid:str, payload:AdministratorReview, request:Request):
+        actor = require(request, True)
+        with identities.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current_admin(db, actor, request)
+            row = db.execute('SELECT * FROM administrator_requests WHERE id=?', (rid,)).fetchone()
+            if not row:
+                raise HTTPException(404, '申请不存在')
+            if row['user_id'] == actor['id']:
+                raise HTTPException(403, '不能批准或审核自己的申请')
+            if row['status'] != 'pending':
+                raise HTTPException(409, '申请已经处理，请刷新列表')
+            target = db.execute('SELECT role,active FROM users WHERE id=?', (row['user_id'],)).fetchone()
+            if payload.decision == 'approved':
+                if not target or not target['active'] or target['role'] != 'member':
+                    raise HTTPException(409, '仅能批准启用中的普通成员')
+                db.execute("UPDATE users SET role='admin' WHERE id=?", (row['user_id'],))
+                db.execute('DELETE FROM sessions WHERE user_id=?', (row['user_id'],))
+            db.execute('UPDATE administrator_requests SET status=?,reviewed_at=?,reviewed_by=?,review_note=? WHERE id=?',
+                       (payload.decision, int(time.time()), actor['id'], payload.note.strip(), rid))
+            identities.audit('administrator.'+payload.decision, actor['id'], row['user_id'], db)
+        if payload.decision == 'approved':
+            clear_login(row['user_id'])
+        return {'ok': True, 'status': payload.decision, 'reauthenticate': payload.decision == 'approved'}
+
     @app.get('/api/admin/users')
     def users(request:Request):
         require(request,True)
@@ -340,15 +420,17 @@ def create_multi_app(settings, factory):
         actor = require(request,True)
         if uid == actor['id']:
             raise HTTPException(400,'不能停用自己或修改自己的角色')
-        if payload.role == 'admin':
-            raise HTTPException(409, '站点只保留原管理员 kendas，不能新增管理员')
         with identities.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            current = db.execute('SELECT role,active FROM users WHERE id=?',(actor['id'],)).fetchone()
-            if not current or not current['active'] or current['role']!='admin':
-                raise HTTPException(403,'需要管理员权限')
-            if not db.execute('SELECT 1 FROM users WHERE id=?',(uid,)).fetchone():
+            current_admin(db, actor, request)
+            target = db.execute('SELECT role,active FROM users WHERE id=?',(uid,)).fetchone()
+            if not target:
                 raise HTTPException(404,'用户不存在')
+            if payload.role == 'admin' and target['role'] != 'admin':
+                raise HTTPException(409, '新增管理员需要本人申请并经已有管理员批准')
+            if target['role'] == 'admin' and target['active'] and (payload.role != 'admin' or not payload.active):
+                if db.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0] <= 1:
+                    raise HTTPException(409, '至少保留一位启用中的管理员')
             db.execute('UPDATE users SET role=?,active=? WHERE id=?',(payload.role,int(payload.active),uid))
             db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
             identities.audit('user.updated',actor['id'],uid,db)

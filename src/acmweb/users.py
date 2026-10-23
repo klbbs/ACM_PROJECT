@@ -99,6 +99,15 @@ class Users:
             CREATE TABLE IF NOT EXISTS rate_limits (
               key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL,
               expires_at INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS identity_migrations (
+              name TEXT PRIMARY KEY, completed_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS administrator_requests (
+              id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+              reason TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+              created_at INTEGER NOT NULL, reviewed_at INTEGER,
+              reviewed_by TEXT REFERENCES users(id), review_note TEXT NOT NULL DEFAULT '');
+            CREATE UNIQUE INDEX IF NOT EXISTS administrator_pending_user
+              ON administrator_requests(user_id) WHERE status='pending';
             PRAGMA user_version=1;
             CREATE TABLE IF NOT EXISTS online_presence (
               user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -116,6 +125,9 @@ class Users:
         stay on disk for offline recovery and can no longer authenticate.
         """
         with self.connect() as db:
+            # Legacy cleanup must not demote newly approved administrators on restart.
+            if db.execute("SELECT 1 FROM identity_migrations WHERE name='canonical-admin-v1'").fetchone():
+                return
             original = db.execute("SELECT id FROM users WHERE lower(username)='admin' AND role='admin'").fetchone()
             canonical = db.execute("SELECT id FROM users WHERE lower(username)='kendas' AND role='admin'").fetchone()
             owner = original or canonical
@@ -127,6 +139,7 @@ class Users:
             duplicates = db.execute("SELECT id FROM users WHERE id<>? AND lower(username) IN ('kds','kendas')", (uid,)).fetchall()
             extra_admins = db.execute("SELECT id FROM users WHERE role='admin' AND id<>?", (uid,)).fetchall()
             if not original and not duplicates and not extra_admins:
+                db.execute("INSERT INTO identity_migrations VALUES('canonical-admin-v1',?)", (int(time.time()),))
                 return
         # A one-time private SQLite snapshot precedes the identity changes.
         backup = self.path.with_name('users.before-canonical-admin.sqlite3')
@@ -161,6 +174,7 @@ class Users:
             db.execute("UPDATE users SET username='kendas',role='admin' WHERE id=?", (uid,))
             db.execute('DELETE FROM sessions WHERE user_id=?', (uid,))
             self.audit('admin.original_renamed', uid, uid, db)
+            db.execute("INSERT INTO identity_migrations VALUES('canonical-admin-v1',?)", (int(time.time()),))
 
     @contextmanager
     def connect(self):
@@ -231,6 +245,8 @@ class Users:
                 raise HTTPException(409, '用户名不可用') from None
             if not setup:
                 db.execute('UPDATE invitations SET used_by=? WHERE hash=?',(uid,invitation_digest))
+            if setup and username == 'kendas':
+                db.execute("INSERT OR IGNORE INTO identity_migrations VALUES('canonical-admin-v1',?)", (now,))
             self.audit('user.created',uid,uid,db)
         return uid
 

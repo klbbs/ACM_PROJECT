@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal, Annotated
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ from .codex_bridge import AIError, CodexBridge
 from .database import Database
 from .jobs import Jobs
 from .settings import Settings
+from .security_headers import SecureFastAPI
 from .accounts import Accounts, AccountList
 
 
@@ -99,7 +100,7 @@ def create_app(settings=None):
         await codex.close()
 
     private_schema = settings.production or settings.isolated
-    app=FastAPI(title="ACM Lab API",version="0.19.1",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.20.0",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     register_credential_checks(app,account_config)
     from .nowcoder_qr import register as register_nowcoder_qr
     register_nowcoder_qr(app, account_config, jobs)
@@ -130,11 +131,6 @@ def create_app(settings=None):
             if request.headers.get("content-length","0") not in {"0",""} and "application/json" not in content_type:
                 return JSONResponse({"detail":"仅接受 JSON 请求"},status_code=415)
         response=await call_next(request)
-        response.headers["X-Content-Type-Options"]="nosniff"
-        response.headers["Referrer-Policy"]="same-origin"
-        response.headers["X-Frame-Options"]="DENY"
-        response.headers["Content-Security-Policy"]="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
-        if path.startswith("/api/"):response.headers["Cache-Control"]="no-store"
         return response
 
     @app.exception_handler(AIError)
@@ -146,7 +142,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.19.1"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.20.0"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -278,6 +274,8 @@ def create_app(settings=None):
     from .workbench import Workbench, register
     app.state.workbench = Workbench(database, ai, account_config)
     register(app, app.state.workbench, jobs, app.state.daily)
+    from .code_templates import register as register_code_templates
+    register_code_templates(app, database)
 
     from .remote_submissions import RemoteSubmissions, register as register_remote_submissions
     app.state.remote_submissions = RemoteSubmissions(database, account_config, app.state.workbench, jobs, app.state.daily)

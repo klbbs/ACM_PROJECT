@@ -55,6 +55,8 @@ class Revocation(Strict):
 def fingerprint(statement):
     # Only immutable statement content contributes; fetch metadata never does.
     keys = ('id', 'url', 'title', 'body_html', 'sections', 'samples', 'images', 'time_limit', 'memory_limit')
+    if statement.get('id', '').startswith('codeforces:') and statement.get('render_version', 0) >= 3:
+        keys += ('render_version', 'markdown')
     content = {key: statement.get(key) for key in keys}
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -151,6 +153,10 @@ class Document:
         if result.get('body_html'):
             result['body_html'] = str(self.soup)
             result['sections'] = [self.soup.get_text('\n', strip=True)]
+            if result.get('id', '').startswith('codeforces:') and result.get('render_version', 0) >= 3:
+                from .statement_markdown import html_markdown
+                result['markdown'] = html_markdown(result['body_html'])
+                result['sections'] = [result['markdown']]
         result['translation_language'] = 'zh-CN'
         return result
 

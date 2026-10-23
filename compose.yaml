@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: "${ACM_IMAGE_TARGET:-runtime}"
-    image: acm-lab:0.19.1
+    image: acm-lab:0.20.0
     restart: unless-stopped
     init: true
     user: "${ACM_UID:-1000}:${ACM_GID:-1000}"
@@ -15,6 +15,7 @@ services:
       ACM_ALLOWED_HOSTS: "${ACM_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
       ACM_AI_ALLOWED_HOSTS: "${ACM_AI_ALLOWED_HOSTS:-api.openai.com,api.deepseek.com,api.anthropic.com,generativelanguage.googleapis.com,dashscope.aliyuncs.com,dashscope-intl.aliyuncs.com,api.moonshot.cn,api.siliconflow.cn,open.bigmodel.cn}"
       ACM_PUBLIC_ORIGIN: "${ACM_PUBLIC_ORIGIN:-}"
+      # 宿主代理连接容器时，填写实际 Docker 网关/代理 IP，不能一律照抄回环地址。
       FORWARDED_ALLOW_IPS: "${ACM_TRUSTED_PROXIES:-127.0.0.1}"
       ACM_ENABLE_CODEX: "false"
       ACM_ENABLE_SERVER_CODEX: "${ACM_ENABLE_SERVER_CODEX:-false}"

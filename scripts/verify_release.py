@@ -12,7 +12,7 @@ def verify(path):
         forbidden={'account.toml','accounts.toml','accounts.web.toml','.env','ai-secrets.json','auth.json','cookies.sqlite','users.sqlite3','.multiuser.lock'}
         for name in names:
             parts=PurePosixPath(name).parts[1:]
-            if any(p in forbidden or p in {'data','.git','.venv','node_modules','daily','records','for_code_skill'} for p in parts):
+            if any(p in forbidden or p in {'data','.git','.venv','.acm-update','node_modules','daily','records','for_code_skill'} for p in parts):
                 raise RuntimeError('发布包含私人或运行时文件: '+name)
         for line in archive.read(root+'MANIFEST.sha256').decode().splitlines():
             expected,name=line.split('  ',1)
