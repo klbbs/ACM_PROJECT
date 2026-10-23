@@ -2,6 +2,13 @@
 # Configure ACM_ALLOWED_HOSTS=acm.example.com and
 # ACM_PUBLIC_ORIGIN=https://acm.example.com in the application.
 # Trust only the real proxy address in ACM_TRUSTED_PROXIES / FORWARDED_ALLOW_IPS.
+#
+# When the application runs in Docker and Nginx runs on the host, the container
+# sees the Docker bridge gateway (for example 172.17.0.1), not 127.0.0.1. Put that
+# address in ACM_TRUSTED_PROXIES, or run Nginx in the same compose network and
+# use the service name, otherwise every client shares one rate-limit bucket.
+#
+# Add "listen [::]:80" / "listen [::]:443 ssl" below only when the host has IPv6.
 server {
     listen 80 default_server;
     server_name _;
@@ -21,17 +28,28 @@ server {
     server_name acm.example.com;
     ssl_certificate /etc/letsencrypt/live/acm.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/acm.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
     server_tokens off;
     # A default TLS vhost can otherwise receive unknown Host values too.
     if ($host != acm.example.com) { return 444; }
     client_max_body_size 512k;
+    client_header_timeout 10s;
+    large_client_header_buffers 4 8k;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
-        # Preserve the client's Host for the application's allowlist check;
-        # never replace it with a fixed allowed hostname.
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_http_version 1.1;
+        # Send the client's normalized host (lowercased, no port, no trailing
+        # dot), never a fixed allowed value: the application still enforces
+        # ACM_ALLOWED_HOSTS. Some clients send uppercase or trailing-dot hosts;
+        # $host keeps those from being rejected by the exact-match allowlist.
+        # A Host header that is missing entirely falls back to this server_name,
+        # so HTTP/1.0 requests reach the app with the configured name.
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         # For a single edge proxy, discard untrusted client-supplied XFF.
         # A CDN chain needs set_real_ip_from for that CDN's verified addresses.

@@ -1,5 +1,17 @@
 # 将 acm.example.com 替换为你的域名，将反向代理目标按部署方式调整。
 # Caddy 需与应用位于同一台主机；若 Caddy 也在容器中，请将目标改为 web:8000 并加入同一网络。
+#
+# 安全响应头（CSP、HSTS、X-Frame-Options 等）只由应用生成，这里不要重复添加，
+# 否则同一响应会出现两份可能互相矛盾的值。
+#
+# 未在此处配置 handle_errors：Caddy 自身上游故障页为 502，header -Server 已移除
+# 版本标识；若需要 JSON 网关错误页，请先用应用的 401/429 路径确认 handle_errors
+# 不会替换应用返回的状态码与 Retry-After 后再启用。
+#
+# Caddy 默认不信任客户端传入的 X-Forwarded-For（trusted_proxies 为空），会把真实
+# 对端地址写入该头；只有在前面还有可信 CDN 时，才在全局块中配置
+# trusted_proxies static <CDN 的已核实网段>。应用侧的 FORWARDED_ALLOW_IPS 必须与
+# 实际连到应用的代理地址一致，否则容器内看到的是网关地址，所有客户端共用一个限流桶。
 acm.example.com {
     encode zstd gzip
     header -Server
