@@ -1,20 +1,34 @@
 import { test, expect } from '@playwright/test'
 
-test('an older official submission links after saving even when recommendations are unavailable', async ({ page }) => {
+test('one-click synchronization needs no code and no submission id, even when recommendations are unavailable', async ({ page }) => {
   expect((await page.request.post('/_fixture/reset-workbench')).ok()).toBe(true)
   await page.request.put('/api/accounts', {
-    data: { items: [{ platform: 'codeforces', handle: 'fixture_user', enrich: false }] },
+    data: { items: [{ platform: 'codeforces', handle: 'fixture_owner', enrich: false }] },
   })
   await page.route('**/api/workbench', (route) => route.fulfill({ status: 503, json: { detail: '合成推荐服务不可用' } }))
   await page.goto('/')
   await page.getByRole('button', { name: '刷题工作台', exact: true }).click()
   await page.getByRole('textbox', { name: '平台题号或官方题目链接' }).fill('4-A')
   await page.getByRole('button', { name: '打开', exact: true }).click()
-  await expect(page.getByLabel('本次提交账号')).toHaveValue('fixture_user')
+  await expect(page.getByLabel('同步账号')).toHaveValue('fixture_owner')
+  // The former manual flow is gone: no submission-id input and no code-match tick.
+  await expect(page.locator('.wb-submission-form')).toHaveCount(0)
+  await expect(page.getByLabel('本次平台提交号')).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: /代码对应这条官方提交/ })).toHaveCount(0)
+  const syncBodies: unknown[] = []
+  let submissionPosts = 0
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'POST' && path.endsWith('/sync')) syncBodies.push(request.postDataJSON())
+    if (request.method() === 'POST' && path.endsWith('/submission')) submissionPosts++
+  })
   let release!: () => void
-  const gate = new Promise<void>((resolve) => { release = resolve })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
   let savingStarted = false
-  let submissions = 0
+  // Autosave is deliberately blocked: records must be readable while the draft is
+  // still pending, because synchronization never sends or waits for editor code.
   await page.route('**/api/workbench/problem/*/draft', async (route) => {
     if (route.request().method() === 'PUT') {
       savingStarted = true
@@ -22,29 +36,29 @@ test('an older official submission links after saving even when recommendations 
     }
     await route.continue()
   })
-  page.on('request', (request) => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/submission')) submissions++
-  })
-  const code = 'print("association while saving")'
+  const code = 'print("synchronize while saving")'
   await page.getByLabel('代码语言').selectOption('python3')
   await page.getByLabel('源代码', { exact: true }).fill(code)
-  const form = page.locator('.wb-submission-form')
-  await form.getByLabel('本次平台提交号').fill('https://codeforces.com/contest/4/submission/920003')
-  await form.getByRole('checkbox').check()
   try {
     await expect.poll(() => savingStarted).toBe(true)
-    await form.getByRole('button', { name: '关联并核验本次提交' }).click()
-    await expect(form.getByRole('button', { name: '关联并核验本次提交' })).toBeDisabled()
-    expect(submissions).toBe(0)
+    await page.getByRole('button', { name: '同步本题提交', exact: true }).click()
+    await expect(page.getByText(/已同步 \d+ 条本题提交/)).toBeVisible({ timeout: 25000 })
+    await expect(
+      page.locator('article.problem-submission').filter({ hasText: '#920001' }),
+    ).toContainText('WA')
+    expect(syncBodies).toEqual([{ handle: 'fixture_owner' }])
+    expect(submissionPosts).toBe(0)
   } finally {
     release()
   }
-  await expect(page.locator('article.wb-attempt').getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
-  expect(submissions).toBe(1)
+  // The pending autosave completes independently of the record synchronization.
+  await expect
+    .poll(
+      async () => (await (await page.request.get('/api/workbench/problem/4-A')).json()).draft.code,
+    )
+    .toBe(code)
   const state = await (await page.request.get('/api/workbench/problem/4-A')).json()
-  expect(state.draft.code).toBe(code)
-  expect(state.attempts).toHaveLength(1)
-  expect(state.attempts[0].submission_id).toBe(920003)
+  expect(state.attempts).toHaveLength(0)
 })
 
 test('a note typed while the next problem is resolving stays on the original problem', async ({ page }) => {

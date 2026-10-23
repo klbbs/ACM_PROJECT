@@ -4,7 +4,7 @@ const StatementView = React.lazy(() =>
   import('./statement-view').then((m) => ({ default: m.StatementView })),
 )
 import { EditorShell } from './editor-shell'
-import { SubmissionHistory, SubmissionForm } from './submission-history'
+import { ProblemSubmissions } from './problem-submissions'
 import { SelfTestPanel } from './self-test-panel'
 import './editor-self-test.css'
 import { WorkbenchSplit } from './workbench-split'
@@ -258,16 +258,16 @@ export function WorkbenchPage({
   useEffect(() => {
     if (initialSelection?.problem_id) void choose(initialSelection.problem_id)
   }, [initialSelection])
-  const submit = async (values: Row) => {
-    const target = currentPid.current
-    if (!(await save())) throw new Error('代码尚未保存完成，请等待保存成功后重试关联')
-    if (currentPid.current !== target) throw new Error('题目已切换，请在当前题目重新关联')
-    const result = await run(`/workbench/problem/${encodeURIComponent(target)}/submission`, {
-      ...values,
-      revision: draftRevision.current,
-    })
-    if (result?.error) throw new Error(result.error)
-    return result
+  // Loading a synchronized record never silently replaces the draft: the existing
+  // save path runs first and the replacement is stored as a new unsaved version.
+  const loadCode = async (value: string, lang?: string | null) => {
+    if (dirty.current && !(await save()))
+      throw new Error('当前草稿尚未保存成功，未替换编辑器内容；请先保存或复制后再试')
+    if (lang && ['cpp17', 'cpp20', 'python3', 'java17'].includes(lang)) setLanguage(lang)
+    setCode(value)
+    dirty.current = true
+    setSaved('已载入本次提交代码，等待自动保存')
+    setSaveTick((n) => n + 1)
   }
   const coach = (path: string) => {
     if (!model) {
@@ -278,6 +278,13 @@ export function WorkbenchPage({
   }
   const statement = data?.statement
   const profile = choices.profile
+  const platformId = pid.split(':')[0]
+  const remoteSubmit = platformId === 'codeforces' || platformId === 'atcoder'
+  const linkHandles: string[] =
+    data?.capabilities?.handles ||
+    choices.handles_by_platform?.[platformId] ||
+    (pid.startsWith('codeforces:') ? choices.handles : []) ||
+    []
   return (
     <div className="workbench">
       <section className="card wb-intro">
@@ -289,7 +296,7 @@ export function WorkbenchPage({
         </div>
         <p className="muted">
           CF、AtCoder：自动保存代码 → 选择官方编译器并提交 → 自动取得判题和错因提示。
-          平台验证未通过时会停止提交；其他平台仍可使用官方页面与手动关联。
+          平台验证未通过时不会发出代码；洛谷、牛客仍在官方页面提交，回到这里点击一次「同步本题提交」即可取得记录与判题。
         </p>
         <div className="wb-metrics">
           <span>
@@ -636,8 +643,10 @@ export function WorkbenchPage({
                     </a>
                   </div>
                   <p className="muted">
-                    最多 64 KiB；代码自动保存，自测由专用隔离服务执行。请在题目所属平台
-                    选择相应语言提交同一份代码。
+                    最多 64 KiB；代码自动保存，自测由专用隔离服务执行。
+                    {remoteSubmit
+                      ? '可直接提交这一份代码，也可在官方页面提交后用「同步本题提交」取回记录。'
+                      : '请在官方页面以相应语言提交同一份代码，再回到下方点击「同步本题提交」。'}
                   </p>
                 </section>
               </WorkbenchSplit>
@@ -699,56 +708,40 @@ export function WorkbenchPage({
                 </button>
               </section>
               <section className="card">
-                <h3>本次提交与错因复盘</h3>
+                <h3>提交记录与错因复盘</h3>
                 <p className="muted">
-                  平台账号、题号和官方提交时间可核验；代码由你确认对应关系后保存，用于错因复盘，无法核验与平台实际源码相同。较早的提交也可关联，签到仍按官方提交日期计算。
+                  记录同步按平台账号、题号和官方提交时间核验，不需要填写提交号，也不要求编辑器里有代码。
+                  只有取到源码的记录才能复盘；当前草稿不会被当作历史提交的代码。
                 </p>
-                <SubmissionForm
+                <ProblemSubmissions
                   key={pid}
-                  platform={pid.split(':')[0]}
-                  handles={
-                    data?.capabilities?.handles ||
-                    choices.handles_by_platform?.[pid.split(':')[0]] ||
-                    (pid.startsWith('codeforces:') ? choices.handles : [])
-                  }
-                  code={code}
-                  language={language}
-                  active={active || busy}
-                  onSubmit={submit}
-                  onRefreshAccounts={async () => {
-                    await refresh()
-                    await loadChoices()
-                  }}
-                  onSyncPlatform={async () => {
-                    const result = await run(`/platforms/${pid.split(':')[0]}/collect`, {})
-                    if (result?.error) throw new Error(result.error)
-                    return result
-                  }}
-                  onError={onError}
-                />
-                <SubmissionHistory
                   problemId={pid}
+                  handles={linkHandles}
+                  editorCode={code}
+                  active={active || busy}
                   revision={revision}
-                  selected={initialSelection}
+                  aiReady={!!model}
+                  coach={coach}
+                  loadCode={loadCode}
+                  onChanged={() => refresh()}
                   onError={onError}
+                  selected={initialSelection}
                 />
-                {data?.attempts.map((attempt: Row) => (
-                  <Attempt
-                    key={attempt.id}
-                    attempt={attempt}
-                    handles={
-                      data?.capabilities?.handles ||
-                      choices.handles_by_platform?.[pid.split(':')[0]] ||
-                      (pid.startsWith('codeforces:') ? choices.handles : [])
-                    }
-                    capabilities={data?.capabilities}
-                    active={active}
-                    aiReady={!!model}
-                    run={run}
-                    coach={coach}
-                    onError={onError}
-                  />
-                ))}
+                {!!data?.attempts?.length && (
+                  <>
+                    <h4>已保存的代码记录</h4>
+                    {data.attempts.map((attempt: Row) => (
+                      <Attempt
+                        key={attempt.id}
+                        attempt={attempt}
+                        capabilities={data?.capabilities}
+                        active={active}
+                        aiReady={!!model}
+                        coach={coach}
+                      />
+                    ))}
+                  </>
+                )}
               </section>
             </>
           )}
@@ -758,53 +751,49 @@ export function WorkbenchPage({
   )
 }
 
-function Attempt({ attempt: a, handles, capabilities, active, aiReady, run, coach, onError }: any) {
-  const [handle, setHandle] = useState(a.handle || handles[0] || ''),
-    [sid, setSid] = useState(a.submission_id ? String(a.submission_id) : '')
-  useEffect(() => {
-    setHandle((previous: string) => {
-      if (a.handle)
-        return handles.find((h: string) => h.toLowerCase() === a.handle.toLowerCase()) || a.handle
-      return handles.includes(previous) ? previous : handles[0] || ''
-    })
-  }, [a.handle, handles])
+function Attempt({ attempt: a, capabilities, active, aiReady, coach }: any) {
   const [contest, index] = a.problem_id.split(':')[1].split('-')
   const platform = a.problem_id.split(':')[0]
   const platformName = names[platform] || platform
-  const canSync = capabilities?.judge_sync ?? platform === 'codeforces'
+  const remote = platform === 'codeforces' || platform === 'atcoder'
   return (
     <article className="wb-attempt">
       <div className="wb-warning">
-        <strong>当前为官方页面手动提交</strong>
+        <strong>
+          {remote
+            ? '本站可提交，也可同步官方记录'
+            : `提交请在 ${platformName} 官方页面完成`}
+        </strong>
         <p>
-          请先登录 {platformName}，确认使用正确的账号，再提交本次代码。关联记录不会远程提交代码。
+          {remote
+            ? '需要重新提交时使用编辑器下方的「提交到平台」；已在官方页面提交的，回到上方点击「同步本题提交」即可取得判题。'
+            : `在 ${platformName} 官方页面提交后，回到上方点击「同步本题提交」即可取得这条记录的判题；本站不会代你交题。`}
         </p>
-        <a
-          href={
-            (
-              {
-                codeforces: 'https://codeforces.com/enter',
-                atcoder: 'https://atcoder.jp/login',
-                luogu: 'https://www.luogu.com.cn/',
-                nowcoder: 'https://ac.nowcoder.com/',
-              } as Record<string, string>
-            )[platform]
-          }
-          target="_blank"
-          rel="noreferrer"
-        >
-          先登录 {platformName} ↗
-        </a>{' '}
-        ·{' '}
+        {!remote && (
+          <>
+            <a
+              href={
+                (
+                  {
+                    luogu: 'https://www.luogu.com.cn/',
+                    nowcoder: 'https://ac.nowcoder.com/',
+                  } as Record<string, string>
+                )[platform]
+              }
+              target="_blank"
+              rel="noreferrer"
+            >
+              前往 {platformName} ↗
+            </a>{' '}
+            ·{' '}
+          </>
+        )}
         <button
           className="text-button"
           onClick={() => window.dispatchEvent(new Event('acm:open-guide'))}
         >
           绑定与提交教程
         </button>
-        {canSync && !handles.length && (
-          <p>尚未配置此平台账号，请在「连接与设置」添加 handle 后再关联判题。</p>
-        )}
       </div>
       <div className="wb-heading">
         <strong>{a.verdict}</strong>
@@ -831,60 +820,13 @@ function Attempt({ attempt: a, handles, capabilities, active, aiReady, run, coac
       <details>
         <summary>查看当次代码（只读）</summary>
         <p className="muted">
-          用户关联时提供的代码，未与官方平台源码核对；编辑器修改不会改变这份记录。
+          {a.code_verified
+            ? '代码来自官方页面并核对过本人身份；编辑器修改不会改变这份记录。'
+            : '这份代码由本站保存并与该提交关联，未与官方平台源码自动核对；编辑器修改不会改变这份记录。'}
         </p>
         <pre className="wb-snapshot">{a.code}</pre>
       </details>
-      {canSync && (
-        <form
-          className="wb-heading"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (!/^\d+$/.test(sid)) {
-              onError('请输入有效提交号')
-              return
-            }
-            run(`/workbench/attempt/${a.id}/sync`, {
-              handle,
-              submission_id: Number(sid),
-            })
-          }}
-        >
-          <select
-            aria-label="提交账号"
-            value={handle}
-            onChange={(e) => setHandle(e.target.value)}
-            disabled={!!a.handle}
-          >
-            <option value="">选择已配置账号</option>
-            {a.handle &&
-              !handles.some((h: string) => h.toLowerCase() === a.handle.toLowerCase()) && (
-                <option value={a.handle}>{a.handle}（已关联；需重新配置账号后同步）</option>
-              )}
-            {handles.map((h: string) => (
-              <option key={h} value={h}>
-                {h}
-              </option>
-            ))}
-          </select>
-          <input
-            aria-label="平台提交号"
-            inputMode="numeric"
-            placeholder={`${platformName} 提交号`}
-            value={sid}
-            onChange={(e) => setSid(e.target.value)}
-            disabled={!!a.submission_id}
-          />
-          <button className="secondary" disabled={active || !handle || !sid}>
-            {a.submission_id ? '刷新判题（间隔 20 秒）' : '关联并核验判题'}
-          </button>
-        </form>
-      )}
-      {!canSync && (
-        <p className="muted">
-          {capabilities?.notice || '请在官方平台查看判题记录；同步账号信息后可更新训练统计。'}
-        </p>
-      )}
+      {capabilities?.notice && <p className="muted">{capabilities.notice}</p>}
       {a.judge_data && (
         <p className="muted">
           官方结果：{a.judge_data.verdict || '判题中'} · 已过测试{' '}

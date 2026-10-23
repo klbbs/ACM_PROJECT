@@ -1,0 +1,509 @@
+import React, { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, expect, it, vi } from 'vitest'
+import { api, ApiError } from './api'
+import {
+  ProblemSubmissions,
+  allowedRecordUrl,
+  type ProblemSubmissionsProps,
+} from './problem-submissions'
+vi.mock('./api', async (original) => ({ ...(await original<object>()), api: vi.fn() }))
+const request = vi.mocked(api)
+
+const wa = {
+  submission_id: '12345',
+  account: 'demo',
+  verdict: 'WA',
+  submitted_at: 1792640000,
+  language: 'Python 3',
+  url: 'https://codeforces.com/contest/4/submission/12345',
+  attempt_id: null,
+  has_local_code: false,
+  code_verified: false,
+}
+const ac = {
+  submission_id: '12346',
+  account: 'demo',
+  verdict: 'AC',
+  submitted_at: 1792640600,
+  language: 'GNU G++20',
+  url: 'https://codeforces.com/contest/4/submission/12346',
+  attempt_id: 'att-2',
+  has_local_code: true,
+  code_verified: false,
+}
+const altItem = { ...wa, submission_id: '77777', account: 'alt', verdict: 'AC' }
+
+function listing(changes: Record<string, any> = {}) {
+  return {
+    problem_id: 'codeforces:4-A',
+    handles: ['demo', 'alt'],
+    sync_status: null,
+    items: [wa, ac],
+    ...changes,
+  }
+}
+
+function props(changes: Partial<ProblemSubmissionsProps> = {}): ProblemSubmissionsProps {
+  return {
+    problemId: 'codeforces:4-A',
+    handles: ['demo'],
+    editorCode: '',
+    active: false,
+    revision: 0,
+    aiReady: true,
+    coach: vi.fn().mockResolvedValue({ id: 'review-job' }),
+    loadCode: vi.fn().mockResolvedValue(undefined),
+    onChanged: vi.fn().mockResolvedValue(undefined),
+    onError: vi.fn(),
+    ...changes,
+  }
+}
+
+afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
+  vi.resetAllMocks()
+})
+
+async function render(
+  values: ProblemSubmissionsProps,
+  check: (host: HTMLDivElement, root: Root) => void | Promise<void>,
+) {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<ProblemSubmissions {...values} />))
+    await check(host, root)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+}
+
+const button = (host: HTMLElement, text: string) =>
+  Array.from(host.querySelectorAll('button')).find((item) =>
+    item.textContent?.includes(text),
+  ) as HTMLButtonElement | undefined
+async function click(host: HTMLElement, text: string) {
+  const target = button(host, text)
+  if (!target) throw new Error(`button ${text} not found`)
+  await act(async () => target.click())
+}
+async function pick(host: HTMLElement, value: string) {
+  await act(async () => {
+    const input = host.querySelector('select[aria-label="同步账号"]') as HTMLSelectElement
+    input.value = value
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+async function tick(ms = 1300) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+}
+
+it('only trusts official https record links', () => {
+  expect(allowedRecordUrl('codeforces:4-A', 'https://codeforces.com/contest/4/submission/1')).toBe(
+    'https://codeforces.com/contest/4/submission/1',
+  )
+  expect(allowedRecordUrl('codeforces:4-A', 'http://codeforces.com/contest/4/submission/1')).toBe(
+    undefined,
+  )
+  expect(allowedRecordUrl('codeforces:4-A', 'https://codeforces.com.evil.test/x')).toBeUndefined()
+  expect(allowedRecordUrl('codeforces:4-A', 'https://atcoder.jp/x')).toBeUndefined()
+  expect(
+    allowedRecordUrl('atcoder:abc001_1', 'https://atcoder.jp/contests/abc001/submissions/1'),
+  ).toBe('https://atcoder.jp/contests/abc001/submissions/1')
+  expect(allowedRecordUrl('nowcoder:1', 'https://ac.nowcoder.com/x')).toBe(
+    'https://ac.nowcoder.com/x',
+  )
+})
+
+it('synchronizes the current problem with no code, revision or submission id', async () => {
+  vi.useFakeTimers()
+  const values = props()
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    if (path === '/problem-submissions/codeforces%3A4-A/sync' && method === 'POST')
+      return { id: 'sync-1', status: 'queued' }
+    if (path === '/jobs')
+      return {
+        items: [
+          {
+            id: 'sync-1',
+            kind: 'wb_problem_submissions',
+            status: 'completed',
+            result: {
+              problem_id: 'codeforces:4-A',
+              handle: 'demo',
+              count: 2,
+              complete: true,
+              coverage: '本场比赛最近 600 条提交（仅保留当前题目）',
+              warnings: [],
+              message: '已同步本题提交记录',
+            },
+          },
+        ],
+      }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(values, async (host) => {
+    expect(host.textContent).toContain('本题提交记录')
+    await click(host, '同步本题提交')
+    expect(request).toHaveBeenCalledWith('/problem-submissions/codeforces%3A4-A/sync', 'POST', {
+      handle: 'demo',
+    })
+    const sent = request.mock.calls.find((call) => call[1] === 'POST')![2] as Record<string, any>
+    expect(sent).toEqual({ handle: 'demo' })
+    expect(sent).not.toHaveProperty('code')
+    expect(sent).not.toHaveProperty('revision')
+    expect(sent).not.toHaveProperty('submission_id')
+    expect(host.textContent).toContain('正在同步…')
+    await tick()
+    expect(host.textContent).toContain('已同步 2 条本题提交')
+    expect(host.textContent).toContain('查询范围：本场比赛最近 600 条提交')
+    expect(values.onChanged).toHaveBeenCalled()
+    expect(host.querySelector('input[aria-label="本次平台提交号"]')).toBeNull()
+  })
+})
+
+it('shows judge records without any local code and only when synchronized', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: [wa, ac] })
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props(), (host) => {
+    expect(host.textContent).toContain('#12345')
+    expect(host.textContent).toContain('Python 3')
+    expect(host.textContent).toContain('WA')
+    expect(host.textContent).toContain('AC')
+    expect(host.querySelectorAll('article.problem-submission')).toHaveLength(2)
+    expect(host.querySelector('article.problem-submission.is-ac')).not.toBeNull()
+    expect(host.querySelector('article.problem-submission.is-error')).not.toBeNull()
+    expect(
+      host.querySelector('a[href="https://codeforces.com/contest/4/submission/12345"]'),
+    ).not.toBeNull()
+    // Records are readable without fetching or loading any source.
+    expect(host.querySelector('pre')).toBeNull()
+  })
+})
+
+it('explains an empty range instead of pretending the sync failed', async () => {
+  vi.useFakeTimers()
+  const values = props()
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: [] })
+    if (path.endsWith('/sync')) return { id: 'sync-2', status: 'queued' }
+    if (path === '/jobs')
+      return {
+        items: [
+          {
+            id: 'sync-2',
+            status: 'completed',
+            result: {
+              count: 0,
+              complete: true,
+              coverage: '公开提交列表最近 3 页',
+              message: '在本次查询范围内没有找到本题提交；已保留历史记录',
+            },
+          },
+        ],
+      }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(values, async (host) => {
+    expect(host.textContent).toContain('还没有本题的提交记录')
+    await click(host, '同步本题提交')
+    await tick()
+    expect(host.textContent).toContain('已同步')
+    expect(host.textContent).toContain('没有找到本题提交')
+    expect(host.textContent).not.toContain('同步失败')
+    expect(values.onChanged).toHaveBeenCalled()
+  })
+})
+
+it('keeps previous records and reports partial success', async () => {
+  vi.useFakeTimers()
+  const values = props()
+  let syncs = 0
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: syncs ? [wa, ac] : [wa] })
+    if (path.endsWith('/sync')) {
+      syncs++
+      return { id: 'sync-3', status: 'queued' }
+    }
+    if (path === '/jobs')
+      return {
+        items: [
+          {
+            id: 'sync-3',
+            status: 'completed',
+            result: {
+              count: 1,
+              complete: false,
+              coverage: 'CF 本场最近 200 条',
+              warnings: ['后续分页读取失败'],
+              message: '本次查询未完整完成，已保留可读取记录和历史记录',
+              error: '平台返回 429，已停止继续读取',
+            },
+          },
+        ],
+      }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(values, async (host) => {
+    expect(host.textContent).toContain('#12345')
+    await click(host, '同步本题提交')
+    await tick()
+    expect(host.textContent).toContain('部分成功')
+    expect(host.textContent).toContain('原有记录已保留')
+    expect(host.textContent).toContain('平台返回 429')
+    expect(host.textContent).toContain('#12346')
+  })
+})
+
+it('keeps judge records when the source is unavailable', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    if (path.endsWith('/source') && method === 'POST')
+      throw new ApiError('判题记录保留；官方源码暂不可读：需要有效的登录会话', 400)
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props()
+  await render(values, async (host) => {
+    await click(host, '获取本次代码')
+    expect(request).toHaveBeenCalledWith('/problem-submissions/codeforces%3A4-A/source', 'POST', {
+      handle: 'demo',
+      submission_id: '12345',
+    })
+    expect(host.textContent).toContain('判题已同步，源码暂不可读')
+    expect(host.textContent).toContain('需要有效的登录会话')
+    expect(host.textContent).toContain('#12345')
+    expect(host.querySelector('pre')).toBeNull()
+    expect(values.onChanged).not.toHaveBeenCalled()
+  })
+})
+
+it('reuses existing code for review without touching the editor', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: [wa, { ...ac, verdict: 'WA', attempt_id: 'att-wa' }] })
+    if (path === '/workbench/attempt/att-wa')
+      return {
+        id: 'att-wa',
+        code: 'print(0)',
+        language: 'python3',
+        code_verified: false,
+      }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props()
+  await render(values, async (host, root) => {
+    const first = host.querySelectorAll('article.problem-submission')[0] as HTMLElement
+    expect(first.textContent).toContain('获取本次代码')
+    const second = Array.from(host.querySelectorAll('article.problem-submission'))[1]
+    await act(async () => {
+      ;(second.querySelector('button.secondary') as HTMLButtonElement).click()
+    })
+    expect(second.textContent).toContain('本站保存的当次记录')
+    expect(second.querySelector('pre')!.textContent).toBe('print(0)')
+    expect(values.loadCode).not.toHaveBeenCalled()
+    // A parent refresh must not discard the code the user just opened.
+    await act(async () => root.render(<ProblemSubmissions {...values} revision={1} />))
+    expect(host.querySelectorAll('article.problem-submission')[1].querySelector('pre')!.textContent).toBe(
+      'print(0)',
+    )
+    await act(async () => {
+      Array.from(second.querySelectorAll('button'))
+        .find((item) => item.textContent?.includes('分析本次错因'))!
+        .click()
+    })
+    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-wa/review')
+  })
+})
+
+it('requires explicit confirmation before replacing a non-empty draft', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: [{ ...ac, attempt_id: 'att-ac', has_local_code: true }] })
+    if (path === '/workbench/attempt/att-ac')
+      return { id: 'att-ac', code: 'int main(){}', language: 'cpp17', code_verified: false }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props({ editorCode: '// my draft' })
+  await render(values, async (host) => {
+    await act(async () => {
+      ;(host.querySelector('button.secondary') as HTMLButtonElement).click()
+    })
+    const load = button(host, '载入编辑器')!
+    expect(load.disabled).toBe(true)
+    expect(host.textContent).toContain('确认用这次提交的代码替换编辑器当前草稿')
+    const confirm = host.querySelector('.problem-submission-confirm input') as HTMLInputElement
+    await act(async () => {
+      confirm.click()
+    })
+    expect(load.disabled).toBe(false)
+    await click(host, '载入编辑器')
+    expect(values.loadCode).toHaveBeenCalledWith('int main(){}', 'cpp17')
+    expect(host.textContent).toContain('已载入编辑器')
+  })
+})
+
+it('loads directly into an empty editor and surfaces a refused replacement', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: [{ ...ac, attempt_id: 'att-ac' }] })
+    if (path === '/workbench/attempt/att-ac')
+      return { id: 'att-ac', code: 'int main(){}', language: 'cpp17', code_verified: true }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const loadCode = vi.fn().mockRejectedValue(new Error('当前草稿尚未保存成功'))
+  const values = props({ loadCode })
+  await render(values, async (host) => {
+    await act(async () => {
+      ;(host.querySelector('button.secondary') as HTMLButtonElement).click()
+    })
+    expect(button(host, '载入编辑器')!.disabled).toBe(false)
+    expect(host.textContent).toContain('代码来自官方页面并核对过本人身份')
+    await click(host, '载入编辑器')
+    expect(loadCode).toHaveBeenCalledOnce()
+    expect(host.textContent).toContain('未载入编辑器：当前草稿尚未保存成功')
+  })
+})
+
+it('never starts the same synchronization twice', async () => {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    if (path.endsWith('/sync')) {
+      await gate
+      return { id: 'sync-4', status: 'queued' }
+    }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props()
+  await render(values, async (host) => {
+    const target = button(host, '同步本题提交')!
+    await act(async () => {
+      target.click()
+      target.click()
+    })
+    await act(async () => {
+      target.click()
+    })
+    expect(request.mock.calls.filter((call) => String(call[0]).endsWith('/sync'))).toHaveLength(1)
+    await act(async () => release())
+  })
+})
+
+it('a late completion for the previous account cannot overwrite the new one', async () => {
+  vi.useFakeTimers()
+  const values = props({ handles: ['demo', 'alt'] })
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return path.includes('handle=alt')
+        ? listing({ items: [altItem] })
+        : listing({ items: [wa, ac] })
+    if (path.endsWith('/sync')) return { id: 'sync-5', status: 'queued' }
+    if (path === '/jobs')
+      return {
+        items: [
+          {
+            id: 'sync-5',
+            status: 'completed',
+            result: { count: 2, complete: true, coverage: '本场最近 600 条' },
+          },
+        ],
+      }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(values, async (host) => {
+    await click(host, '同步本题提交')
+    await pick(host, 'alt')
+    expect(host.textContent).toContain('#77777')
+    expect(host.textContent).not.toContain('#12345')
+    await tick()
+    expect(host.textContent).not.toContain('已同步 2 条本题提交')
+    expect(host.textContent).toContain('#77777')
+    expect(request).toHaveBeenCalledWith(
+      '/problem-submissions/codeforces%3A4-A?handle=alt',
+    )
+  })
+})
+
+it('reports platform cooldown and blocks repeat clicks', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    if (path.endsWith('/sync'))
+      throw new ApiError('请等待 20 秒后再次同步本题记录', 429, 20)
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props()
+  await render(values, async (host) => {
+    await click(host, '同步本题提交')
+    expect(host.textContent).toContain('请等待 20 秒后再次同步本题记录（20 秒后可重试）')
+    expect(button(host, '同步本题提交')!.disabled).toBe(true)
+    expect(host.textContent).toContain('20 秒后可重试')
+    expect(values.onError).toHaveBeenCalledWith('请等待 20 秒后再次同步本题记录')
+    // Existing records stay readable during the cooldown.
+    expect(host.textContent).toContain('#12345')
+  })
+})
+
+it('highlights the record opened from the submission list', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(
+    props({ selected: { submission_id: 12345, account: 'demo', request_id: 1 } }),
+    (host) => {
+      const rows = host.querySelectorAll('article.problem-submission')
+      expect(rows[0].className).toContain('history-selected')
+      expect(rows[1].className).not.toContain('history-selected')
+    },
+  )
+})
+
+it('requires an account before synchronization can start', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({ items: [], handles: [] })
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ handles: [] }), (host) => {
+    expect(button(host, '同步本题提交')!.disabled).toBe(true)
+    expect(host.textContent).toContain('尚未配置 Codeforces 账号')
+    expect(host.querySelector('a[href="#settings"]')).not.toBeNull()
+  })
+})
+
+it('renders a failed job as a kept-record error, not as success', async () => {
+  vi.useFakeTimers()
+  const values = props()
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    if (path.endsWith('/sync')) return { id: 'sync-6', status: 'queued' }
+    if (path === '/jobs')
+      return { items: [{ id: 'sync-6', status: 'failed', error: '平台登录已失效', result: null }] }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(values, async (host) => {
+    await click(host, '同步本题提交')
+    await tick()
+    expect(host.textContent).toContain('平台登录已失效')
+    expect(host.textContent).not.toContain('已同步')
+    expect(host.textContent).toContain('#12345')
+  })
+})
