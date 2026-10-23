@@ -62,6 +62,26 @@
   color: #8a6112;
   overflow-wrap: anywhere;
 }
+.problem-submission-analysis-note {
+  color: #747b87;
+  font-size: 0.82rem;
+  margin: 0.35rem 0 0;
+}
+.problem-submission-review {
+  border-left: 3px solid #6aa78a;
+  background: #f4faf6;
+  padding: 0.75rem 0.9rem;
+  margin-top: 0.75rem;
+  border-radius: 0 6px 6px 0;
+  overflow-wrap: anywhere;
+}
+.problem-submission-review p,
+.problem-submission-review ul {
+  margin: 0.4rem 0;
+}
+.problem-submission-review ul {
+  padding-left: 1.3rem;
+}
 .problem-submit-records {
   display: grid;
   gap: 0.7rem;

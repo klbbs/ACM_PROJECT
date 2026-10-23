@@ -179,9 +179,8 @@ class ProblemSubmissions:
                             from .workbench import Link
                             self.workbench.sync_collected(self.workbench.attempt(item['attempt_id']),
                                 Link(handle=handle, submission_id=int(item['submission_id'])))
-                        await self.workbench.automatic_review(item['attempt_id'])
                     except Exception:
-                        pass  # Optional AI failure cannot discard synchronized judge results.
+                        pass  # Optional attempt association cannot discard synchronized judge results.
             return result
         except asyncio.CancelledError:
             self.db.set(key, {**status, 'status':'interrupted', 'message':'同步中断，原记录保留；代码不会重新提交'})
@@ -200,12 +199,13 @@ class ProblemSubmissions:
         for item in self.listing(pid, handle)['items']:
             if item['submission_id'] == payload.submission_id and item.get('attempt_id'):
                 attempt = self.workbench.attempt(item['attempt_id'])
-                return {'problem_id':pid, 'submission_id':payload.submission_id, 'handle':handle,
-                        'code':attempt['code'], 'language':attempt['language'], 'attempt_id':attempt['id'],
-                        'code_verified':attempt['code_verified'], 'provenance':'official' if attempt['code_verified'] else 'local_saved'}
+                if attempt['code_verified']:
+                    return {'problem_id':pid, 'submission_id':payload.submission_id, 'handle':handle,
+                            'code':attempt['code'], 'language':attempt['language'], 'attempt_id':attempt['id'],
+                            'code_verified':True, 'provenance':'official'}
         platform = pid.split(':')[0]
         if platform not in {'codeforces', 'atcoder'}:
-            raise HTTPException(400, '判题记录可以同步；此平台暂不能自动读取官方源码，不影响查看结果')
+            raise HTTPException(400, '判题记录已保留，但此平台暂不能自动读取并核验官方源码；不会使用本地草稿替代')
         _, cookie, _ = self.remote.account(pid, handle)
         from .remote_judges import SubmissionError
         driver = self.remote._driver(platform, cookie)

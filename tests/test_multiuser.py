@@ -245,6 +245,7 @@ def test_workbench_user_isolation_and_csrf(site):
     assert request(member,'GET','/api/workbench/problem/4-A/history').json()['items'] == []
     assert request(member,'POST',f'/api/workbench/attempt/{aid}/sync',{'handle':'demo','submission_id':1}).status_code == 404
     assert request(member,'POST',f'/api/workbench/attempt/{aid}/review',{'provider':'api','model':'mock'}).status_code == 404
+    assert request(member,'POST',f'/api/workbench/attempt/{aid}/submission-review',{'provider':'api','model':'mock'}).status_code == 404
     assert request(member,'GET','/api/workbench').json()['profile']['local_snapshots'] == 0
     assert request(admin,'GET','/api/workbench').json()['profile']['local_snapshots'] == 1
 

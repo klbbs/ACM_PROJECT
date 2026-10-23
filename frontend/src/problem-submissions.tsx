@@ -5,6 +5,7 @@ import {
   FileCode2,
   LoaderCircle,
   RefreshCw,
+  Sparkles,
   XCircle,
 } from 'lucide-react'
 import { api, ApiError, date, names } from './api'
@@ -22,6 +23,9 @@ export type ProblemSubmission = {
   attempt_id?: string | null
   has_local_code?: boolean
   code_verified?: boolean
+  analysis_available?: boolean
+  analysis_disabled_reason?: string
+  submission_review?: any
 }
 
 export type SyncStatus = {
@@ -83,6 +87,16 @@ const ERROR_VERDICTS = new Set([
 const PENDING_VERDICTS = new Set(['', 'PENDING', 'TESTING', 'JUDGING', 'QUEUED'])
 const POLL_MS = 1200
 const POLL_TRIES = 75
+const REVIEW_CATEGORY_NAMES: Record<string, string> = {
+  algorithm_strategy: '算法思路/解题策略',
+  implementation_logic: '代码实现/逻辑错误',
+  boundary_conditions: '边界条件',
+  complexity_resources: '复杂度或资源超限',
+  input_output_format: '输入输出/格式',
+  language_compilation: '语言或编译问题',
+  judging_information_insufficient: '判题信息不足',
+  unable_to_determine: '无法确定',
+}
 
 export function allowedRecordUrl(problemId: string, value?: string | null): string | undefined {
   if (!value) return undefined
@@ -139,6 +153,9 @@ export function ProblemSubmissions({
   const [codeErrors, setCodeErrors] = useState<Record<string, string>>({})
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({})
   const [loaded, setLoaded] = useState<Record<string, string>>({})
+  const [analysisBusy, setAnalysisBusy] = useState<Record<string, boolean>>({})
+  const [analysisErrors, setAnalysisErrors] = useState<Record<string, string>>({})
+  const analysisRunning = useRef(new Set<string>())
 
   const mounted = useRef(true)
   const currentProblem = useRef(problemId)
@@ -249,6 +266,8 @@ export function ProblemSubmissions({
       setCodeErrors({})
       setConfirmed({})
       setLoaded({})
+      setAnalysisBusy({})
+      setAnalysisErrors({})
     }
     void load(problemId, handle)
   }, [problemId, handle, revision, key, load])
@@ -431,6 +450,8 @@ export function ProblemSubmissions({
                 attempt_id: state.attempt_id || row.attempt_id,
                 has_local_code: true,
                 code_verified: state.verified,
+                analysis_available: state.verified,
+                analysis_disabled_reason: state.verified ? '' : '源码未与本次平台提交核验，不能用于分析',
                 language: state.language || row.language,
               }
             : row,
@@ -454,18 +475,42 @@ export function ProblemSubmissions({
     }
   }
 
-  async function review(attemptId: string) {
+  async function review(item: ProblemSubmission, attemptId: string) {
     const target = problemId
     const account = handle
-    const stillCurrent = () =>
-      mounted.current && currentProblem.current === target && currentHandle.current === account
+    const submission = String(item.submission_id || '')
+    const reviewKey = `${target}\u0000${account}\u0000${submission}\u0000${attemptId}`
+    if (analysisRunning.current.has(reviewKey)) return
+    analysisRunning.current.add(reviewKey)
+    const stillCurrent = () => mounted.current && currentProblem.current === target && currentHandle.current === account
+    setAnalysisBusy((previous) => ({ ...previous, [reviewKey]: true }))
+    setAnalysisErrors((previous) => ({ ...previous, [reviewKey]: '' }))
     try {
       const result = await callbacks.current.coach(
-        `/workbench/attempt/${encodeURIComponent(attemptId)}/review`,
+        `/workbench/attempt/${encodeURIComponent(attemptId)}/submission-review`,
       )
-      if (result?.error && stillCurrent()) callbacks.current.onError(result.error)
+      if (result?.error) throw new Error(result.error)
+      if (!result?.id) throw new Error('AI 分析任务没有成功排队，请重试')
+      let finished = false
+      for (let index = 0; index < POLL_TRIES; index++) {
+        await sleep(POLL_MS)
+        if (!stillCurrent()) return
+        const jobs = await api<{ items?: Row[] }>('/jobs')
+        if (!stillCurrent()) return
+        const job = (jobs.items || []).find((row) => row.id === result.id)
+        if (!job) continue
+        if (running(job.status)) continue
+        if (job.status !== 'completed') throw new Error(job.error || 'AI 分析失败，可以重试')
+        finished = true
+        await load(target, account)
+        break
+      }
+      if (stillCurrent() && !finished) throw new Error('AI 分析仍在后台处理，请稍后重试查看记录')
     } catch (error) {
-      if (stillCurrent()) callbacks.current.onError(text(error))
+      if (stillCurrent()) setAnalysisErrors((previous) => ({ ...previous, [reviewKey]: text(error) }))
+    } finally {
+      analysisRunning.current.delete(reviewKey)
+      if (stillCurrent()) setAnalysisBusy((previous) => ({ ...previous, [reviewKey]: false }))
     }
   }
 
@@ -619,6 +664,23 @@ export function ProblemSubmissions({
             // A first source read creates the attempt; use its metadata before any
             // reload so the row can be reviewed immediately.
             const attemptId = state?.attempt_id || item.attempt_id
+            const reviewKey = `${problemId}\u0000${handle}\u0000${String(item.submission_id || '')}\u0000${attemptId || ''}`
+            const report = item.submission_review?.result
+            const analysisDisabledReason = accepted
+              ? 'AC 记录无需错因分析'
+              : pending
+                ? '判题中，结束后才能分析'
+                : !errored
+                  ? '此判题状态暂不支持错因分析'
+                  : !aiReady
+                    ? '尚未配置 AI 模型，请先在连接与设置中选择模型'
+                    : active
+                      ? '当前有工作台任务处理中，请稍后再分析'
+                      : !attemptId
+                        ? '缺少已核验的本次提交源码，请先获取本次代码'
+                        : (state ? !state.verified : item.analysis_available !== true)
+                          ? item.analysis_disabled_reason || '源码未与本次平台提交核验，请先获取本次代码'
+                          : ''
             const replacing =
               !!state && !!editorCode.trim() && editorCode.trim() !== state.code.trim()
             return (
@@ -665,7 +727,36 @@ export function ProblemSubmissions({
                             : '获取本次代码'}
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!!analysisDisabledReason || !!analysisBusy[reviewKey]}
+                    title={analysisDisabledReason || undefined}
+                    onClick={() => attemptId && void review(item, attemptId)}
+                  >
+                    {analysisBusy[reviewKey] ? <LoaderCircle size={14} className="problem-submission-spin" /> : <Sparkles size={14} />}
+                    {analysisBusy[reviewKey] ? 'AI 分析中…' : analysisErrors[reviewKey] ? '重试 AI 分析' : 'AI 分析'}
+                  </button>
                 </div>
+                {analysisDisabledReason && (
+                  <p className="problem-submission-analysis-note" title={analysisDisabledReason}>
+                    {analysisDisabledReason}
+                  </p>
+                )}
+                {analysisErrors[reviewKey] && (
+                  <p className="problem-submission-error" role="alert">{analysisErrors[reviewKey]}</p>
+                )}
+                {report && (
+                  <div className="problem-submission-review" aria-label="本次提交的 AI 分析">
+                    <strong>AI 推测 · {report.confidence === 'high' ? '较高' : report.confidence === 'medium' ? '中等' : '较低'}把握</strong>
+                    <p className="muted">这是基于当前题面、当次源码和判题信息的推测，不等同于官方解释。</p>
+                    <p><b>判题现象：</b>{report.phenomenon}</p>
+                    <p><b>主要错误类型：</b>{report.categories.map((category: string) => REVIEW_CATEGORY_NAMES[category] || category).join('、')}</p>
+                    <div><b>结合题面与代码的证据：</b><ul>{report.evidence.map((evidence: string, evidenceIndex: number) => <li key={evidenceIndex}>{evidence}</li>)}</ul></div>
+                    <div><b>建议检查方向：</b><ul>{report.check_directions.map((direction: string, directionIndex: number) => <li key={directionIndex}>{direction}</li>)}</ul></div>
+                    {report.minimal_change_idea && <p><b>最小修改思路：</b>{report.minimal_change_idea}</p>}
+                  </div>
+                )}
                 {note && (
                   <p className="problem-submission-warning" role="status">
                     {note}
@@ -691,17 +782,6 @@ export function ProblemSubmissions({
                       >
                         载入编辑器
                       </button>
-                      {!!attemptId && errored && (
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={!aiReady || active}
-                          title={aiReady ? undefined : '请先选择用于错因分析的模型'}
-                          onClick={() => void review(attemptId)}
-                        >
-                          分析本次错因（不提供答案）
-                        </button>
-                      )}
                     </div>
                     {replacing && (
                       <label className="problem-submission-confirm">

@@ -295,6 +295,12 @@ class RemoteSubmissions:
             conn.execute('''UPDATE wb_attempts SET verdict=?,judge_data=?,last_synced=?,
                 review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?''',
                 (status,encoded,now,status,encoded,aid))
+            # The immutable code is the exact payload sent by ACM Lab and the
+            # official receipt was checked against this account, problem and SID.
+            conn.execute('INSERT OR REPLACE INTO wb_official_sources VALUES(?,?,?)',
+                         (aid,intent['code_hash'],now))
+            conn.execute('INSERT OR REPLACE INTO wb_submission_source_bindings VALUES(?,?,?,?,?,?)',
+                         (aid,pid,intent['handle'],int(intent['submission_id']),intent['language'],intent['code_hash']))
             existing = conn.execute("SELECT account,data FROM submissions WHERE platform=? AND "+
                                     ('lower(account)=lower(?)' if platform=='codeforces' else 'account=?')+
                                     ' AND id=?', (platform,intent['handle'],intent['submission_id'])).fetchone()
@@ -320,12 +326,6 @@ class RemoteSubmissions:
                     await asyncio.to_thread(self.daily.complete, Complete(problem_id=attempt['problem_id']))
                 except HTTPException:
                     pass
-        if attempt['verdict'] in ERROR_VERDICTS:
-            try:
-                await self.workbench.automatic_review(aid)
-            except Exception:
-                # The official judgement remains usable if the optional AI fails.
-                pass
 
     def refresh(self, rid):
         row = self._row(rid)

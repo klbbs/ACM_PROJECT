@@ -117,7 +117,7 @@ def test_official_source_rejects_wrong_evidence(site, monkeypatch, changed):
     assert service.listing('4-A')['items'] == []
 
 
-def test_failed_ai_does_not_undo_synced_records(site, monkeypatch):
+def test_sync_does_not_automatically_analyze_submissions(site, monkeypatch):
     client, app, service, plan = site
     review = AsyncMock(side_effect=RuntimeError('SYNTHETIC SECRET'))
     monkeypatch.setattr(app.state.workbench,'automatic_review',review)
@@ -128,7 +128,7 @@ def test_failed_ai_does_not_undo_synced_records(site, monkeypatch):
     import asyncio
     result = asyncio.run(service.sync('codeforces:4-A','demo'))
     assert result['count'] == 1
-    assert review.await_count == 1
+    assert review.await_count == 0
     assert service.listing('4-A')['items'][0]['verdict'] == 'WA'
 
 

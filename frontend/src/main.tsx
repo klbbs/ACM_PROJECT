@@ -204,6 +204,7 @@ function App() {
   const [provider, setProvider] = useState('codex'),
     [model, setModel] = useState(''),
     [models, setModels] = useState<Row[]>([])
+  const [aiReadiness, setAiReadiness] = useState({ has_key: false, codex_enabled: false })
   const [reports, setReports] = useState<Row[]>([]),
     [report, setReport] = useState<Row | null>(null),
     [goal, setGoal] = useState('提升比赛稳定性，发现薄弱算法，并制定可执行的训练计划。')
@@ -234,12 +235,16 @@ function App() {
     }
   }, [])
   useEffect(() => {
-    if (auth?.authenticated)
-      api('/ai/settings')
-        .then((c) => {
-          if (!c.codex_enabled) chooseProvider('api')
-        })
-        .catch(() => {})
+    if (!auth?.authenticated) return
+    const refreshReadiness = () => api('/ai/settings')
+      .then((config) => {
+        setAiReadiness({ has_key: Boolean(config.has_key), codex_enabled: Boolean(config.codex_enabled) })
+        if (!config.codex_enabled) chooseProvider('api')
+      })
+      .catch(() => setAiReadiness({ has_key: false, codex_enabled: false }))
+    void refreshReadiness()
+    window.addEventListener('acm:ai-config-changed', refreshReadiness)
+    return () => window.removeEventListener('acm:ai-config-changed', refreshReadiness)
   }, [auth?.authenticated])
   const reload = useCallback(() => {
     setRevision((n) => n + 1)
@@ -1070,6 +1075,7 @@ function App() {
               jobs={jobs}
               run={run}
               onError={setError}
+              aiReady={!!model && (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)}
             />
           )}
           {page === 'social' && auth.multi_user && <SocialPage onOpenProblem={openProblem} />}

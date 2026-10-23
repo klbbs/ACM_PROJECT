@@ -25,6 +25,7 @@ type Props = {
   jobs: Row[]
   run: (path: string, payload?: Row) => Promise<any>
   onError: (s: string) => void
+  aiReady: boolean
 }
 
 function download(code: string, name: string) {
@@ -45,6 +46,7 @@ export function WorkbenchPage({
   run,
   onError,
   initialSelection,
+  aiReady,
 }: Props) {
   const [listCollapsed, setListCollapsed] = useState(false),
     [importHtml, setImportHtml] = useState('')
@@ -57,13 +59,6 @@ export function WorkbenchPage({
   const [saved, setSaved] = useState('尚未选择题目'),
     [busy, setBusy] = useState(false)
   const [saveTick, setSaveTick] = useState(0)
-  const [automaticCoach, setAutomaticCoach] = useState<Row>({
-    enabled: false,
-    provider: 'api',
-    model: '',
-  })
-  const [coachSettingsReady, setCoachSettingsReady] = useState(false)
-  const [coachSettingsBusy, setCoachSettingsBusy] = useState(false)
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(defaultEditorSettings)
   const [codeTemplates, setCodeTemplates] = useState<CodeTemplate[]>([])
   const [settingsReady, setSettingsReady] = useState(false),
@@ -71,16 +66,6 @@ export function WorkbenchPage({
   const [editorFullscreen, setEditorFullscreen] = useState(false)
   useEffect(() => {
     let alive = true
-    api('/workbench/coach-settings')
-      .then((value) => {
-        if (alive) {
-          setAutomaticCoach(value)
-          setCoachSettingsReady(true)
-        }
-      })
-      .catch((e) => {
-        if (alive) onError(e.message)
-      })
     api<EditorSettings>('/workbench/editor-settings')
       .then((value) => {
         if (alive) {
@@ -95,26 +80,6 @@ export function WorkbenchPage({
       alive = false
     }
   }, [])
-  const toggleAutomaticCoach = async (enabled: boolean) => {
-    const previous = automaticCoach
-    setAutomaticCoach({ ...previous, enabled })
-    setCoachSettingsBusy(true)
-    try {
-      setAutomaticCoach(
-        await api('/workbench/coach-settings', 'PUT', {
-          enabled,
-          provider,
-          model,
-          consent: enabled,
-        }),
-      )
-    } catch (e) {
-      setAutomaticCoach(previous)
-      onError(e instanceof Error ? e.message : '自动提示设置保存失败')
-    } finally {
-      setCoachSettingsBusy(false)
-    }
-  }
   useEffect(() => {
     if (!editorFullscreen) return
     const previous = document.body.style.overflow
@@ -671,37 +636,8 @@ export function WorkbenchPage({
                   该次提交代码及判题信息。调用所选服务可能计费。
                 </p>
                 <p className="muted">
-                  每次只给一个切入点，最多 8 次；先分析题目，再结合已有提示逐步引导。AI
-                  可能判断有误，仍需自己验证。
+                  AI 小提示和提交分析都由你主动点击触发。判题结束后不会自动发送代码；分析结论是推测，仍需自己验证。
                 </p>
-                <div className="wb-auto-coach">
-                  <label className="wb-consent">
-                    <input
-                      type="checkbox"
-                      aria-label="开启自动错误提示"
-                      checked={automaticCoach.enabled}
-                      disabled={
-                        !coachSettingsReady ||
-                        coachSettingsBusy ||
-                        (!automaticCoach.enabled && !model)
-                      }
-                      onChange={(e) => void toggleAutomaticCoach(e.target.checked)}
-                    />
-                    开启自动错误提示：我同意在关联或刷新官方错误结果后，将题面、当次代码及判题信息发送给
-                    AI。
-                  </label>
-                  <p className="muted" role="status">
-                    {coachSettingsBusy
-                      ? '正在保存自动提示设置…'
-                      : automaticCoach.enabled
-                        ? `已开启 · 使用 ${automaticCoach.provider} / ${automaticCoach.model}；更换模型请关闭后重新开启。`
-                        : '自动提示已关闭，不会自动发送代码。仍可手动获取小提示或分析错因。'}
-                  </p>
-                  <p className="muted">
-                    仅对已核验的
-                    WA、超时、编译或运行错误给一个排查方向，不给答案。同一份代码和判题结果只自动分析一次；关闭会取消在途分析，已发送的数据无法撤回。
-                  </p>
-                </div>
                 {data?.hints.map((h: Row, i: number) => (
                   <article className="wb-hint" key={i}>
                     <strong>
@@ -722,7 +658,7 @@ export function WorkbenchPage({
                 <h3>提交记录与错因复盘</h3>
                 <p className="muted">
                   记录同步按平台账号、题号和官方提交时间核验，不需要填写提交号，也不要求编辑器里有代码。
-                  只有取到源码的记录才能复盘；当前草稿不会被当作历史提交的代码。
+                  只有取到并核验本次源码的失败记录才能分析；当前草稿不会被当作历史提交的代码。
                 </p>
                 <ProblemSubmissions
                   key={pid}
@@ -731,7 +667,7 @@ export function WorkbenchPage({
                   editorCode={code}
                   active={active || busy}
                   revision={revision}
-                  aiReady={!!model}
+                  aiReady={aiReady}
                   coach={coach}
                   loadCode={loadCode}
                   onChanged={() => refresh()}
@@ -747,7 +683,7 @@ export function WorkbenchPage({
                         attempt={attempt}
                         capabilities={data?.capabilities}
                         active={active}
-                        aiReady={!!model}
+                        aiReady={aiReady}
                         coach={coach}
                       />
                     ))}
@@ -767,6 +703,13 @@ function Attempt({ attempt: a, capabilities, active, aiReady, coach }: any) {
   const platform = a.problem_id.split(':')[0]
   const platformName = names[platform] || platform
   const remote = platform === 'codeforces' || platform === 'atcoder'
+  const analysis = a.submission_review?.result
+  const categoryNames: Record<string, string> = {
+    algorithm_strategy: '算法思路/解题策略', implementation_logic: '代码实现/逻辑错误',
+    boundary_conditions: '边界条件', complexity_resources: '复杂度或资源超限',
+    input_output_format: '输入输出/格式', language_compilation: '语言或编译问题',
+    judging_information_insufficient: '判题信息不足', unable_to_determine: '无法确定',
+  }
   return (
     <article className="wb-attempt">
       <div className="wb-warning">
@@ -870,11 +813,23 @@ function Attempt({ attempt: a, capabilities, active, aiReady, coach }: any) {
       ].includes(a.verdict) && (
         <button
           className="secondary"
-          disabled={!aiReady || active}
-          onClick={() => coach(`/workbench/attempt/${a.id}/review`)}
+          disabled={!aiReady || active || !a.analysis_available}
+          title={!aiReady ? '尚未配置可用的 AI 模型' : !a.analysis_available ? a.analysis_disabled_reason : undefined}
+          onClick={() => coach(`/workbench/attempt/${a.id}/submission-review`)}
         >
-          分析本次错因（不提供答案）
+          AI 分析本次提交
         </button>
+      )}
+      {analysis && (
+        <div className="wb-hint">
+          <strong>AI 推测 · {analysis.confidence === 'high' ? '较高' : analysis.confidence === 'medium' ? '中等' : '较低'}把握</strong>
+          <p className="muted">推测不等同官方解释。</p>
+          <p><b>判题现象：</b>{analysis.phenomenon}</p>
+          <p><b>主要错误类型：</b>{analysis.categories.map((category: string) => categoryNames[category] || category).join('、')}</p>
+          <p><b>证据：</b>{analysis.evidence.join('；')}</p>
+          <p><b>检查方向：</b>{analysis.check_directions.join('；')}</p>
+          {analysis.minimal_change_idea && <p><b>最小修改思路：</b>{analysis.minimal_change_idea}</p>}
+        </div>
       )}
       {a.review && (
         <div className="wb-hint">

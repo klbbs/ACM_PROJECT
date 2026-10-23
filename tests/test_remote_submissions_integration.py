@@ -172,7 +172,7 @@ def test_duplicate_executor_cannot_send_a_source_post_twice(remote_site, monkeyp
     assert len(plan['sent']) == 1
 
 
-def test_saved_source_stays_immutable_and_ai_failure_preserves_official_verdict(remote_site):
+def test_saved_source_stays_immutable_without_automatic_ai_review(remote_site):
     request, owner, _, child, plan = remote_site
     plan['entered'], plan['release'] = threading.Event(), threading.Event()
     child.state.workbench.automatic_review = AsyncMock(side_effect=RuntimeError(SOURCE+COOKIE))
@@ -190,6 +190,7 @@ def test_saved_source_stays_immutable_and_ai_failure_preserves_official_verdict(
     attempt = child.state.workbench.attempt(row['attempt_id'])
     assert attempt['code'] == SOURCE and attempt['verdict'] == 'WA'
     assert attempt['judge_data']['source'] == 'official_remote_submission'
+    child.state.workbench.automatic_review.assert_not_awaited()
     for response in (request(owner, 'GET', '/api/jobs'),
                      request(owner, 'GET', '/api/remote-submissions/'+row['id'])):
         assert_public(response)

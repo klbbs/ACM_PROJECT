@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urljoin
 from bs4 import BeautifulSoup
 from requests.utils import default_user_agent
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import HTTPException, Query
 from ojcrawler.http import Client
 from ojcrawler.models import CrawlError
@@ -26,10 +26,16 @@ CREATE TABLE IF NOT EXISTS wb_problems (id TEXT PRIMARY KEY,data TEXT NOT NULL,f
 CREATE TABLE IF NOT EXISTS wb_drafts (problem_id TEXT PRIMARY KEY,language TEXT NOT NULL,code TEXT NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_hints (problem_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(problem_id,seq));
 CREATE TABLE IF NOT EXISTS wb_attempts (id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,language TEXT NOT NULL,code TEXT NOT NULL,code_hash TEXT NOT NULL,created_at INTEGER NOT NULL,handle TEXT,submission_id INTEGER,verdict TEXT NOT NULL DEFAULT 'UNLINKED',judge_data TEXT,review TEXT,last_synced INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS wb_submission_reviews (attempt_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_submission_code_claims (attempt_id TEXT PRIMARY KEY,code_hash TEXT NOT NULL,confirmed_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wb_official_sources (attempt_id TEXT PRIMARY KEY,code_hash TEXT NOT NULL,fetched_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS wb_submission_source_bindings (attempt_id TEXT PRIMARY KEY,problem_id TEXT NOT NULL,handle TEXT NOT NULL,submission_id INTEGER NOT NULL,language TEXT NOT NULL,code_hash TEXT NOT NULL);
 CREATE TRIGGER IF NOT EXISTS wb_submission_code_claims_cleanup AFTER DELETE ON wb_attempts
 BEGIN DELETE FROM wb_submission_code_claims WHERE attempt_id=OLD.id; END;
+CREATE TRIGGER IF NOT EXISTS wb_submission_reviews_cleanup AFTER DELETE ON wb_attempts
+BEGIN DELETE FROM wb_submission_reviews WHERE attempt_id=OLD.id; END;
+CREATE TRIGGER IF NOT EXISTS wb_submission_source_bindings_cleanup AFTER DELETE ON wb_attempts
+BEGIN DELETE FROM wb_submission_source_bindings WHERE attempt_id=OLD.id; END;
 CREATE TABLE IF NOT EXISTS wb_auto_reviews (fingerprint TEXT PRIMARY KEY,created_at INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS wb_remote_platform_case ON wb_attempts(substr(problem_id,1,instr(problem_id,':')-1),CASE WHEN problem_id LIKE 'codeforces:%' THEN lower(handle) ELSE handle END,submission_id) WHERE submission_id IS NOT NULL;
 DROP INDEX IF EXISTS wb_remote;
@@ -177,6 +183,22 @@ class Review(Strict):
     confidence: Literal['low', 'medium', 'high']
 
 
+REVIEW_CATEGORIES = Literal[
+    'algorithm_strategy', 'implementation_logic', 'boundary_conditions',
+    'complexity_resources', 'input_output_format', 'language_compilation',
+    'judging_information_insufficient', 'unable_to_determine',
+]
+
+
+class SubmissionReview(Strict):
+    categories: list[REVIEW_CATEGORIES] = Field(min_length=1, max_length=8)
+    phenomenon: str = Field(min_length=1, max_length=500)
+    evidence: list[Annotated[str, Field(max_length=500)]] = Field(min_length=1, max_length=8)
+    check_directions: list[Annotated[str, Field(max_length=300)]] = Field(min_length=1, max_length=8)
+    minimal_change_idea: str | None = Field(default=None, max_length=500)
+    confidence: Literal['low', 'medium', 'high']
+
+
 def training_evidence(db):
     with db.connect() as conn:
         attempts = conn.execute('SELECT problem_id,verdict,review FROM wb_attempts').fetchall()
@@ -203,8 +225,13 @@ class Workbench:
     def __init__(self, db, ai, accounts):
         self.db, self.ai, self.accounts = db, ai, accounts
         self.lock = asyncio.Lock()
+        self.submission_review_pending = set()
         with db.connect() as conn:
             conn.executescript(DDL)
+            conn.execute('''INSERT OR IGNORE INTO wb_submission_source_bindings
+                SELECT a.id,a.problem_id,a.handle,a.submission_id,a.language,a.code_hash
+                FROM wb_attempts a JOIN wb_official_sources s ON s.attempt_id=a.id AND s.code_hash=a.code_hash
+                WHERE a.handle IS NOT NULL AND a.submission_id IS NOT NULL AND a.language IS NOT NULL''')
 
     def coach_settings(self):
         value = self.db.get('automatic_coach', {})
@@ -278,6 +305,12 @@ class Workbench:
             with self.db.connect() as conn:
                 conn.execute('UPDATE wb_problems SET data=? WHERE id=? AND data=?', (json.dumps(upgraded_statement, ensure_ascii=False), pid, statement['data']))
         accounts = self.accounts.document().get('accounts', [])
+        attempt_views = []
+        for row in attempts:
+            attempt = self.decode(row)
+            attempt['analysis_available'], attempt['analysis_disabled_reason'] = self.submission_review_availability(attempt)
+            attempt['submission_review'] = self.saved_submission_review(attempt)
+            attempt_views.append(attempt)
         caps = capabilities(pid, accounts)
         # Linking is independent of recommendation eligibility and login-check expiry.
         caps['handles'] = [a['handle'] for a in accounts if a.get('platform') == caps['platform']]
@@ -290,7 +323,7 @@ class Workbench:
                 'fetched_at': statement['fetched_at'] if statement else None,
                 'fetch_status': self.db.get('statement_status:'+pid, {}),
                 'draft': dict(draft) if draft else {'language': 'cpp17', 'code': '', 'revision': 0},
-                'hints': [json.loads(r['data']) for r in hints], 'attempts': [self.decode(r) for r in attempts]}
+                'hints': [json.loads(r['data']) for r in hints], 'attempts': attempt_views}
 
     def draft(self, pid, data):
         pid = normalize(pid)
@@ -401,16 +434,132 @@ class Workbench:
             item.update(attempt_id=row['id'], has_local_code=True, code_verified=verified,
                         code_provenance='official' if verified else 'local_unverified', language=row['language'],
                         review=json.loads(row['review']) if row['review'] and item['verdict'] == row['verdict'] else None)
+            decoded_attempt = self.decode(row)
+            if item['verdict'] != decoded_attempt['verdict']:
+                decoded_attempt['verdict'] = item['verdict']
+            item['analysis_available'], item['analysis_disabled_reason'] = self.submission_review_availability(
+                decoded_attempt, item['verdict'])
+            item['submission_review'] = self.saved_submission_review(decoded_attempt)
             merged[key] = item
+        for item in merged.values():
+            item.setdefault('analysis_available', False)
+            item.setdefault('analysis_disabled_reason', '尚未读取并验证本次提交源码')
+            item.setdefault('submission_review', None)
         return {'problem_id': pid, 'items': sorted(merged.values(), key=lambda row: row['submitted_at'], reverse=True)[:200]}
+
+    def _review_fingerprint(self, attempt, statement):
+        judge = official_judge(attempt.get('judge_data'))
+        statement_hash = hashlib.sha256(json.dumps(statement, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        return hashlib.sha256(json.dumps([
+            attempt['problem_id'], attempt['handle'], attempt['submission_id'],
+            attempt['code_hash'], attempt['language'], attempt['verdict'], judge, statement_hash,
+        ], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+    def submission_review_availability(self, attempt, verdict=None):
+        verdict = verdict or attempt['verdict']
+        if verdict == 'AC':
+            return False, '已通过的提交无需错因分析'
+        if verdict in {'', 'UNLINKED', 'PENDING', 'TESTING', 'JUDGING', 'QUEUED', 'PRETESTS_PASSED'}:
+            return False, '判题尚未结束或没有可分析的判题结果'
+        if verdict not in ERROR_VERDICTS:
+            return False, '此判题结果暂不支持错因分析'
+        if not attempt.get('submission_id') or not attempt.get('handle') or not attempt.get('judge_data'):
+            return False, '缺少已关联的账号、提交号或官方判题信息'
+        if not attempt.get('language'):
+            return False, '缺少本次提交使用的语言'
+        if hashlib.sha256(attempt['code'].encode()).hexdigest() != attempt['code_hash']:
+            return False, '提交源码校验失败，不能用于 AI 分析'
+        platform = attempt['problem_id'].split(':', 1)[0]
+        account_matches = any(
+            account.get('platform') == platform and
+            (account.get('handle', '').casefold() == attempt['handle'].casefold()
+             if platform == 'codeforces' else account.get('handle') == attempt['handle'])
+            for account in self.accounts.document().get('accounts', [])
+        )
+        if not account_matches:
+            return False, '当前账号设置中找不到此提交对应的平台账号'
+        with self.db.connect() as conn:
+            source = conn.execute('SELECT * FROM wb_submission_source_bindings WHERE attempt_id=?', (attempt['id'],)).fetchone()
+            statement = conn.execute('SELECT 1 FROM wb_problems WHERE id=?', (attempt['problem_id'],)).fetchone()
+        if not source or any(source[key] != attempt[value] for key, value in (
+            ('problem_id', 'problem_id'), ('handle', 'handle'), ('submission_id', 'submission_id'),
+            ('language', 'language'), ('code_hash', 'code_hash'))):
+            return False, '尚未读取并验证本次提交源码；请先获取本次代码'
+        if not statement:
+            return False, '缺少该题题面，请先获取题面'
+        return True, ''
+
+    def saved_submission_review(self, attempt):
+        with self.db.connect() as conn:
+            row = conn.execute('SELECT fingerprint,data FROM wb_submission_reviews WHERE attempt_id=?', (attempt['id'],)).fetchone()
+            statement = conn.execute('SELECT data FROM wb_problems WHERE id=?', (attempt['problem_id'],)).fetchone()
+        if not row or not statement:
+            return None
+        if row['fingerprint'] != self._review_fingerprint(attempt, json.loads(statement['data'])):
+            return None
+        return json.loads(row['data'])
+
+    def submission_review_snapshot(self, aid):
+        attempt = self.attempt(aid)
+        available, reason = self.submission_review_availability(attempt)
+        if not available:
+            raise AIError(reason)
+        with self.db.connect() as conn:
+            statement_row = conn.execute('SELECT data FROM wb_problems WHERE id=?', (attempt['problem_id'],)).fetchone()
+        statement = json.loads(statement_row['data'])
+        return attempt, statement, self._review_fingerprint(attempt, statement)
+
+    async def analyze_submission(self, aid, config):
+        attempt, statement, fingerprint = self.submission_review_snapshot(aid)
+        if aid in self.submission_review_pending:
+            raise AIError('此提交的 AI 分析正在进行中')
+        self.submission_review_pending.add(aid)
+        try:
+            data = {
+                'problem': statement,
+                'submission': {
+                    'submission_id': str(attempt['submission_id']),
+                    'account': attempt['handle'],
+                    'source_code': attempt['code'],
+                    'source_code_sha256': attempt['code_hash'],
+                    'source_provenance': '已核验的本次提交源码',
+                    'language': attempt['language'],
+                    'verdict': attempt['verdict'],
+                    'judge_result': attempt['judge_data'],
+                },
+            }
+            completed = await self.ai.complete('submission_review', config.provider, config.model, data, SubmissionReview)
+            serialized = json.dumps(completed.data, ensure_ascii=False)
+            if re.search(r'```|#include|\bint\s+main\s*\(|\bdef\s+\w+\s*\(|\bfor\s*\(|\bwhile\s*\(|public\s+static', serialized):
+                raise AIError('AI 输出疑似包含完整代码，已拦截；可以重试分析')
+            with self.db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                current = conn.execute('SELECT * FROM wb_attempts WHERE id=?', (aid,)).fetchone()
+                current_statement = conn.execute('SELECT data FROM wb_problems WHERE id=?', (attempt['problem_id'],)).fetchone()
+                if not current or not current_statement:
+                    raise AIError('提交或题面已变化，请重新分析')
+                current_attempt = self.decode(current)
+                current_data = json.loads(current_statement['data'])
+                current_available, current_reason = self.submission_review_availability(current_attempt)
+                if not current_available or self._review_fingerprint(current_attempt, current_data) != fingerprint:
+                    raise AIError(current_reason or '提交源码、语言、判题结果或题面已变化，请重新分析')
+                result = {'result': completed.data, 'provenance': completed.provenance,
+                          'fingerprint': fingerprint, 'analyzed_at': int(time.time())}
+                conn.execute('INSERT INTO wb_submission_reviews VALUES(?,?,?,?) ON CONFLICT(attempt_id) DO UPDATE SET fingerprint=excluded.fingerprint,data=excluded.data,created_at=excluded.created_at',
+                             (aid, fingerprint, json.dumps(result, ensure_ascii=False), result['analyzed_at']))
+            return {'attempt_id': aid, 'submission_id': str(attempt['submission_id']), 'analysis': result}
+        finally:
+            self.submission_review_pending.discard(aid)
 
     def decode(self, row):
         result = dict(row)
         for key in ('judge_data', 'review'):
             result[key] = json.loads(result[key]) if result[key] else None
         with self.db.connect() as conn:
-            source = conn.execute('SELECT code_hash FROM wb_official_sources WHERE attempt_id=?', (row['id'],)).fetchone()
-        result['code_verified'] = bool(source and source['code_hash'] == row['code_hash'])
+            source = conn.execute('SELECT * FROM wb_submission_source_bindings WHERE attempt_id=?', (row['id'],)).fetchone()
+        result['code_verified'] = bool(source and all(source[key] == result[value] for key, value in (
+            ('problem_id', 'problem_id'), ('handle', 'handle'), ('submission_id', 'submission_id'),
+            ('language', 'language'), ('code_hash', 'code_hash'))))
         return result
 
     def attempt(self, aid):
@@ -717,6 +866,15 @@ def register(app, service, jobs, daily=None):
         attempt = service.attempt(aid)
         return jobs.start('wb_review', {'aid': aid, 'pid': attempt['problem_id'], **data.model_dump()})
 
+    @app.post('/api/workbench/attempt/{aid}/submission-review')
+    async def submission_review(aid: str, data: Coach):
+        service.submission_review_snapshot(aid)
+        if data.provider == 'api' and not service.ai.key():
+            raise HTTPException(400, '尚未配置 AI API Key，请先在连接与设置完成 AI 配置')
+        if data.provider == 'codex' and (not service.ai.codex or not getattr(service.ai.codex, 'enabled', True)):
+            raise HTTPException(400, '官方 GPT 通道尚未登录或不可用，请配置 AI API')
+        return jobs.start('wb_submission_review', {'aid': aid, **data.model_dump()})
+
     async def run(kind, payload):
         if kind == 'wb_statement': return await asyncio.to_thread(service.statement, payload['pid'])
         if kind == 'wb_sync':
@@ -737,12 +895,9 @@ def register(app, service, jobs, daily=None):
                         await asyncio.to_thread(daily.complete, Complete(problem_id=attempt['problem_id']))
                     except Exception:
                         result['checkin_error'] = '判题已保存，但签到未更新；请刷新每日任务或同步平台记录'
-            if result['verdict'] in ERROR_VERDICTS:
-                try:
-                    result.update(await service.automatic_review(payload['aid']))
-                except Exception:
-                    result['review_error'] = '判题已保存，AI 复盘未完成，请手动重试'
             return result
+        if kind == 'wb_submission_review':
+            return await service.analyze_submission(payload['aid'], Coach.model_validate({k: payload[k] for k in ('provider', 'model')}))
         if kind in {'wb_hint', 'wb_review'}:
             return await service.coach(payload['pid'], Coach.model_validate({k: payload[k] for k in ('provider', 'model')}), payload.get('aid'))
         raise AIError('未知工作台任务')

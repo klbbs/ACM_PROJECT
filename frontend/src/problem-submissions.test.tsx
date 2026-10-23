@@ -130,6 +130,59 @@ it('only trusts official https record links', () => {
   )
 })
 
+it('shows clear disabled reasons for AC, judging and missing source', async () => {
+  request.mockImplementation(async (path) => {
+    if (path.startsWith('/problem-submissions/'))
+      return listing({ items: [
+        { ...ac, submission_id: 'ac-row', analysis_available: false },
+        { ...wa, submission_id: 'pending-row', verdict: 'TESTING', analysis_available: false },
+        { ...wa, submission_id: 'source-row', attempt_id: 'att-source', analysis_available: false,
+          analysis_disabled_reason: '尚未读取并验证本次提交源码；请先获取本次代码' },
+      ] })
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ aiReady: true }), async (host) => {
+    const records = Array.from(host.querySelectorAll('article.problem-submission'))
+    const analyses = records.map((record) => record.querySelector('button[title]') as HTMLButtonElement)
+    expect(analyses.every((item) => item.disabled)).toBe(true)
+    expect(records[0].textContent).toContain('AC 记录无需错因分析')
+    expect(records[1].textContent).toContain('判题中，结束后才能分析')
+    expect(records[2].textContent).toContain('先获取本次代码')
+  })
+})
+
+it('explains when the AI model is not configured', async () => {
+  request.mockImplementation(async (path) => {
+    if (path.startsWith('/problem-submissions/'))
+      return listing({ items: [{ ...wa, attempt_id: 'att-model', analysis_available: true }] })
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ aiReady: false }), async (host) => {
+    const record = host.querySelector('article.problem-submission')!
+    expect(button(host, 'AI 分析')!.disabled).toBe(true)
+    expect(record.textContent).toContain('尚未配置 AI 模型')
+  })
+})
+
+it('allows retry after an AI job fails', async () => {
+  vi.useFakeTimers()
+  const coach = vi.fn().mockResolvedValue({ id: 'review-job' })
+  request.mockImplementation(async (path) => {
+    if (path.startsWith('/problem-submissions/'))
+      return listing({ items: [{ ...wa, attempt_id: 'att-wa', code_verified: true, analysis_available: true }] })
+    if (path === '/jobs') return { items: [{ id: 'review-job', status: 'failed', error: 'AI 暂时不可用' }] }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ coach }), async (host) => {
+    await click(host, 'AI 分析')
+    await tick(1200)
+    expect(host.textContent).toContain('AI 暂时不可用')
+    expect(button(host, '重试 AI 分析')).toBeTruthy()
+    await click(host, '重试 AI 分析')
+    expect(coach).toHaveBeenCalledTimes(2)
+  })
+})
+
 it('synchronizes the current problem with no code, revision or submission id', async () => {
   vi.useFakeTimers()
   const values = props()
@@ -298,41 +351,21 @@ it('keeps judge records when the source is unavailable', async () => {
   })
 })
 
-it('reuses existing code for review without touching the editor', async () => {
+it('analyzes the linked submission directly without loading it into the editor', async () => {
+  vi.useFakeTimers()
   request.mockImplementation(async (path, method) => {
     if (path.startsWith('/problem-submissions/') && method !== 'POST')
-      return listing({ items: [wa, { ...ac, verdict: 'WA', attempt_id: 'att-wa' }] })
-    if (path === '/workbench/attempt/att-wa')
-      return {
-        id: 'att-wa',
-        code: 'print(0)',
-        language: 'python3',
-        code_verified: false,
-      }
+      return listing({ items: [wa, { ...ac, verdict: 'WA', attempt_id: 'att-wa', code_verified: true, analysis_available: true }] })
+    if (path === '/jobs') return { items: [{ id: 'review-job', status: 'completed' }] }
     throw new Error(`Unexpected API ${path}`)
   })
   const values = props()
   await render(values, async (host, root) => {
-    const first = host.querySelectorAll('article.problem-submission')[0] as HTMLElement
-    expect(first.textContent).toContain('获取本次代码')
-    const second = Array.from(host.querySelectorAll('article.problem-submission'))[1]
-    await act(async () => {
-      ;(second.querySelector('button.secondary') as HTMLButtonElement).click()
-    })
-    expect(second.textContent).toContain('本站保存的当次记录')
-    expect(second.querySelector('pre')!.textContent).toBe('print(0)')
+    const second = Array.from(host.querySelectorAll('article.problem-submission'))[1] as HTMLElement
+    await click(second, 'AI 分析')
+    await tick(1200)
     expect(values.loadCode).not.toHaveBeenCalled()
-    // A parent refresh must not discard the code the user just opened.
-    await act(async () => root.render(<ProblemSubmissions {...values} revision={1} />))
-    expect(host.querySelectorAll('article.problem-submission')[1].querySelector('pre')!.textContent).toBe(
-      'print(0)',
-    )
-    await act(async () => {
-      Array.from(second.querySelectorAll('button'))
-        .find((item) => item.textContent?.includes('分析本次错因'))!
-        .click()
-    })
-    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-wa/review')
+    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-wa/submission-review')
   })
 })
 
@@ -550,6 +583,7 @@ it('adopts an account discovered by the listing and keeps the chosen one', async
 })
 
 it('a first source read makes that record reviewable without any reload', async () => {
+  vi.useFakeTimers()
   request.mockImplementation(async (path, method) => {
     if (path.startsWith('/problem-submissions/') && method !== 'POST')
       // Deliberately stale: the record still has no attempt on every reload.
@@ -565,21 +599,23 @@ it('a first source read makes that record reviewable without any reload', async 
         code_verified: true,
         provenance: 'official',
       }
+    if (path === '/jobs') return { items: [{ id: 'review-job', status: 'completed' }] }
     throw new Error(`Unexpected API ${path}`)
   })
   const values = props()
   await render(values, async (host, root) => {
-    expect(button(host, '分析本次错因（不提供答案）')).toBeUndefined()
+    expect(button(host, 'AI 分析')).toBeTruthy()
     await click(host, '获取本次代码')
     const card = host.querySelector('article.problem-submission') as HTMLElement
     expect(card.querySelector('pre')!.textContent).toBe('print(0)')
     // The attempt id from the first read is usable immediately.
-    expect(button(host, '分析本次错因（不提供答案）')!.disabled).toBe(false)
+    expect(button(host, 'AI 分析')!.disabled).toBe(false)
     await act(async () => root.render(<ProblemSubmissions {...values} revision={1} />))
     await settle()
-    expect(button(host, '分析本次错因（不提供答案）')).toBeTruthy()
-    await click(host, '分析本次错因（不提供答案）')
-    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-new/review')
+    expect(button(host, 'AI 分析')).toBeTruthy()
+    await click(host, 'AI 分析')
+    await tick(1200)
+    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-new/submission-review')
   })
 })
 
