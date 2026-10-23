@@ -412,3 +412,234 @@ def test_unbound_wechat_scan_does_not_replace_existing_account_credentials(tmp_p
         finally:
             value.close()
     asyncio.run(run())
+
+
+def _synthetic_response(request, body, status=200, mime='application/json'):
+    """A local adapter response; no real QR request or credentials are used."""
+    response = requests.Response()
+    response.status_code = status
+    response.request = request
+    response.url = request.url
+    response.headers['Content-Type'] = mime
+    response._content = body
+    response._content_consumed = True
+    return response
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'connection', 'http429', 'http503', 'json', 'unexpected', 'typed'])
+def test_poll_temporary_failure_preserves_flow_and_retries_without_leaking_details(tmp_path, monkeypatch, caplog, failure):
+    async def run():
+        value = manager(tmp_path)
+        value.session_factory = AnonymousUpstream
+        started = await value.start('owner', True)
+        flow = value.flow
+        session, deadline, ticket = flow['session'], flow['deadline'], flow['ticket']
+        timer = flow['timer']
+        send = session.adapter.send
+        interrupted = False
+
+        def flaky_send(request, **kwargs):
+            nonlocal interrupted
+            if '/wechat_mp_status?' in request.url and not interrupted:
+                interrupted = True
+                if failure == 'timeout':
+                    raise requests.Timeout('PRIVATE-TICKET PRIVATE-COOKIE')
+                if failure == 'connection':
+                    raise requests.ConnectionError('PRIVATE-TICKET PRIVATE-COOKIE')
+                if failure == 'unexpected':
+                    raise RuntimeError('PRIVATE-TICKET PRIVATE-COOKIE')
+                if failure == 'typed':
+                    from acmweb.nowcoder_qr import QRUpstreamError
+                    raise QRUpstreamError('PRIVATE-TICKET PRIVATE-COOKIE', upstream_status=999999)
+                if failure == 'json':
+                    return _synthetic_response(request, b'PRIVATE-TICKET invalid JSON PRIVATE-COOKIE')
+                return _synthetic_response(request, b'PRIVATE-TICKET PRIVATE-COOKIE',
+                                           status=429 if failure == 'http429' else 503)
+            return send(request, **kwargs)
+
+        monkeypatch.setattr(session.adapter, 'send', flaky_send)
+        try:
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'waiting' and result['retryable'] is True
+            assert isinstance(result['reason'], str) and result['reason']
+            assert result['poll_after_seconds'] == 5
+            if failure in {'http429', 'http503'}:
+                assert result['reason'] == 'upstream_http'
+                assert result['upstream_status'] == (429 if failure == 'http429' else 503)
+            elif failure in {'typed', 'unexpected'}:
+                assert result['reason'] == 'status_check_unavailable'
+                assert result['upstream_status'] is None
+            assert 'PRIVATE' not in str(result)
+            assert value.flow is flow and flow['session'] is session
+            assert flow['deadline'] == deadline and flow['ticket'] == ticket
+            assert flow['timer'] is timer
+            assert not flow['busy'] and not value.accounts.path.exists()
+            assert not any(hasattr(session, name) for name in (
+                '_acm_qr_guard', '_acm_qr_confirm', '_acm_qr_observe'))
+            flow['last_poll'] = 0
+            retried = await value.poll('owner', started['login_id'])
+            assert retried['status'] == 'verified' and retried['verified_uid'] == '123'
+        finally:
+            value.close()
+    asyncio.run(run())
+    assert 'PRIVATE' not in caplog.text
+
+
+def test_busy_network_pool_does_not_discard_valid_qr_flow(tmp_path, monkeypatch):
+    import acmweb.nowcoder_qr as qr
+
+    class BusyNetwork:
+        def acquire(self, blocking): return False
+        def release(self): pytest.fail('an unacquired network slot must not be released')
+
+    async def run():
+        value = manager(tmp_path)
+        started = await value.start('owner', True)
+        flow = value.flow
+        network = qr.NETWORK
+        monkeypatch.setattr(qr, 'NETWORK', BusyNetwork())
+        try:
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'waiting' and result['retryable'] is True
+            assert result['reason'] == 'network_busy'
+            assert value.flow is flow and not flow['busy']
+            assert not value.accounts.path.exists()
+            monkeypatch.setattr(qr, 'NETWORK', network)
+            flow['last_poll'] = 0
+            flow['session'].result = {'code': 0, 'data': None}
+            assert (await value.poll('owner', started['login_id']))['status'] == 'verified'
+        finally:
+            value.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'http503', 'anonymous'])
+def test_confirmed_scan_retries_only_identity_and_keeps_session_cookie(tmp_path, monkeypatch, failure):
+    async def run():
+        value = manager(tmp_path)
+        value.session_factory = AnonymousUpstream
+        started = await value.start('owner', True)
+        flow = value.flow
+        session, deadline = flow['session'], flow['deadline']
+        timer = flow['timer']
+        send = session.adapter.send
+        calls = []
+        home_failed = False
+
+        def delayed_identity(request, **kwargs):
+            nonlocal home_failed
+            calls.append(request.url)
+            if request.url == ORIGIN + '/' and not home_failed:
+                home_failed = True
+                if failure == 'timeout':
+                    raise requests.Timeout('PRIVATE-COOKIE PRIVATE-TICKET')
+                if failure == 'http503':
+                    return _synthetic_response(request, b'PRIVATE-COOKIE upstream busy', status=503)
+                return _synthetic_response(request, b'<script>window.isLogin = false;</script>', mime='text/html')
+            return send(request, **kwargs)
+
+        monkeypatch.setattr(session.adapter, 'send', delayed_identity)
+        try:
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'authorizing' and result['retryable'] is True
+            assert result['reason']
+            assert 'PRIVATE' not in str(result)
+            assert value.flow is flow and flow['confirmed'] is True
+            assert flow['deadline'] == deadline and flow['session'] is session
+            assert flow['timer'] is timer
+            assert session.cookies.get('test_session') == 'EXCHANGED'
+            assert not value.accounts.path.exists()
+            flow['last_poll'] = 0
+            verified = await value.poll('owner', started['login_id'])
+            assert verified['status'] == 'verified' and verified['verified_uid'] == '123'
+            assert calls == [
+                ORIGIN + '/nccommon/oauth2/login/wechat_mp_status?ticket=synthetic-ticket',
+                ORIGIN + '/', ORIGIN + '/',
+            ]
+            assert value.accounts.document()['accounts'][0]['cookie'] == 'test_session=EXCHANGED'
+        finally:
+            value.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('data', [None, {}, {'callBack': 'https://attacker.invalid/'}])
+def test_legal_success_payload_marks_confirmation_before_identity_request(data):
+    session = Upstream()
+    session.result = {'code': 0, 'data': data}
+    confirmations = []
+    session._acm_qr_confirm = lambda: confirmations.append(True)
+    original_get = session.get
+
+    def get(url, **kwargs):
+        if url == ORIGIN + '/':
+            assert confirmations == [True]
+        return original_get(url, **kwargs)
+
+    session.get = get
+    try:
+        assert _poll(session, 'synthetic-ticket')[0] == 'verified'
+        assert confirmations == [True]
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize('payload', [
+    {'code': 1, 'msg': '二维码未被扫描'}, {'code': 0}, {'code': '0', 'data': {}},
+    {'code': 0, 'data': []}, {'code': 0, 'data': {'needComplete': True}},
+])
+def test_pending_malformed_or_incomplete_status_never_marks_confirmation(payload):
+    session = Upstream()
+    session.result = payload
+    confirmations = []
+    session._acm_qr_confirm = lambda: confirmations.append(True)
+    try:
+        assert _poll(session, 'synthetic-ticket')[0] != 'verified'
+        assert confirmations == []
+    finally:
+        session.close()
+
+
+def test_expired_identity_pending_flow_preserves_original_account_credentials(tmp_path):
+    from acmweb.accounts import AccountList
+
+    async def run():
+        value = manager(tmp_path)
+        value.accounts.save(AccountList(items=[{'platform': 'nowcoder', 'handle': '123',
+                                               'cookie': 'sid=KEEP-SYNTHETIC'}]))
+        before = value.accounts.path.read_bytes()
+        value.session_factory = AnonymousUpstream
+        started = await value.start('owner', True)
+        flow = value.flow
+        flow['session'].adapter.home_page = b'<script>window.isLogin = false;</script>'
+        try:
+            pending = await value.poll('owner', started['login_id'])
+            assert pending['status'] == 'authorizing' and flow['confirmed'] is True
+            assert value.accounts.path.read_bytes() == before
+            flow['deadline'] = 0
+            expired = await value.poll('owner', started['login_id'])
+            assert expired['status'] == 'expired'
+            assert expired['reason'] == 'identity_verification_timeout'
+            assert value.flow is None
+            assert value.accounts.path.read_bytes() == before
+        finally:
+            value.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('payload', [
+    {'code': 1, 'msg': 'ticket长度错误'}, {'code': 0}, {'code': '0', 'data': {}},
+    {'code': 0, 'data': []}, {'code': 0, 'data': {'needComplete': True}},
+])
+def test_explicit_rejected_or_malformed_status_terminates_without_writing_credentials(tmp_path, payload):
+    async def run():
+        value = manager(tmp_path)
+        started = await value.start('owner', True)
+        value.flow['session'].result = payload
+        try:
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'failed' and result['retryable'] is False
+            assert value.flow is None
+            assert not value.accounts.path.exists()
+        finally:
+            value.close()
+    asyncio.run(run())

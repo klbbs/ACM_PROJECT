@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from './api'
+import { api, ApiError } from './api'
 import './nowcoder-qr-login.css'
 
 type Login = {
@@ -10,6 +10,7 @@ type Login = {
   message?: string
   poll_after_seconds?: number
   verified_uid?: string
+  retryable?: boolean
 }
 type Props = { handles?: string[]; onBound: () => void | Promise<void> }
 
@@ -21,11 +22,16 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
   const generation = useRef(0)
   const active = useRef<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const deadlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bound = useRef(onBound)
   bound.current = onBound
   function clearTimer() {
     if (timer.current !== null) clearTimeout(timer.current)
     timer.current = null
+  }
+  function clearDeadline() {
+    if (deadlineTimer.current !== null) clearTimeout(deadlineTimer.current)
+    deadlineTimer.current = null
   }
   function discard(id: string) {
     return api('/platform-login/nowcoder/cancel', 'POST', { login_id: id })
@@ -34,6 +40,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
     () => () => {
       ++generation.current
       clearTimer()
+      clearDeadline()
       if (active.current) void discard(active.current).catch(() => {})
       active.current = null
     },
@@ -43,6 +50,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
   async function cancel() {
     const epoch = ++generation.current
     clearTimer()
+    clearDeadline()
     const id = active.current
     active.current = null
     setBusy(false)
@@ -57,21 +65,30 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       }
     }
   }
-  function schedule(login: Login, epoch: number) {
+  function expire(login: Login, epoch: number) {
+    if (generation.current !== epoch) return
+    // Also invalidate an in-flight poll: a late success must not revive an expired flow.
+    ++generation.current
+    clearTimer()
+    clearDeadline()
+    active.current = null
+    setSession({
+      ...login,
+      qr_image: undefined,
+      status: 'expired',
+      message: '二维码已过期，请刷新二维码。',
+    })
+    void discard(login.login_id).catch(() => {})
+  }
+  function schedule(login: Login, epoch: number, retryAfterSeconds = 0) {
     clearTimer()
     const expires = login.expires_at ?? 0
+    const delay = Math.max(3000, (login.poll_after_seconds ?? 3) * 1000, retryAfterSeconds * 1000)
     timer.current = setTimeout(
       async () => {
         if (generation.current !== epoch) return
         if (expires && Date.now() >= expires * 1000) {
-          active.current = null
-          setSession({
-            ...login,
-            qr_image: undefined,
-            status: 'expired',
-            message: '二维码已过期，请刷新二维码。',
-          })
-          void discard(login.login_id).catch(() => {})
+          expire(login, epoch)
           return
         }
         try {
@@ -79,7 +96,12 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
             login_id: login.login_id,
           })
           if (generation.current !== epoch) return
+          if (expires && Date.now() >= expires * 1000) {
+            expire(login, epoch)
+            return
+          }
           if (
+            !result || typeof result !== 'object' ||
             result.login_id !== login.login_id ||
             !['waiting', 'authorizing', 'verified', 'expired', 'failed', 'cancelled'].includes(result.status) ||
             (result.status === 'verified' && !/^[1-9][0-9]{0,19}$/.test(result.verified_uid ?? ''))
@@ -90,10 +112,18 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
               ...result,
               qr_image: login.qr_image,
               expires_at: login.expires_at,
+              message: result.retryable
+                ? result.message
+                  ? `${result.message} 正在重试，无需重新扫码。`
+                  : '检测暂时失败，正在重试，无需重新扫码。'
+                : result.message || (result.status === 'authorizing'
+                  ? '微信已确认，正在验证牛客身份…'
+                  : '等待本人微信扫码确认…'),
             }
             setSession(next)
             schedule(next, epoch)
           } else {
+            clearDeadline()
             active.current = null
             setSession({ ...result, qr_image: undefined })
             if (result.status === 'verified') {
@@ -107,6 +137,23 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
           }
         } catch (error: unknown) {
           if (generation.current !== epoch) return
+          if (expires && Date.now() >= expires * 1000) {
+            expire(login, epoch)
+            return
+          }
+          const retryable = error instanceof ApiError
+            ? error.status === 408 || error.status === 429 || (error.status >= 500 && error.status <= 599)
+            : error instanceof TypeError || (error instanceof DOMException && error.name === 'NetworkError')
+          if (retryable) {
+            const next = {
+              ...login,
+              message: '检测暂时失败，正在重试，无需重新扫码。',
+            }
+            setSession(next)
+            schedule(next, epoch, error instanceof ApiError ? error.retryAfterSeconds : undefined)
+            return
+          }
+          clearDeadline()
           active.current = null
           setSession({
             login_id: login.login_id,
@@ -120,13 +167,14 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
           void discard(login.login_id).catch(() => {})
         }
       },
-      Math.max(3000, (login.poll_after_seconds ?? 3) * 1000),
+      expires ? Math.min(delay, Math.max(0, expires * 1000 - Date.now())) : delay,
     )
   }
   async function start() {
     if (busy) return
     const epoch = ++generation.current
     clearTimer()
+    clearDeadline()
     const previous = active.current
     active.current = null
     setSession(null)
@@ -150,6 +198,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       if (
         result.status !== 'waiting' ||
         !result.login_id ||
+        !Number.isFinite(result.expires_at) || (result.expires_at ?? 0) <= 0 ||
         !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(result.qr_image ?? '')
       ) {
         if (result.login_id) void discard(result.login_id).catch(() => {})
@@ -157,6 +206,11 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       }
       active.current = result.login_id
       setSession(result)
+      // Keep the original server deadline even while a network request hangs.
+      deadlineTimer.current = setTimeout(
+        () => expire(result, epoch),
+        Math.max(0, result.expires_at! * 1000 - Date.now()),
+      )
       schedule(result, epoch)
     } catch (error: unknown) {
       if (generation.current === epoch) {

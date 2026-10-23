@@ -1,6 +1,7 @@
 """Ephemeral, fixed-origin Nowcoder WeChat login. No ticket leaves this module."""
 import asyncio
 import base64
+import logging
 import math
 import secrets
 import threading
@@ -20,6 +21,20 @@ ORIGIN = 'https://ac.nowcoder.com'
 NETWORK = threading.BoundedSemaphore(4)
 PENDING_LOCK = threading.Lock()
 PENDING = set()
+log = logging.getLogger(__name__)
+
+
+class QRUpstreamError(ValueError):
+    """Only safe internal reason codes and HTTP status; never retain upstream bodies."""
+    def __init__(self, reason, upstream_status=None):
+        if reason not in {'upstream_http', 'upstream_response_too_large',
+                          'upstream_response_invalid', 'network_busy'}:
+            reason = 'status_check_unavailable'
+        if type(upstream_status) is not int or not 100 <= upstream_status <= 599:
+            upstream_status = None
+        super().__init__(reason)
+        self.reason = reason
+        self.upstream_status = upstream_status
 
 
 class Start(BaseModel):
@@ -49,13 +64,13 @@ def _body(session, url, maximum, **kwargs):
     headers = {**browser_headers(), **kwargs.pop('headers', {})}
     with session.get(url, headers=headers, timeout=_request_timeout(session), allow_redirects=False, stream=True, **kwargs) as response:
         if response.status_code != 200:
-            raise ValueError('upstream')
+            raise QRUpstreamError('upstream_http', response.status_code)
         chunks = []; size = 0
         for part in response.iter_content(16384):
             _check_network_flow(session)
             size += len(part)
             if size > maximum:
-                raise ValueError('size')
+                raise QRUpstreamError('upstream_response_too_large')
             chunks.append(part)
         return b''.join(chunks), response.headers.get('Content-Type', '').split(';')[0].lower()
 
@@ -63,9 +78,12 @@ def _body(session, url, maximum, **kwargs):
 def _json(session, path, **kwargs):
     import json
     body, mime = _body(session, ORIGIN + path, 65536, **kwargs)
-    value = json.loads(body)
+    try:
+        value = json.loads(body)
+    except (ValueError, UnicodeError):
+        raise QRUpstreamError('upstream_response_invalid') from None
     if not isinstance(value, dict):
-        raise ValueError('json')
+        raise QRUpstreamError('upstream_response_invalid')
     return value
 
 
@@ -97,8 +115,15 @@ def _create(session):
 
 def _poll(session, ticket):
     value = _json(session, '/nccommon/oauth2/login/wechat_mp_status', params={'ticket': ticket})
-    if type(value.get('code')) is not int:
+    observe = getattr(session, '_acm_qr_observe', None)
+    if observe:
+        observe(value.get('code'))
+    def reject(reason):
+        if observe:
+            observe(value.get('code'), reason)
         return 'failed', None, None
+    if type(value.get('code')) is not int:
+        return reject('upstream_code_invalid')
     if value.get('code') == 1:
         message = value.get('msg')
         # The official endpoint uses code=1 for pending QR states, but its
@@ -106,21 +131,30 @@ def _poll(session, ticket):
         # ticket response is terminal; all other code=1 states remain bounded
         # by the QR expiry timer and never authorize binding.
         if isinstance(message, str) and message.strip() == 'ticket长度错误':
-            return 'failed', None, None
+            return reject('invalid_ticket')
         return 'waiting', None, None
     if value.get('code') != 0:
-        return 'failed', None, None
+        return reject('upstream_status_rejected')
     if 'data' not in value:
-        return 'failed', None, None
+        return reject('success_data_missing')
     data = value.get('data')
     # Some successful official responses complete login via Set-Cookie and
     # return JSON null. They still need the fixed homepage identity check.
     if data is None:
         data = {}
     if not isinstance(data, dict):
-        return 'failed', None, None
+        return reject('success_data_invalid')
     if data.get('needComplete'):
         return 'incomplete', None, None
+    confirm = getattr(session, '_acm_qr_confirm', None)
+    if confirm:
+        # Preserve the Set-Cookie-bearing Session even if the next identity
+        # request is temporarily unavailable. A QR ticket can be single-use.
+        confirm()
+    return _identity(session)
+
+
+def _identity(session):
     # Only the fixed ACM homepage's authenticated bootstrap authorizes binding.
     # Upstream callBack URLs are never requested.
     page, _ = _body(session, ORIGIN + '/', 1048576)
@@ -145,6 +179,7 @@ class NowcoderQR:
         self.closed = False
         self.owner_valid = lambda owner: True
         self.expired = None
+        self.expired_confirmed = False
 
     def _discard(self):
         flow = self.flow
@@ -171,6 +206,7 @@ class NowcoderQR:
         with self.lock:
             if self.flow and self.flow['owner'] == owner and self.flow['id'] == login_id:
                 self.expired = (owner, login_id)
+                self.expired_confirmed = self.flow.get('confirmed', False)
                 self._discard()
 
     def close(self):
@@ -194,16 +230,28 @@ class NowcoderQR:
                 if flow.get('cancelled') or remaining <= 0:
                     raise ValueError('inactive flow')
                 return remaining
+        def confirm():
+            with self.lock:
+                guard()
+                flow['confirmed'] = True
+        def observe(code, reason=''):
+            with self.lock:
+                flow['upstream_code'] = code if type(code) is int and abs(code) <= 10**9 else None
+                flow['upstream_reason'] = reason
         def run():
             try:
                 if not NETWORK.acquire(blocking=False):
-                    raise ValueError('busy')
+                    raise QRUpstreamError('network_busy')
                 try:
                     flow['session']._acm_qr_guard = guard
+                    flow['session']._acm_qr_confirm = confirm
+                    flow['session']._acm_qr_observe = observe
                     return function(flow['session'], *args)
                 finally:
-                    if getattr(flow['session'], '_acm_qr_guard', None) is guard:
-                        del flow['session']._acm_qr_guard
+                    for name, callback in (('_acm_qr_guard', guard), ('_acm_qr_confirm', confirm),
+                                           ('_acm_qr_observe', observe)):
+                        if getattr(flow['session'], name, None) is callback:
+                            delattr(flow['session'], name)
                     NETWORK.release()
             finally:
                 # A cancelled coroutine must not close a Session still in use.
@@ -238,6 +286,7 @@ class NowcoderQR:
                 raise HTTPException(429, '请等待 10 秒后重新获取二维码', headers={'Retry-After': '10'})
             self.last_start = now
             self.expired = None
+            self.expired_confirmed = False
             self._discard()
             revision = self.accounts.revision()
             flow_id = secrets.token_urlsafe(32)
@@ -254,7 +303,8 @@ class NowcoderQR:
             flow = dict(id=flow_id, owner=owner, session=session,
                         expected=expected_handle, revision=revision,
                         deadline=now + 120, busy=True, ticket=None, last_poll=0,
-                        cancelled=False, timer=None, generation=self.generation)
+                        cancelled=False, timer=None, generation=self.generation,
+                        confirmed=False, upstream_code=None, upstream_reason='', last_diagnostic=None)
             self.flow = flow
         try:
             ticket, image, ttl = await self._network(flow, _create)
@@ -290,21 +340,40 @@ class NowcoderQR:
     async def poll(self, owner, login_id):
         with self.lock:
             if self.owner_valid(owner) and self.expired == (owner, login_id):
-                return self._result(login_id, 'expired', '二维码已过期，请重新获取')
+                return self._expired_result(login_id, self.expired_confirmed)
             flow = self._current(owner, login_id)
             now = time.monotonic()
             if now >= flow['deadline']:
+                confirmed = flow['confirmed']
                 self._discard()
-                return self._result(login_id, 'expired', '二维码已过期，请重新获取')
+                return self._expired_result(login_id, confirmed)
             if flow['busy'] or now - flow['last_poll'] < 3:
                 raise HTTPException(429, '请等待 3 秒后查询扫码状态', headers={'Retry-After': '3'})
             flow['busy'] = True
             flow['last_poll'] = now
             ticket = flow['ticket']
+            confirmed = flow['confirmed']
+        reason, upstream_status = '', None
         try:
-            status, uid, cookie = await self._network(flow, _poll, ticket)
+            if confirmed:
+                status, uid, cookie = await self._network(flow, _identity)
+            else:
+                status, uid, cookie = await self._network(flow, _poll, ticket)
+        except QRUpstreamError as exc:
+            status, uid, cookie = 'retrying', None, None
+            reason, upstream_status = exc.reason, exc.upstream_status
+        except requests.Timeout:
+            status, uid, cookie = 'retrying', None, None
+            reason = 'upstream_timeout'
+        except requests.RequestException:
+            status, uid, cookie = 'retrying', None, None
+            reason = 'upstream_connection_failed'
+        except (ValueError, UnicodeError):
+            status, uid, cookie = 'retrying', None, None
+            reason = 'upstream_response_invalid'
         except Exception:
-            status, uid, cookie = 'failed', None, None
+            status, uid, cookie = 'retrying', None, None
+            reason = 'status_check_unavailable'
         with self.lock:
             flow['busy'] = False
             if not self.owner_valid(owner):
@@ -316,10 +385,34 @@ class NowcoderQR:
                 flow['session'].close()
                 raise HTTPException(404, '扫码流程不存在')
             if time.monotonic() >= flow['deadline']:
+                confirmed = flow['confirmed']
                 self._discard()
-                return self._result(login_id, 'expired', '二维码已过期，请重新获取')
+                return self._expired_result(login_id, confirmed)
             if status == 'waiting':
                 return self._result(login_id, 'waiting', '等待微信扫码确认')
+            if status in {'retrying', 'unverified'}:
+                phase = 'identity' if flow['confirmed'] else 'scan_status'
+                reason = reason or 'identity_not_ready'
+                diagnostic = (phase, reason, upstream_status, flow['upstream_code'])
+                if diagnostic != flow['last_diagnostic']:
+                    # No ticket, URL, UID, cookie, response body or exception text.
+                    log.warning('牛客扫码检测暂未完成：phase=%s reason=%s http=%s code=%s', *diagnostic)
+                    flow['last_diagnostic'] = diagnostic
+                if status == 'unverified':
+                    message = '微信扫码已确认，牛客当前身份尚未就绪；正在继续核验，无需再次扫码。'
+                else:
+                    detail = {
+                        'network_busy': '检测服务暂忙',
+                        'upstream_timeout': '牛客请求超时',
+                        'upstream_connection_failed': '暂时无法连接牛客',
+                        'upstream_http': f'牛客检测接口返回 HTTP {upstream_status}',
+                        'upstream_response_invalid': '牛客检测响应暂无法解析',
+                        'upstream_response_too_large': '牛客检测响应超出大小限制',
+                    }.get(reason, '扫码状态检测暂时不可用')
+                    message = detail + '，正在重试；请保留当前二维码，无需重新扫码。'
+                return dict(self._result(login_id, 'authorizing' if flow['confirmed'] else 'waiting', message),
+                            reason=reason, retryable=True, upstream_status=upstream_status,
+                            upstream_code=flow['upstream_code'], poll_after_seconds=5)
             if status == 'verified':
                 if flow['expected'] and flow['expected'] != uid:
                     self._discard()
@@ -341,11 +434,26 @@ class NowcoderQR:
                     self.checker.cache[('nowcoder', uid)] = (digest, result)
                 self._discard()
                 return dict(self._result(login_id, 'verified', '牛客当前登录身份已验证并绑定'), verified_uid=uid, accounts=accounts)
+            reason = 'account_incomplete' if status == 'incomplete' else (flow['upstream_reason'] or 'upstream_status_rejected')
+            log.warning('牛客扫码已停止：reason=%s code=%s', reason, flow['upstream_code'])
             self._discard()
-            message = {'incomplete': '请前往牛客官方页面完善账号后重新扫码，或使用 Cookie 绑定',
-                       'unverified': '扫码已完成，但尚未验证牛客当前身份；可确认微信已绑定牛客账号后重试，或使用 Cookie 绑定'}.get(status,
-                       '牛客未确认本次登录，请重新获取二维码或使用 Cookie 绑定')
-            return self._result(login_id, 'failed', message)
+            message = {
+                'account_incomplete': '请前往牛客官方页面完善账号后重新扫码，或使用 Cookie 绑定',
+                'invalid_ticket': '牛客返回二维码票据无效，请重新获取二维码；原绑定未修改。',
+                'upstream_code_invalid': '牛客状态接口未返回可识别的状态码，尚未绑定，请稍后重新获取二维码。',
+                'success_data_missing': '牛客返回成功状态但缺少登录数据，尚未绑定，请稍后重新获取二维码。',
+                'success_data_invalid': '牛客返回的登录数据格式暂不支持，尚未绑定，请稍后重新获取二维码。',
+            }.get(reason, '牛客扫码接口拒绝本次登录或返回暂不支持的状态，请重新获取二维码。')
+            return dict(self._result(login_id, 'failed', message),
+                        reason=reason,
+                        upstream_code=flow['upstream_code'], retryable=False)
+
+    @staticmethod
+    def _expired_result(login_id, confirmed):
+        message = ('微信扫码已确认，但牛客当前身份未能在有效期内验证，请重新获取二维码；原绑定未修改。'
+                   if confirmed else '二维码已过期，请重新获取')
+        return dict(NowcoderQR._result(login_id, 'expired', message),
+                    reason='identity_verification_timeout' if confirmed else 'qr_expired')
 
     @staticmethod
     def _result(login_id, status, message):

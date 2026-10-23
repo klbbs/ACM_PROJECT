@@ -216,3 +216,66 @@ def test_inflight_poll_cannot_overwrite_changed_config_or_pass_deadline(qr_site,
         assert response.status_code == 200 and response.json()['status'] == 'expired',response.text
         expected='sid=KEEP-SYNTHETIC'
     assert manager.accounts.document()['accounts'] == [{'platform':'atcoder','handle':'fixture','enrich':False,'cookie':expected,'login_method':'cookie'}]
+
+
+@pytest.mark.parametrize('invalidate', ['cancel', 'logout', 'expire'])
+def test_confirmed_identity_retry_cannot_bind_after_cancel_logout_or_expiry(qr_site, invalidate):
+    """Exercise an in-flight identity retry with synthetic responses only."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+    import acmweb.nowcoder_qr as qr
+
+    app, request, admin, _, _, monkeypatch = qr_site
+    def scan_confirmed(session, ticket):
+        session._acm_qr_confirm()
+        return 'unverified', None, None
+
+    monkeypatch.setattr(qr, '_poll', scan_confirmed)
+    started = request(admin, '/api/platform-login/nowcoder/start', {'consent': True})
+    assert started.status_code == 200, started.text
+    login_id = started.json()['login_id']
+    manager = app.state.workspaces.apps[admin['user']['id']][0].state.nowcoder_qr
+    pending = request(admin, '/api/platform-login/nowcoder/poll', {'login_id': login_id})
+    assert pending.status_code == 200, pending.text
+    assert pending.json()['status'] == 'authorizing'
+    assert manager.flow['confirmed'] is True
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed_identity(session):
+        entered.set()
+        assert release.wait(10)
+        return 'verified', '123', 'sid=PRIVATE-COOKIE'
+
+    def unexpected_status(*args):
+        pytest.fail('a confirmed flow must not consume the upstream ticket again')
+
+    monkeypatch.setattr(qr, '_poll', unexpected_status)
+    monkeypatch.setattr(qr, '_identity', delayed_identity)
+    manager.flow['last_poll'] = 0
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(request, admin, '/api/platform-login/nowcoder/poll', {'login_id': login_id})
+        assert entered.wait(10)
+        try:
+            if invalidate == 'expire':
+                with manager.lock:
+                    manager.flow['deadline'] = time.monotonic() - 1
+            elif invalidate == 'logout':
+                logged_out = request(admin, '/api/auth/logout')
+                assert logged_out.status_code == 200, logged_out.text
+            else:
+                cancelled = request(admin, '/api/platform-login/nowcoder/cancel', {'login_id': login_id})
+                assert cancelled.status_code == 200, cancelled.text
+                assert cancelled.json()['status'] == 'cancelled'
+        finally:
+            release.set()
+        result = future.result(timeout=10)
+    if invalidate == 'expire':
+        assert result.status_code == 200, result.text
+        assert result.json()['status'] == 'expired'
+        assert result.json()['reason'] == 'identity_verification_timeout'
+    else:
+        assert result.status_code in {401, 404}, result.text
+    assert 'PRIVATE' not in result.text
+    assert manager.flow is None
+    assert manager.accounts.public()['items'] == []
