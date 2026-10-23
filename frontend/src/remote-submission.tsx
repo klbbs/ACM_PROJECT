@@ -15,6 +15,7 @@ type RemoteRow = {
   verdict?: string | null
   official_url?: string | null
   created_at?: number
+  updated_at?: number
   revision?: number
   compiler_name?: string
   request_key?: string
@@ -140,6 +141,7 @@ export function RemoteSubmissionPanel({
   const sending = useRef(false)
   const optionsLock = useRef(false)
   const outstanding = useRef<Intent | null>(null)
+  const autoRefreshAfter = useRef<Record<string, number>>({})
   const callbacks = useRef({ save, onError, onChanged })
   callbacks.current = { save, onError, onChanged }
   const previousRows = useRef('')
@@ -182,7 +184,7 @@ export function RemoteSubmissionPanel({
         currentProblem.current !== target ||
         generation !== listGeneration.current
       )
-        return
+        return []
       const items = result.items || []
       setRows(items)
       setListError('')
@@ -196,6 +198,7 @@ export function RemoteSubmissionPanel({
         outstanding.current = null
         setIntent(null)
       }
+      return items
     } catch (error) {
       if (
         mounted.current &&
@@ -203,6 +206,7 @@ export function RemoteSubmissionPanel({
         generation === listGeneration.current
       )
         setListError(`读取提交记录失败：${errorText(error)}`)
+      return []
     } finally {
       if (
         mounted.current &&
@@ -229,7 +233,27 @@ export function RemoteSubmissionPanel({
     let cancelled = false
     let timer: number
     const tick = async () => {
-      await loadRows(problemId)
+      const items = await loadRows(problemId)
+      const now = Date.now()
+      for (const row of items) {
+        if (row.status !== 'judging' || !row.submission_id || !row.updated_at) continue
+        if (now - row.updated_at * 1000 < 12000 || (autoRefreshAfter.current[row.id] || 0) > now)
+          continue
+        autoRefreshAfter.current[row.id] = now + 15000
+        try {
+          const result = await api<RemoteRow>(
+            `/remote-submissions/${encodeURIComponent(row.id)}/refresh`,
+            'POST',
+            {},
+          )
+          if (cancelled || currentProblem.current !== problemId) return
+          listGeneration.current++
+          setRows((previous) => previous.map((item) => (item.id === result.id ? result : item)))
+          notifyChanged()
+        } catch {
+          autoRefreshAfter.current[row.id] = Date.now() + 30000
+        }
+      }
       if (!cancelled) timer = window.setTimeout(() => void tick(), 3000)
     }
     timer = window.setTimeout(() => void tick(), 3000)

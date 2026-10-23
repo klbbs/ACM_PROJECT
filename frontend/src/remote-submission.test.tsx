@@ -265,6 +265,33 @@ it('keeps polling after temporary list failure and shows WA in red', async () =>
     expect(reads).toBe(3)
   })
 })
+it('automatically refreshes an old judging result and shows the official verdict', async () => {
+  vi.useFakeTimers()
+  const staleJudging = {
+    ...queued,
+    status: 'judging',
+    submission_id: '12345',
+    updated_at: Math.floor(Date.now() / 1000) - 30,
+  }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?')) return { items: [staleJudging] }
+    if (path === '/remote-submissions/remote-1/refresh' && method === 'POST')
+      return { ...staleJudging, status: 'completed', verdict: 'AC', updated_at: Math.floor(Date.now() / 1000) }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props(), async (host) => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(host.textContent).toContain('AC · 通过！')
+    expect(request).toHaveBeenCalledWith('/remote-submissions/remote-1/refresh', 'POST', {})
+    expect(request.mock.calls.some(([path, method]) => path === '/remote-submissions' && method === 'POST')).toBe(false)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000)
+    })
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/refresh'))).toHaveLength(1)
+  })
+})
 it('requires official confirmation to dismiss uncertain sends and never resubmits', async () => {
   const row = {
     ...queued,
