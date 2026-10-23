@@ -55,6 +55,19 @@ def main():
             def judge(self, pid, handle, sid):
                 return remote_receipts[sid]
 
+            def source(self, pid, handle, sid):
+                from acmweb.remote_judges import SubmissionError
+                if sid in remote_receipts:
+                    record = remote_receipts[sid]
+                elif sid in {'920001','920002','920003'} and pid == 'codeforces:4-A':
+                    record = {'id':sid,'problem_id':'4-A','account':handle,
+                        'submitted_at':int(time.time())-(3600 if sid == '920003' else 0),
+                        'verdict':'AC' if sid == '920002' else 'WA', 'language':'Python 3',
+                        'url':f'https://codeforces.com/contest/4/submission/{sid}'}
+                else:
+                    raise SubmissionError('record_unavailable')
+                return {**record,'code':'print("fixture_correct")' if record['verdict'] == 'AC' else 'print("fixture_wrong")'}
+
             def close(self):
                 pass
 
@@ -120,7 +133,7 @@ def main():
             remote_receipts.clear()
             return {'ok': True}
 
-        uvicorn.run(app, host='127.0.0.1', port=18766, access_log=False)
+        uvicorn.run(app, host='127.0.0.1', port=int(os.getenv('ACM_EDITOR_TEST_PORT', '18766')), access_log=False)
 
 
 if __name__ == '__main__':

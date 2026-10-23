@@ -114,7 +114,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 多人模式新增“排行榜与好友”：可选择公开主页和每日榜单、检索并添加好友、约定 CF 精确难度对战。先在设置检测平台身份，再在个人主页认领，才能用于公开榜单或对战。对战按官方 AC 证据判胜，计普通签到但不抵扣每日任务。详见 [社交指南](docs/SOCIAL.md)。
 
-工作台自动错误提示默认关闭，需同意将当次代码发送至所选 AI。当前仍通过官方页面提交代码，本站关联结果或核验对战；没有自动代交。本次开发未执行服务器部署。
+工作台自动错误提示默认关闭，需同意将当次代码发送至所选 AI。CF/AtCoder 接入工作台代交与自动判题，登录及平台验证失败时停止发送；洛谷/牛客仍在官方页面提交。外部交题后可一键同步本题记录，无需先粘贴源码或手填提交号。源码可读时再复盘。真实平台交题验收边界见 [安全与验证说明](docs/SECURITY_REVIEW.md)。本次开发未执行服务器部署。
 
 ## 独立采集 CLI
 
@@ -135,7 +135,7 @@ AI 从已验证登录平台混合选题。请在训练偏好保存最早发布�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.19.1.zip
+python3 scripts/verify_release.py releases/acm-lab-0.20.0.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
@@ -177,4 +177,4 @@ CodeMirror 6 提供四种语言标签的高亮与本地补全、普通/Vim 切�
 鼠标操作工作台验收、子 agent 教练反馈和修复记录见 [2026-10-19 验收报告](docs/USER_ACCEPTANCE_2026-10-19.md)。判题为隔离模拟，未向真实账号交题。
 
 
-平台绑定的保存/编辑规则见[平台教程](docs/PLATFORM_BINDING.md)：CF、AtCoder 在本人浏览器登录后使用[油猴 Cookie 助手](docs/BROWSER_EXTENSION.md)，回本站保存并检测；两平台不再提供服务器密码或远程浏览器登录。洛谷保留同会话[官方登录窗口](docs/PASSWORD_LOGIN.md)，牛客使用微信扫码。可靠验证身份后才绑定；当前交题仍在官方页面。
+平台绑定的保存/编辑规则见[平台教程](docs/PLATFORM_BINDING.md)：CF、AtCoder 在本人浏览器登录后使用[油猴 Cookie 助手](docs/BROWSER_EXTENSION.md)，回本站保存并检测；两平台不再提供服务器密码或远程浏览器登录。洛谷保留同会话[官方登录窗口](docs/PASSWORD_LOGIN.md)，牛客使用微信扫码。可靠验证身份后才绑定；CF/AtCoder 支持工作台提交，洛谷/牛客仍使用官方页面。牛客扫码与导入 Cookie 二选一。

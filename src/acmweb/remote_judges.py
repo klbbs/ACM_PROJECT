@@ -345,7 +345,14 @@ class PlatformSession:
     def source(self, pid, handle, submission_id):
         """Fetch only an independently verified owner's official source page."""
         record = self.judge(pid, handle, submission_id)
-        soup = self._get(record['url'])
+        status, headers, text = self._request('GET', record['url'])
+        # Do not silently read source from a redirected, different submission.
+        if status in (301, 302, 303, 307, 308):
+            location = headers.get('Location') or headers.get('location') or ''
+            if re.match(r'^/(?:enter|login)(?:[/?]|$)', urlsplit(location).path):
+                raise SubmissionError('login_required')
+            raise SubmissionError('record_unavailable')
+        soup = self._check_page(status, text)
         self._identity(soup, handle)
         node = soup.select_one('#program-source-text' if self.platform == 'codeforces' else '#submission-code')
         if node is None:
@@ -354,3 +361,33 @@ class PlatformSession:
         if not code.strip() or len(code.encode('utf-8')) > 65536:
             raise SubmissionError('record_unavailable')
         return {**record, 'code':code}
+
+    def find_receipt(self, pid, handle, sent_at, code_hash):
+        """Read-only recovery after an ambiguous POST; never guesses the newest ID."""
+        import hashlib
+        key = self._problem(pid, handle)
+        records = self._records(key, handle)
+        if self.platform == 'codeforces':
+            contest, index = key.split('-')
+            records = [r for r in records if str(r.get('problem', {}).get('contestId')) == contest
+                       and r.get('problem', {}).get('index') == index
+                       and type(r.get('creationTimeSeconds')) is int
+                       and sent_at-60 <= r['creationTimeSeconds'] <= sent_at+300]
+        if len(records) > 10:
+            raise SubmissionError('record_unavailable')
+        matching = []
+        for row in records:
+            try:
+                record = self.judge(pid, handle, row['id'])
+                if not sent_at-60 <= record['submitted_at'] <= sent_at+300:
+                    continue
+                source = self.source(pid, handle, row['id'])
+            except SubmissionError as exc:
+                if exc.reason == 'record_mismatch':
+                    continue
+                raise
+            if hashlib.sha256(source['code'].encode()).hexdigest() == code_hash:
+                matching.append(source)
+        if len(matching) != 1:
+            raise SubmissionError('record_unavailable')
+        return matching[0]

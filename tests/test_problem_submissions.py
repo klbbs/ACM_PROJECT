@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from acmweb.app import create_app
+from acmweb.codex_bridge import AIError
 from acmweb.settings import Settings
 from ojcrawler.models import Collection, Submission
 
@@ -129,3 +130,44 @@ def test_failed_ai_does_not_undo_synced_records(site, monkeypatch):
     assert result['count'] == 1
     assert review.await_count == 1
     assert service.listing('4-A')['items'][0]['verdict'] == 'WA'
+
+
+@pytest.mark.parametrize('platform,pid,handle', [('atcoder','atcoder:abc001_1','demo'),
+    ('luogu','luogu:P1001','123'), ('nowcoder','nowcoder:1000','123')])
+def test_other_platform_collection_is_bounded_and_filters_to_current_problem(site,monkeypatch,platform,pid,handle):
+    client, app, service, plan = site
+    from ojcrawler.adapters import ADAPTERS
+    from acmweb.problem_submissions import ProblemSubmissions
+    # Restore the real collector; replace only the external adapter I/O.
+    monkeypatch.setattr(service,'_collect',ProblemSubmissions._collect.__get__(service))
+    captured = {}
+    def fake_fetch(adapter, since):
+        captured.update(since=since,max_pages=adapter.max_pages,page_size=adapter.page_size)
+        return Collection(platform,handle, submissions=[
+            Submission('12345',pid.split(':')[1],int(time.time()),'AC'),
+            Submission('67890','some-other-problem',int(time.time()),'WA')],complete=True)
+    monkeypatch.setattr(ADAPTERS[platform],'collect',fake_fetch)
+    out, coverage = service._collect(pid,{'platform':platform,'handle':handle})
+    assert len(out.submissions) == 1 and out.submissions[0].id == '12345'
+    assert captured['max_pages'] == 3 and captured['page_size'] == 100
+    assert (captured['since'] > time.time()-8*86400) if platform == 'atcoder' else captured['since'] == 0
+    assert coverage
+
+
+def test_cf_sync_queries_only_this_contest_and_checks_actual_owner(site,monkeypatch):
+    client, app, service, plan = site
+    from acmweb.problem_submissions import ProblemSubmissions
+    from ojcrawler.http import Client
+    monkeypatch.setattr(service,'_collect',ProblemSubmissions._collect.__get__(service))
+    requests = []
+    def fake_json(client,url,params=None):
+        requests.append((url,params))
+        return {'status':'OK','result':[{'id':12345,'creationTimeSeconds':int(time.time()),
+            'author':{'members':[{'handle':'DEMO'}]},'problem':{'contestId':4,'index':'A'},'verdict':'WRONG_ANSWER'}]}
+    monkeypatch.setattr(Client,'json',fake_json)
+    out, _ = service._collect('codeforces:4-A',{'platform':'codeforces','handle':'demo'})
+    assert out.submissions[0].verdict == 'WA'
+    assert requests[0][1]['contestId'] == 4
+    assert requests[0][1]['handle'] == 'demo'
+    with pytest.raises(AIError, match='账号不匹配'):
+        service._collect('codeforces:4-A',{'platform':'codeforces','handle':'someone-else'})

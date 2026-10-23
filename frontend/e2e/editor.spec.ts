@@ -28,10 +28,11 @@ test.beforeEach(async ({ page }) => reset(page))
 
 test('local completions, automatic save, undo and preference updates preserve the editor', async ({
   page,
+  baseURL,
 }) => {
   const outbound: string[] = []
   page.on('request', (r) => {
-    if (!r.url().startsWith('http://127.0.0.1:18766')) outbound.push(r.url())
+    if (new URL(r.url()).origin !== new URL(baseURL!).origin) outbound.push(r.url())
   })
   await open(page)
   const editor = page.locator('.cm-content')

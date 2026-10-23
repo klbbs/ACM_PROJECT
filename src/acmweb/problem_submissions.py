@@ -145,6 +145,10 @@ class ProblemSubmissions:
             # Account edits/removal during collection cannot import into a new binding.
             if self.account(pid, handle) != account:
                 raise AIError('账号配置已变化，请重新同步；原记录已保留')
+            platform = pid.split(':')[0]
+            same_account = out.account.casefold() == handle.casefold() if platform == 'codeforces' else out.account == handle
+            if out.platform != platform or not same_account:
+                raise AIError('采集结果的平台或账号不匹配，未保存本次结果')
             for row in out.submissions:
                 if row.problem_id != pid.split(':', 1)[1] or type(row.submitted_at) is not int or not 0 < row.submitted_at <= time.time()+300:
                     raise AIError('官方记录题号或时间无效，未保存本次结果')
@@ -168,6 +172,10 @@ class ProblemSubmissions:
             for item in self.listing(pid, handle)['items']:
                 if item.get('attempt_id') and item['submission_id'] in {s.id for s in out.submissions}:
                     try:
+                        if platform != 'codeforces':
+                            from .workbench import Link
+                            self.workbench.sync_collected(self.workbench.attempt(item['attempt_id']),
+                                Link(handle=handle, submission_id=int(item['submission_id'])))
                         await self.workbench.automatic_review(item['attempt_id'])
                     except Exception:
                         pass  # Optional AI failure cannot discard synchronized judge results.

@@ -50,6 +50,11 @@ def remote_site(tmp_path, monkeypatch):
         def close(self):
             pass
 
+        def find_receipt(self, pid, handle, sent_at, code_hash):
+            if not plan.get('recover'):
+                raise SubmissionError('record_unavailable')
+            return {**self.judge(pid,handle,'12345'),'code':SOURCE}
+
     monkeypatch.setattr(RemoteSubmissions, '_driver', staticmethod(lambda *_: SyntheticDriver()))
     watch = RemoteSubmissions.watch
 
@@ -201,7 +206,8 @@ def test_uncertain_send_never_retries_when_replaying_or_refreshing(remote_site, 
     assert request(owner, 'POST', '/api/remote-submissions', payload()).json()['id'] == rid
     assert request(owner, 'POST', '/api/remote-submissions', payload('b'*32)).status_code == 409
     response = request(owner, 'POST', '/api/remote-submissions/'+rid+'/refresh', {})
-    assert response.status_code == 409
+    assert response.status_code == 200
+    wait_intent(request, owner, rid, 'uncertain')
     assert_public(response)
     assert len(plan['sent']) == 1
     for response in (request(owner, 'GET', '/api/jobs'),
@@ -250,6 +256,42 @@ def test_credential_change_blocks_queued_source_at_send_boundary(remote_site, mo
     replay = request(owner, 'POST', '/api/remote-submissions', payload())
     assert replay.json()['id'] == rid and replay.json()['status'] == 'blocked'
     assert plan['sent'] == []
+
+
+def test_revoked_session_blocks_queued_send_and_problem_records_are_private(remote_site, monkeypatch):
+    request, owner, member, child, plan = remote_site
+    captured = {}
+    def queue_only(kind, data):
+        captured.update(data)
+        return {'id':'synthetic-queued-only'}
+    monkeypatch.setattr(child.state.jobs,'start',queue_only)
+    queued = request(owner,'POST','/api/remote-submissions',payload())
+    assert queued.status_code == 200 and captured['owner']
+    assert request(None,'GET','/api/problem-submissions/codeforces:4-A').status_code == 401
+    assert request(member,'GET','/api/problem-submissions/codeforces:4-A').json()['items'] == []
+    assert request(member,'POST','/api/problem-submissions/codeforces:4-A/source',
+                   {'handle':'demo','submission_id':'12345'}).status_code == 400
+    assert request(owner,'POST','/api/problem-submissions/codeforces:4-A/sync',
+                   {'handle':'demo'},extra={'X-CSRF-Token':''}).status_code == 403
+    assert request(owner,'POST','/api/auth/logout',{}).status_code == 200
+    result = asyncio.run(child.state.remote_submissions.execute(queued.json()['id'],captured['owner']))
+    assert result['status'] == 'blocked'
+    assert plan['sent'] == []
+
+
+def test_uncertain_send_recovers_from_matching_official_source_without_new_post(remote_site):
+    request, owner, _, child, plan = remote_site
+    plan['mode'] = 'uncertain'
+    queued = request(owner,'POST','/api/remote-submissions',payload())
+    rid = queued.json()['id']
+    wait_intent(request,owner,rid,'uncertain')
+    plan['recover'] = True
+    response = request(owner,'POST','/api/remote-submissions/'+rid+'/refresh',{})
+    assert response.status_code == 200
+    done = wait_intent(request,owner,rid,'completed')
+    assert done['submission_id'] == '12345' and done['verdict'] == 'WA'
+    assert len(plan['sent']) == 1
+    assert child.state.workbench.attempt(done['attempt_id'])['code_verified']
 
 
 @pytest.mark.parametrize('before,after', [('queued', 'failed'), ('submitting', 'uncertain')])

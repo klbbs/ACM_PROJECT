@@ -134,6 +134,45 @@ def test_atcoder_official_judge_does_not_wait_for_mirror(session,monkeypatch):
     assert 'SECRET' not in json.dumps(r)
 
 
+@pytest.mark.parametrize('platform,pid,html', [
+    ('codeforces','4-A', cf_form()+'<pre id="program-source-text">int main(){return 0;}</pre>'),
+    ('atcoder','atcoder:practice_1', ac_nav()+ac_record()),
+])
+def test_source_reads_verified_official_page_only(session,monkeypatch,platform,pid,html):
+    s = session(platform)
+    monkeypatch.setattr(s,'judge',lambda *_:{'id':'123','account':'demo','problem_id':pid.split(':')[-1],
+        'submitted_at':int(time.time()),'url':s.base+'/official-source'})
+    calls = script(monkeypatch,s,[(200,{},html)])
+    assert s.source(pid,'demo','123')['code']
+    assert len(calls) == 1 and calls[0][0] == 'GET'
+
+
+def test_source_never_follows_other_record_redirect(session,monkeypatch):
+    s = session()
+    monkeypatch.setattr(s,'judge',lambda *_:{'url':s.base+'/contest/4/submission/123'})
+    calls = script(monkeypatch,s,[(302,{'Location':'/contest/4/submission/456'},'')])
+    with pytest.raises(SubmissionError) as error:
+        s.source('4-A','demo','123')
+    assert error.value.reason == 'record_unavailable'
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('copies,correct',[(1,True),(2,True),(1,False)])
+def test_unknown_receipt_requires_exact_source_and_single_match(session,monkeypatch,copies,correct):
+    import hashlib
+    s = session()
+    stamp = int(time.time())
+    monkeypatch.setattr(s,'_records',lambda *_:[cf_record(123+n) for n in range(copies)])
+    monkeypatch.setattr(s,'judge',lambda pid,handle,sid:{'id':str(sid),'account':'demo','problem_id':'4-A','submitted_at':stamp})
+    monkeypatch.setattr(s,'source',lambda pid,handle,sid:{'id':str(sid),'code':'expected' if correct else 'wrong'})
+    digest = hashlib.sha256(b'expected').hexdigest()
+    if copies == 1 and correct:
+        assert s.find_receipt('4-A','demo',stamp,digest)['id'] == '123'
+    else:
+        with pytest.raises(SubmissionError):
+            s.find_receipt('4-A','demo',stamp,digest)
+
+
 @pytest.mark.parametrize('handle,task',[('other','practice_1'),('demo','other_task')])
 def test_atcoder_judge_rejects_wrong_source_record(session,monkeypatch,handle,task):
     s=session('atcoder');script(monkeypatch,s,[(200,{},ac_record(handle,task))])

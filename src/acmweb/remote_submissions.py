@@ -62,6 +62,7 @@ class RemoteSubmissions:
             conn.executescript(DDL)
             conn.execute("UPDATE wb_remote_submissions SET status='failed',reason='interrupted_before_send',message='服务已重启，尚未发出本次提交；可重新提交' WHERE status='queued'")
             conn.execute("UPDATE wb_remote_submissions SET status='uncertain',reason='interrupted',message='服务在提交过程中重启，发送结果尚未确认；不会自动重交，请查看官方记录' WHERE status='submitting'")
+            conn.execute("UPDATE wb_remote_submissions SET status='uncertain',reason='interrupted',message='结果查询已中断，可刷新重新核对官方记录；不会重新交题' WHERE status='judging' AND submission_id IS NULL")
 
     @staticmethod
     def _driver(platform, cookie):
@@ -319,12 +320,11 @@ class RemoteSubmissions:
     def refresh(self, rid):
         row = self._row(rid)
         if not row['submission_id']:
-            if row['status'] == 'uncertain':
-                raise HTTPException(409, '发送结果未确认且尚无提交号，请先查看官方记录；不会重新发送代码，可使用手动关联核验已找到的提交号')
-            return self.public(row)
+            if row['status'] != 'uncertain':
+                return self.public(row)
         if any(kind in {'wb_remote_submit','wb_remote_refresh'} and not task.done() for kind, task in self.jobs.tasks.values()):
             return self.public(row)
-        self.update(rid, status='judging', message='正在重新读取官方判题结果，不会重交代码')
+        self.update(rid, status='judging', message='正在读取官方记录并核对当次代码，不会重交代码' if not row['submission_id'] else '正在重新读取官方判题结果，不会重交代码')
         try:
             self.jobs.start('wb_remote_refresh', {'intent_id':rid})
         except Exception:
@@ -332,17 +332,33 @@ class RemoteSubmissions:
         return self.get(rid)
 
     async def reread(self, rid):
+        from .remote_judges import SubmissionError
         row = self._row(rid)
-        if not row['submission_id']:
-            return self.get(rid)
         driver = None
         try:
             _, cookie, _ = self.account(row['problem_id'], row['handle'])
             driver = self._driver(row['problem_id'].split(':')[0], cookie)
-            await self.watch(rid, driver, rounds=1)
-        except (HTTPException, AIError):
-            self.update(rid, status='judging', reason='credentials_unavailable',
-                        message='代码已提交，但当前账号凭据不可用；请更新凭据后刷新判题，不要重新交题')
+            if not row['submission_id']:
+                observed = await asyncio.to_thread(driver.find_receipt, row['problem_id'], row['handle'], row['sent_at'], row['code_hash'])
+                if hashlib.sha256(observed['code'].encode()).hexdigest() != row['code_hash']:
+                    raise SubmissionError('record_mismatch')
+                row['submission_id'] = str(observed['id'])
+                result = self.record(row, observed)
+                with self.db.connect() as conn:
+                    conn.execute('INSERT OR REPLACE INTO wb_official_sources VALUES(?,?,?)',
+                                 (result['attempt_id'],row['code_hash'],int(time.time())))
+                self.update(rid, status='completed' if result['verdict'] in FINAL else 'judging',
+                            submission_id=row['submission_id'], official_url=observed['url'],
+                            reason='', message='已通过本人官方记录和源码核对找回提交结果', **result)
+                await self.after_judge(result['attempt_id'])
+            else:
+                await self.watch(rid, driver, rounds=1)
+        except (HTTPException, AIError, SubmissionError):
+            self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='receipt_unavailable',
+                        message='暂未取得可核验的官方结果或当次源码；请检查平台登录和官方记录后再刷新，不会重新交题')
+        except Exception:
+            self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='receipt_unavailable',
+                        message='官方结果查询未能完成，原提交记录已保留；可稍后刷新，不会重新交题')
         finally:
             if driver:
                 driver.close()
