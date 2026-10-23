@@ -106,6 +106,12 @@ async function tick(ms = 1300) {
     await Promise.resolve()
   })
 }
+/** Flush the chained listing/adoption effects that follow one mocked response. */
+async function settle(rounds = 10) {
+  await act(async () => {
+    for (let index = 0; index < rounds; index++) await Promise.resolve()
+  })
+}
 
 it('only trusts official https record links', () => {
   expect(allowedRecordUrl('codeforces:4-A', 'https://codeforces.com/contest/4/submission/1')).toBe(
@@ -505,5 +511,174 @@ it('renders a failed job as a kept-record error, not as success', async () => {
     expect(host.textContent).toContain('平台登录已失效')
     expect(host.textContent).not.toContain('已同步')
     expect(host.textContent).toContain('#12345')
+  })
+})
+
+it('adopts an account discovered by the listing and keeps the chosen one', async () => {
+  const ghost = { ...wa, submission_id: '99999', account: 'ghost' }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') {
+      if (!path.includes('handle=')) return listing({ items: [ghost] })
+      if (path.includes('handle=alt')) return listing({ items: [altItem] })
+      return listing({ items: [wa] })
+    }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ handles: [] }), async (host, root) => {
+    await settle()
+    const picker = host.querySelector('select[aria-label="同步账号"]') as HTMLSelectElement
+    // The listing knows the account even though the workbench payload did not yet.
+    expect(picker.value).toBe('demo')
+    expect(button(host, '同步本题提交')!.disabled).toBe(false)
+    expect(request).toHaveBeenCalledWith('/problem-submissions/codeforces%3A4-A')
+    expect(request).toHaveBeenCalledWith('/problem-submissions/codeforces%3A4-A?handle=demo')
+    // Rows read without an account must not be shown as this account's records.
+    expect(host.textContent).not.toContain('#99999')
+    expect(host.textContent).toContain('#12345')
+    await pick(host, 'alt')
+    expect(picker.value).toBe('alt')
+    expect(host.textContent).toContain('#77777')
+    expect(host.textContent).not.toContain('#12345')
+    // A parent refresh keeps the user's choice instead of falling back.
+    await act(async () => root.render(<ProblemSubmissions {...props({ handles: [], revision: 1 })} />))
+    await settle()
+    expect((host.querySelector('select[aria-label="同步账号"]') as HTMLSelectElement).value).toBe(
+      'alt',
+    )
+    expect(host.textContent).toContain('#77777')
+  })
+})
+
+it('a first source read makes that record reviewable without any reload', async () => {
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      // Deliberately stale: the record still has no attempt on every reload.
+      return listing({ items: [wa] })
+    if (path.endsWith('/source') && method === 'POST')
+      return {
+        problem_id: 'codeforces:4-A',
+        submission_id: '12345',
+        handle: 'demo',
+        code: 'print(0)',
+        language: 'python3',
+        attempt_id: 'att-new',
+        code_verified: true,
+        provenance: 'official',
+      }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props()
+  await render(values, async (host, root) => {
+    expect(button(host, '分析本次错因（不提供答案）')).toBeUndefined()
+    await click(host, '获取本次代码')
+    const card = host.querySelector('article.problem-submission') as HTMLElement
+    expect(card.querySelector('pre')!.textContent).toBe('print(0)')
+    // The attempt id from the first read is usable immediately.
+    expect(button(host, '分析本次错因（不提供答案）')!.disabled).toBe(false)
+    await act(async () => root.render(<ProblemSubmissions {...values} revision={1} />))
+    await settle()
+    expect(button(host, '分析本次错因（不提供答案）')).toBeTruthy()
+    await click(host, '分析本次错因（不提供答案）')
+    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-new/review')
+  })
+})
+
+it('late code reads for the previous account never reach the new selection', async () => {
+  // The same submission id under another account is exactly what a shared cache
+  // key would leak, so the guard must use the account, not only the problem.
+  const sameIdAlt = { ...wa, account: 'alt' }
+  const listingFor = (path: string) =>
+    listing({ items: path.includes('handle=alt') ? [sameIdAlt] : [wa] })
+  let release!: (value: any) => void
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listingFor(path)
+    if (path.endsWith('/source') && method === 'POST') return gate
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ handles: ['demo', 'alt'] }), async (host) => {
+    await click(host, '获取本次代码')
+    expect(host.textContent).toContain('正在读取代码…')
+    await pick(host, 'alt')
+    expect(host.textContent).toContain('alt')
+    await act(async () =>
+      release({
+        code: 'print("demo account code")',
+        language: 'python3',
+        attempt_id: 'att-demo',
+        code_verified: true,
+      }),
+    )
+    await settle()
+    expect(host.textContent).not.toContain('demo account code')
+    expect(button(host, '分析本次错因（不提供答案）')).toBeUndefined()
+    // The stale request must not leave the new account's button spinning.
+    expect(host.textContent).not.toContain('正在读取代码…')
+    expect(button(host, '获取本次代码')!.disabled).toBe(false)
+  })
+
+  // The rejection path is guarded the same way: no error from the old account.
+  let fail!: (error: Error) => void
+  const failing = new Promise((_resolve, reject) => {
+    fail = reject
+  })
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listingFor(path)
+    if (path.endsWith('/source') && method === 'POST') return failing
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props({ handles: ['demo', 'alt'] }), async (host) => {
+    await click(host, '获取本次代码')
+    await pick(host, 'alt')
+    await act(async () => fail(new Error('旧账号登录已失效')))
+    await settle()
+    expect(host.textContent).not.toContain('旧账号登录已失效')
+    expect(host.textContent).not.toContain('源码暂不可读')
+  })
+})
+
+it('loading into the editor stays bound to the account that started it', async () => {
+  // Both accounts report the same submission id, and both views hold code, so an
+  // unguarded late load would claim the new account's row.
+  const sameIdAlt = { ...wa, account: 'alt', attempt_id: 'att-alt', has_local_code: true }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST')
+      return listing({
+        items: path.includes('handle=alt')
+          ? [sameIdAlt]
+          : [{ ...wa, attempt_id: 'att-ac', has_local_code: true }],
+      })
+    if (path === '/workbench/attempt/att-ac')
+      return { id: 'att-ac', code: 'int main(){}', language: 'cpp17', code_verified: false }
+    if (path === '/workbench/attempt/att-alt')
+      return { id: 'att-alt', code: 'print(1)', language: 'python3', code_verified: false }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const loadCode = vi.fn(() => gate)
+  const values = props({ handles: ['demo', 'alt'], loadCode })
+  await render(values, async (host) => {
+    await act(async () => {
+      ;(host.querySelector('button.secondary') as HTMLButtonElement).click()
+    })
+    await click(host, '载入编辑器')
+    expect(loadCode).toHaveBeenCalledOnce()
+    await pick(host, 'alt')
+    // Open the new account's code so a stale message would be visible on its row.
+    await act(async () => {
+      ;(host.querySelector('button.secondary') as HTMLButtonElement).click()
+    })
+    expect(host.querySelector('pre')!.textContent).toBe('print(1)')
+    await act(async () => release())
+    await settle()
+    // The load already happened in the parent, but this view must not claim it
+    // for the account the user has since switched to.
+    expect(host.textContent).not.toContain('已载入编辑器')
+    expect(host.textContent).not.toContain('未载入编辑器')
   })
 })
