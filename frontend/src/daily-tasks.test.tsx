@@ -200,3 +200,143 @@ it('does not submit a second selection while the first explicit request is pendi
   expect(apiMock.mock.calls.filter(([path]) => path === '/daily/roll')).toHaveLength(1)
   await act(async () => pending.resolve(state))
 })
+
+const secondTask = {
+  ...dailyTask,
+  task_id: 8,
+  id: 'atcoder:abc001_a',
+  problem_id: 'abc001_a',
+  title: 'Second fixture task',
+  url: 'https://atcoder.jp/contests/abc001/tasks/abc001_1',
+}
+const readyDay = (overrides: Record<string, unknown> = {}) => ({
+  ...value(2),
+  active: true,
+  rerolls_limit: 2,
+  rerolls_remaining: 2,
+  plan: { status: 'ready', tasks: [dailyTask, secondTask], completed_ids: [] },
+  ...overrides,
+})
+function taskCards() {
+  return [...host.querySelectorAll<HTMLElement>('.daily-problem')]
+}
+function rollButton(index: number) {
+  return taskCards()[index].querySelector<HTMLButtonElement>('button[aria-label^="Roll"]')!
+}
+
+it('shows a clear Roll button beside each task and sends only the clicked task id', async () => {
+  let state = readyDay()
+  apiMock.mockImplementation(async (path: string, method?: string, payload?: any) => {
+    if (path === '/daily/roll' && method === 'POST') {
+      expect(payload).toEqual({ provider: 'api', model: 'fixture', task_id: secondTask.task_id })
+      state = readyDay({
+        rerolls_remaining: 1,
+        plan: {
+          status: 'ready',
+          tasks: [dailyTask, { ...secondTask, title: 'AI replacement', id: 'atcoder:abc002_a' }],
+          completed_ids: [],
+        },
+      })
+    }
+    return state
+  })
+  await render()
+  expect(taskCards()).toHaveLength(2)
+  expect(rollButton(0).textContent).toContain('Roll · 换这道题')
+  expect(rollButton(1).textContent).toContain('Roll · 换这道题')
+  expect(host.textContent).toContain('今日 Roll 总额度 2 次，剩余 2 次')
+  await act(async () => rollButton(1).click())
+  expect(taskCards()[0].textContent).toContain('Fixture task')
+  expect(taskCards()[1].textContent).toContain('AI replacement')
+  expect(host.textContent).toContain('今日 Roll 总额度 2 次，剩余 1 次')
+  expect(apiMock.mock.calls.filter(([path]) => path === '/daily/roll')).toHaveLength(1)
+})
+
+it('shows loading only for the selected task and blocks duplicate or simultaneous rerolls', async () => {
+  const pending = deferred()
+  const state = readyDay()
+  apiMock.mockImplementation((path: string) =>
+    path === '/daily/roll' ? pending.promise : Promise.resolve(state),
+  )
+  await render()
+  await act(async () => rollButton(1).click())
+  expect(rollButton(1).textContent).toContain('AI 正在 Roll 这道题')
+  expect(rollButton(1).getAttribute('aria-busy')).toBe('true')
+  expect(taskCards()[1].textContent).toContain('其余题目保持不变，请稍候')
+  expect(rollButton(0).textContent).toContain('Roll · 换这道题')
+  expect(taskCards()[0].textContent).toContain('请等待当前操作完成')
+  expect(rollButton(0).disabled).toBe(true)
+  expect(rollButton(1).disabled).toBe(true)
+  await act(async () => {
+    rollButton(0).click()
+    rollButton(1).click()
+  })
+  expect(apiMock.mock.calls.filter(([path]) => path === '/daily/roll')).toHaveLength(1)
+  await act(async () => pending.resolve(state))
+  expect(rollButton(1).getAttribute('aria-busy')).toBe('false')
+  expect(rollButton(0).disabled).toBe(false)
+})
+
+it('keeps the original task after a failed Roll and offers a retry for that exact task', async () => {
+  let attempts = 0
+  const state = readyDay()
+  const onError = vi.fn()
+  apiMock.mockImplementation(async (path: string, method?: string, payload?: any) => {
+    if (path === '/daily/roll' && method === 'POST') {
+      expect(payload.task_id).toBe(secondTask.task_id)
+      attempts += 1
+      if (attempts === 1) throw new Error('AI 服务暂时不可用')
+    }
+    return state
+  })
+  await render(0, { onError })
+  await act(async () => rollButton(1).click())
+  expect(taskCards()[0].querySelector('[role="alert"]')).toBeNull()
+  expect(taskCards()[1].querySelector('[role="alert"]')?.textContent).toContain('AI 服务暂时不可用')
+  expect(taskCards()[1].textContent).toContain('原题保留，请重试；失败不消耗机会')
+  expect(taskCards()[1].textContent).toContain('Second fixture task')
+  expect(rollButton(1).textContent).toContain('重试 Roll')
+  expect(host.textContent).toContain('今日 Roll 总额度 2 次，剩余 2 次')
+  await act(async () => rollButton(1).click())
+  expect(taskCards()[1].querySelector('[role="alert"]')).toBeNull()
+  expect(attempts).toBe(2)
+  expect(onError).toHaveBeenCalledWith('AI 服务暂时不可用')
+})
+
+it.each([
+  ['已完成题目不能 Roll', { plan: { status: 'ready', tasks: [{ ...dailyTask, completed: true }], completed_ids: [dailyTask.id] } }, {}],
+  ['请先配置并选择 AI 模型', {}, { model: '' }],
+  ['今日 Roll 机会已用完', { rerolls_remaining: 0 }, {}],
+  ['训练周期未开启，请先保存每日任务', { active: false }, {}],
+])('disables per-task Roll with a visible reason: %s', async (reason, overrides, props) => {
+  apiMock.mockResolvedValue(readyDay(overrides))
+  await render(0, props)
+  expect(rollButton(0).disabled).toBe(true)
+  expect(rollButton(0).title).toBe(reason)
+  expect(taskCards()[0].textContent).toContain(reason)
+  await act(async () => rollButton(0).click())
+  expect(apiMock.mock.calls.some(([path]) => path === '/daily/roll')).toBe(false)
+})
+
+it('displays the server locked quota instead of changing today’s quota with tomorrow’s preference', async () => {
+  let state = readyDay({
+    locked_goal: 3,
+    rerolls_limit: 3,
+    rerolls_remaining: 1,
+    settings: { daily_goal: 3, duration_days: 30 },
+  })
+  apiMock.mockImplementation(async (path: string) => {
+    if (path === '/daily/settings') {
+      state = { ...state, settings: { daily_goal: 8, duration_days: 30 } }
+    }
+    return state
+  })
+  await render()
+  expect(host.textContent).toContain('今日 Roll 总额度 3 次，剩余 1 次')
+  expect(host.textContent).not.toContain('每天可以换题两次')
+  await editGoal('8')
+  await act(async () => save().click())
+  expect(goal().value).toBe('8')
+  expect(host.textContent).toContain('今日 Roll 总额度 3 次，剩余 1 次')
+  expect(apiMock.mock.calls.some(([path]) => path === '/daily/roll')).toBe(false)
+})

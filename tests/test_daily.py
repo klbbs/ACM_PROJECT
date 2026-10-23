@@ -1,7 +1,9 @@
 import asyncio
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
@@ -45,19 +47,148 @@ def generate(daily):
     return asyncio.run(daily.roll(Roll(provider='api', model='mock')))
 
 
-def test_exact_daily_plan_and_two_single_problem_rerolls(daily):
+@pytest.mark.parametrize('goal', [1, 2, 3])
+def test_exact_daily_plan_and_goal_count_single_problem_rerolls(daily, goal):
+    daily.configure(Settings(daily_goal=goal))
     state = generate(daily)
-    assert len(state['plan']['tasks']) == 2 and state['rerolls_remaining'] == 2
+    assert len(state['plan']['tasks']) == goal and state['rerolls_remaining'] == goal
+    assert state['rerolls_limit'] == state['plan']['rolls_limit'] == goal
+    initial_payload = daily.ai.complete.call_args.args[3]
+    assert initial_payload['requested_count'] == goal and initial_payload['target_id'] is None
+    assert initial_payload['selection_mode'] == 'daily_plan'
     seen = {task['id'] for task in state['plan']['tasks']}
-    for remaining in (1, 0):
+    for remaining in reversed(range(goal)):
         task = state['plan']['tasks'][0]
+        unchanged = state['plan']['tasks'][1:]
         state = asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=task['task_id'])))
         replacement = state['plan']['tasks'][0]
         assert replacement['id'] not in seen
+        assert replacement['task_id'] != task['task_id']
         seen.add(replacement['id'])
-        assert len(state['plan']['tasks']) == 2 and state['rerolls_remaining'] == remaining
-    with pytest.raises(HTTPException, match='最多使用 2 次'):
+        assert len(state['plan']['tasks']) == goal and state['rerolls_remaining'] == remaining
+        assert state['plan']['rolls_remaining'] == remaining
+        assert state['plan']['tasks'][1:] == unchanged
+        payload = daily.ai.complete.call_args.args[3]
+        assert payload['requested_count'] == 1 and payload['target_id'] == task['task_id']
+        assert payload['selection_mode'] == 'single_replacement'
+        assert payload['replacement_target']['id'] == task['id']
+    daily.ai.complete.reset_mock()
+    with pytest.raises(HTTPException, match=f'最多使用 {goal} 次'):
         asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=state['plan']['tasks'][0]['task_id'])))
+    daily.ai.complete.assert_not_called()
+
+
+@pytest.mark.parametrize('goal', [1, 3])
+def test_without_plan_roll_quota_follows_saved_daily_goal(daily, goal):
+    state = daily.configure(Settings(daily_goal=goal))
+    assert state['plan'] is None
+    assert state['locked_goal'] == goal
+    assert state['rerolls_limit'] == goal
+    assert state['rerolls_remaining'] == goal and state['rerolls_used'] == 0
+
+
+@pytest.mark.parametrize('original_goal,new_goal', [(1, 3), (3, 1)])
+def test_preference_edits_cannot_increase_or_reduce_locked_roll_quota(daily, original_goal, new_goal):
+    daily.configure(Settings(daily_goal=original_goal))
+    before = generate(daily)
+    changed = daily.configure(Settings(daily_goal=new_goal))
+    assert changed['settings']['daily_goal'] == new_goal
+    assert changed['locked_goal'] == changed['plan']['goal_count'] == original_goal
+    assert changed['rerolls_limit'] == changed['plan']['rolls_limit'] == original_goal
+    assert changed['rerolls_remaining'] == original_goal
+    assert changed['plan']['tasks'] == before['plan']['tasks']
+
+    state = asyncio.run(daily.roll(Roll(provider='api', model='mock',
+                                       task_id=changed['plan']['tasks'][0]['task_id'])))
+    for preference in (original_goal, new_goal):
+        changed = daily.configure(Settings(daily_goal=preference))
+        assert changed['locked_goal'] == original_goal
+        assert changed['rerolls_remaining'] == original_goal - 1
+        assert changed['plan']['tasks'] == state['plan']['tasks']
+    for _ in range(original_goal - 1):
+        state = asyncio.run(daily.roll(Roll(provider='api', model='mock',
+                                           task_id=state['plan']['tasks'][0]['task_id'])))
+    changed = daily.configure(Settings(daily_goal=10))
+    assert changed['rerolls_remaining'] == 0 and changed['plan']['goal_count'] == original_goal
+    daily.ai.complete.reset_mock()
+    with pytest.raises(HTTPException):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock',
+                                    task_id=state['plan']['tasks'][0]['task_id'])))
+    daily.ai.complete.assert_not_called()
+
+
+@pytest.mark.parametrize('ordinal', [0, 1, 2])
+def test_roll_replaces_clicked_task_only_and_preserves_other_stored_rows(daily, ordinal):
+    daily.configure(Settings(daily_goal=3))
+    before = generate(daily)
+    target = before['plan']['tasks'][ordinal]
+    with daily.db.connect() as db:
+        untouched = {row['id']: dict(row) for row in db.execute(
+            'SELECT * FROM daily_plan_tasks WHERE active=1 AND id<>?', (target['task_id'],))}
+    after = asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=target['task_id'])))
+    assert after['plan']['tasks'][ordinal]['task_id'] != target['task_id']
+    assert after['plan']['tasks'][ordinal]['id'] != target['id']
+    for index, task in enumerate(before['plan']['tasks']):
+        if index != ordinal:
+            assert after['plan']['tasks'][index] == task
+    with daily.db.connect() as db:
+        for task_id, stored in untouched.items():
+            assert dict(db.execute('SELECT * FROM daily_plan_tasks WHERE id=?', (task_id,)).fetchone()) == stored
+        assert db.execute('SELECT active FROM daily_plan_tasks WHERE id=?', (target['task_id'],)).fetchone()[0] == 0
+    payload = daily.ai.complete.call_args.args[3]
+    assert payload['requested_count'] == 1 and payload['target_id'] == target['task_id']
+    assert payload['selection_mode'] == 'single_replacement'
+    assert payload['replacement_target']['id'] == target['id']
+
+
+@pytest.mark.parametrize('status', [None, 'generating', 'failed'])
+def test_task_target_without_ready_plan_is_rejected_without_generating_plan(daily, status):
+    if status is not None:
+        daily.request_generate('api', 'mock')
+        if status == 'failed':
+            with daily.db.connect() as db:
+                db.execute("UPDATE daily_plans SET status='failed'")
+    before = daily.state()
+    with pytest.raises(HTTPException):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=999999)))
+    daily.ai.complete.assert_not_called()
+    assert daily.state()['plan'] == before['plan']
+    assert daily.state()['rerolls_remaining'] == before['rerolls_remaining']
+    with daily.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM daily_plan_tasks').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM daily_roll_reservations').fetchone()[0] == 0
+
+
+def test_ready_plan_requires_explicit_task_target_without_ai_call(daily):
+    before = generate(daily)
+    daily.ai.complete.reset_mock()
+    with pytest.raises(HTTPException) as error:
+        generate(daily)
+    assert error.value.status_code == 422
+    daily.ai.complete.assert_not_called()
+    assert daily.state()['plan'] == before['plan']
+
+
+@pytest.mark.parametrize('target_kind', ['nonexistent', 'replaced', 'previous_day'])
+def test_invalid_or_stale_task_target_does_not_call_ai_or_consume_quota(daily, monkeypatch, target_kind):
+    before = generate(daily)
+    target_id = before['plan']['tasks'][0]['task_id']
+    if target_kind == 'nonexistent':
+        target_id = 999999
+    elif target_kind == 'replaced':
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=target_id)))
+    else:
+        tomorrow = daily.today() + timedelta(days=1)
+        monkeypatch.setattr(daily, 'today', lambda now=None: tomorrow)
+        generate(daily)
+    before = daily.state()
+    daily.ai.complete.reset_mock()
+    with pytest.raises(HTTPException):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=target_id)))
+    daily.ai.complete.assert_not_called()
+    after = daily.state()
+    assert after['plan'] == before['plan']
+    assert after['rerolls_remaining'] == before['rerolls_remaining']
 
 
 def test_arbitrary_complete_and_feedback_cannot_forge_checkin(daily):
@@ -86,13 +217,18 @@ def test_verified_any_platform_ac_normal_and_complete_full_plan_k(daily):
     assert state['checkin']['month_normal'] == state['checkin']['all_normal'] == 0
 
 
-def test_failed_roll_refunds_quota_and_keeps_original_plan(daily):
+@pytest.mark.parametrize('goal', [1, 2, 3])
+def test_failed_roll_refunds_quota_and_keeps_original_plan(daily, goal):
+    daily.configure(Settings(daily_goal=goal))
     before = generate(daily)
     daily.ai.complete.side_effect = AIError('upstream unavailable')
     with pytest.raises(AIError):
         asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=before['plan']['tasks'][0]['task_id'])))
     after = daily.state()
-    assert after['rerolls_remaining'] == 2 and after['plan']['tasks'] == before['plan']['tasks']
+    assert after['rerolls_remaining'] == goal and after['plan']['tasks'] == before['plan']['tasks']
+    assert after['rerolls_used'] == 0
+    with daily.db.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM daily_roll_reservations WHERE status IN ('used','reserved')").fetchone()[0] == 0
     assert not daily.active_ai
 
 
@@ -114,16 +250,45 @@ def test_not_enough_candidates_no_billed_ai_call(daily):
     daily.ai.complete.assert_not_called()
 
 
-def test_concurrent_roll_reservation_atomic_across_service_instances(daily):
+@pytest.mark.parametrize('goal', [1, 2, 3])
+def test_concurrent_roll_reservation_atomic_across_service_instances(daily, goal):
+    daily.configure(Settings(daily_goal=goal))
     state = generate(daily)
     second = Daily(daily.db, daily.ai)
     token = daily.request_roll(state['plan']['tasks'][0]['task_id'], 'api', 'mock')
     with pytest.raises(HTTPException, match='正在进行'):
-        second.request_roll(state['plan']['tasks'][1]['task_id'], 'api', 'mock')
-    assert second.state()['rerolls_remaining'] == 1
+        second.request_roll(state['plan']['tasks'][-1]['task_id'], 'api', 'mock')
+    assert second.state()['rerolls_remaining'] == goal - 1
     with daily.db.connect() as db:
         db.execute("UPDATE daily_roll_reservations SET created_at=? WHERE token=?", (int(time.time())-601, token['token']))
-    assert second.state()['rerolls_remaining'] == 2
+    assert second.state()['rerolls_remaining'] == goal
+
+
+@pytest.mark.parametrize('goal', [1, 3])
+def test_simultaneous_roll_requests_reserve_only_one_quota_slot(daily, goal):
+    daily.configure(Settings(daily_goal=goal))
+    state = generate(daily)
+    second = Daily(daily.db, daily.ai)
+    barrier = Barrier(2)
+
+    def reserve(service):
+        barrier.wait(timeout=5)
+        try:
+            return service.request_roll(state['plan']['tasks'][0]['task_id'], 'api', 'mock')
+        except HTTPException as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(reserve, service) for service in (daily, second)]
+        results = [future.result(timeout=10) for future in futures]
+    successes = [result for result in results if isinstance(result, dict)]
+    rejections = [result for result in results if isinstance(result, HTTPException)]
+    assert len(successes) == len(rejections) == 1
+    assert rejections[0].status_code == 409
+    assert daily.state()['rerolls_used'] == 1
+    assert daily.state()['rerolls_remaining'] == goal - 1
+    with daily.db.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM daily_roll_reservations WHERE status='reserved'").fetchone()[0] == 1
 
 
 def test_upstream_cancel_refunds_roll(daily):

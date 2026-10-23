@@ -198,7 +198,10 @@ def test_battle_allocated_while_ai_selects_does_not_create_daily_task(db):
     service = Daily(db, ai, accounts('codeforces')); service.configure(Settings())
     with pytest.raises(AIError, match='候选资格已变化'):
         asyncio.run(service.roll(Roll(provider='api', model='test')))
-    assert service.state()['plan']['status'] == 'failed' and service.state()['rerolls_remaining'] == 2
+    state = service.state()
+    assert state['plan']['status'] == 'failed'
+    assert state['plan']['goal_count'] == state['rerolls_limit'] == state['rerolls_remaining'] == 1
+    assert state['rerolls_used'] == 0
     with db.connect() as conn: assert conn.execute('SELECT COUNT(*) FROM daily_plan_tasks').fetchone()[0] == 0
 
 

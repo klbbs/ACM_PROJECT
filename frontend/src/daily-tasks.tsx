@@ -23,6 +23,8 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
     [days, setDays] = useState(30)
   const [durations, setDurations] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState(false)
+  const [rollingTaskId, setRollingTaskId] = useState<number | null>(null)
+  const [rollErrors, setRollErrors] = useState<Record<number, string>>({})
   const disclosureId = React.useId()
   const fail = (error: unknown) =>
     onError(error instanceof Error ? error.message : '每日任务请求失败')
@@ -78,21 +80,37 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
     }
   }
   const select = async (task_id?: number) => {
-    if (!formReady || writing.current) return
+    if (!formReady || writing.current || !model || !data?.active) return
+    const replacing = task_id !== undefined
+    if (task_id !== undefined) {
+      const task = data?.plan?.tasks?.find((item: Row) => item.task_id === task_id)
+      if (data?.plan?.status !== 'ready' || !task || task.completed || (data.rerolls_remaining ?? 0) <= 0) return
+      setRollingTaskId(task_id)
+      setRollErrors((old) => ({ ...old, [task_id]: '' }))
+    } else if (['ready', 'generating'].includes(data?.plan?.status)) {
+      return
+    }
     setBusy(true)
     writing.current = true
     mutationVersion.current += 1
     try {
       setData(
-        await api('/daily/roll', 'POST', { provider, model, ...(task_id ? { task_id } : {}) }),
+        await api('/daily/roll', 'POST', { provider, model, ...(replacing ? { task_id } : {}) }),
       )
-      onNotice(task_id ? '已替换一道题目，其余每日题目保持不变。' : '今日题单已生成，题量已锁定。')
+      onNotice(replacing ? 'AI 已替换指定题目，消耗 1 次 Roll，其余每日题目保持不变。' : '今日题单已生成，题量与 Roll 总额度已锁定。')
     } catch (error) {
+      if (task_id !== undefined) {
+        setRollErrors((old) => ({
+          ...old,
+          [task_id]: error instanceof Error ? error.message : 'AI 换题失败',
+        }))
+      }
       fail(error)
     } finally {
       mutationVersion.current += 1
       writing.current = false
       setBusy(false)
+      setRollingTaskId(null)
       await load().catch(() => {})
     }
   }
@@ -116,6 +134,17 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
   const ready = data?.plan?.status === 'ready'
   const generating = data?.plan?.status === 'generating'
   const check = data?.checkin || {}
+  const lockedGoal = data?.locked_goal || data?.settings?.daily_goal || goal
+  const rerollsLimit = data?.rerolls_limit ?? lockedGoal
+  const rerollsRemaining = data?.rerolls_remaining ?? 0
+  const rollDisabledReason = (task: Row) => {
+    if (task.completed) return '已完成题目不能 Roll'
+    if (!model) return '请先配置并选择 AI 模型'
+    if (!data?.active) return '训练周期未开启，请先保存每日任务'
+    if (rerollsRemaining <= 0) return '今日 Roll 机会已用完'
+    if (busy && rollingTaskId !== task.task_id) return '请等待当前操作完成'
+    return ''
+  }
   return (
     <section className="card daily-mission">
       <div className="card-heading">
@@ -123,7 +152,7 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
           <h2>每日任务与签到</h2>
           <p>
             平台当日通过一题即可普通签到；完成今日整张题单升级为 K
-            签。每天可以换题两次，每次替换一道。
+            签。每日题单有几道题，当天就有几次 Roll 机会；每次由 AI 只替换你点击的那一道题。
           </p>
         </div>
         <span className={`badge ${check.kind === 'k' ? 'success' : 'neutral'}`}>
@@ -231,13 +260,13 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
         </button>
       </div>
       <p className="help" id={disclosureId}>
-        点击“AI 生成”或“换这道题”会将训练偏好、每日目标、练习用时资料和公开候选题信息发送给所选
+        点击“AI 生成”或“Roll · 换这道题”会将训练偏好、每日目标、练习用时资料和公开候选题信息发送给所选
         AI，可能产生 API 费用。 查看题单、修改偏好和刷新进度不会触发 AI 选题。
       </p>
       {ready && (
         <p className="help">
-          今日还可换题 {data.rerolls_remaining}{' '}
-          次。失败不消耗机会；已完成题目不能换题，今日出现过的题目不会重复。
+          今日 Roll 总额度 {rerollsLimit} 次，剩余 {rerollsRemaining}{' '}
+          次（随今日题量锁定）。每次只替换点击的那道题，其余题目不变；失败不消耗机会，已完成题目不能换题，今日出现过的题目不会重复。
         </p>
       )}
       <div className="daily-task-list">
@@ -294,14 +323,32 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
                   打开原题
                   <ExternalLink size={14} />
                 </a>
-                <button
-                  className="button secondary"
-                  aria-describedby={disclosureId}
-                  disabled={busy || task.completed || !model || data.rerolls_remaining === 0}
-                  onClick={() => select(task.task_id)}
-                >
-                  换这道题
-                </button>
+                <div>
+                  <button
+                    className="button primary"
+                    aria-label={`Roll · 换这道题：${task.problem_id}`}
+                    aria-describedby={`${disclosureId} ${disclosureId}-roll-${task.task_id}`}
+                    aria-busy={rollingTaskId === task.task_id}
+                    title={rollDisabledReason(task) || '消耗 1 次机会，让 AI 重新选择这道题'}
+                    disabled={busy || Boolean(rollDisabledReason(task))}
+                    onClick={() => select(task.task_id)}
+                  >
+                    <RefreshCw size={15} />
+                    {rollingTaskId === task.task_id
+                      ? 'AI 正在 Roll 这道题…'
+                      : rollErrors[task.task_id] ? '重试 Roll · 换这道题' : 'Roll · 换这道题'}
+                  </button>
+                  <p className="help" id={`${disclosureId}-roll-${task.task_id}`}>
+                    {rollingTaskId === task.task_id
+                      ? '正在重新选这道题，其余题目保持不变，请稍候。'
+                      : rollDisabledReason(task) || `仅换本题 · 剩余 ${rerollsRemaining} 次`}
+                  </p>
+                  {rollErrors[task.task_id] && (
+                    <p className="help" role="alert">
+                      本题 Roll 失败：{rollErrors[task.task_id]}。原题保留，请重试；失败不消耗机会。
+                    </p>
+                  )}
+                </div>
               </div>
             </article>
           ))}

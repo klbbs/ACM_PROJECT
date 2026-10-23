@@ -73,7 +73,9 @@ def test_daily_delayed_ai_cannot_save_a_candidate_that_lost_eligibility(db, chan
     assert daily.state()['plan']['status'] == 'failed'
     with db.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM daily_plan_tasks').fetchone()[0] == 0
-    assert daily.state()['rerolls_remaining'] == 2
+    current = daily.state()
+    assert current['plan']['goal_count'] == current['rerolls_limit'] == current['rerolls_remaining'] == 1
+    assert current['rerolls_used'] == 0
 
 
 def test_recommend_job_does_not_persist_old_date_after_training_changes(db, monkeypatch):

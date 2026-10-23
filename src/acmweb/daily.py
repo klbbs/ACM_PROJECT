@@ -165,8 +165,8 @@ class Daily:
         with self.db.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM daily_roll_reservations WHERE status='reserved' AND created_at<?", (int(time.time())-600,))
-            task = db.execute("SELECT problem_id FROM daily_plan_tasks WHERE id=? AND day=? AND active=1", (task_id, day)).fetchone()
-            plan = db.execute("SELECT status FROM daily_plans WHERE day=?", (day,)).fetchone()
+            task = db.execute("SELECT problem_id,data FROM daily_plan_tasks WHERE id=? AND day=? AND active=1", (task_id, day)).fetchone()
+            plan = db.execute("SELECT status,goal_count FROM daily_plans WHERE day=?", (day,)).fetchone()
             used = db.execute("SELECT COUNT(*) FROM daily_roll_reservations WHERE day=? AND status IN ('reserved','used')", (day,)).fetchone()[0]
             if not task or not plan or plan[0] != "ready":
                 raise HTTPException(409, "今天没有可换的每日题目")
@@ -175,14 +175,14 @@ class Daily:
             if any(self._canonical(platform, pid) == task[0] and datetime.fromtimestamp(ts, TZ).date().isoformat() == day
                    for platform, pid, ts in self._trusted_ac(db, time.time())):
                 raise HTTPException(409, "已完成的每日题目不能换题")
-            if used >= 2:
-                raise HTTPException(409, "每天最多使用 2 次换题机会")
+            if used >= plan['goal_count']:
+                raise HTTPException(409, f"今天最多使用 {plan['goal_count']} 次换题机会，按今日锁定题量计算")
             db.execute("INSERT INTO daily_roll_reservations VALUES(?,?,?,?,?)", (token, day, task_id, "reserved", int(time.time())))
             excluded = {row[0] for row in db.execute("SELECT problem_id FROM daily_plan_tasks WHERE day=?", (day,))}
             excluded.update(row[0] for row in db.execute("SELECT problem_id FROM daily_roll_history WHERE day=?", (day,)))
             db.execute("INSERT OR IGNORE INTO daily_roll_history VALUES(?,?)", (day, task[0]))
         return {"day": day, "token": token, "task_id": task_id, "excluded_ids": sorted(excluded),
-                "provider": provider, "model": model}
+                "provider": provider, "model": model, "target_problem": json.loads(task['data'])}
 
     def _candidate_pool(self, count, excluded):
         prefs = self.db.get("training", {})
@@ -230,7 +230,8 @@ class Daily:
             pool = self._candidate_pool(1, payload["excluded_ids"])
             if not pool:
                 raise AIError("没有新的候选题可替换，请同步题库或调整训练难度")
-            chosen = await self._select(payload["provider"], payload["model"], pool, 1, payload["excluded_ids"], task_id)
+            chosen = await self._select(payload["provider"], payload["model"], pool, 1, payload["excluded_ids"],
+                                        task_id, payload.get('target_problem'))
             replacement = chosen[0]
             if day != self.today().isoformat():
                 raise AIError("日期已变化，本次换题不消耗额度")
@@ -259,7 +260,7 @@ class Daily:
                 db.execute("DELETE FROM daily_roll_reservations WHERE token=? AND status='reserved'", (token,))
             raise
 
-    async def _select(self, provider, model, pool, count, excluded, target_id=None):
+    async def _select(self, provider, model, pool, count, excluded, target_id=None, target_problem=None):
         prefs = self.db.get("training", {})
         if self.guard:
             self.guard()
@@ -267,6 +268,9 @@ class Daily:
         try:
             result = await self.ai.complete("daily_selection", provider, model,
             {"requested_count": count, "excluded_ids": excluded, "target_id": target_id,
+             "selection_mode": "single_replacement" if target_id is not None else "daily_plan",
+             "replacement_target": ({key: target_problem.get(key) for key in
+                 ('id', 'platform', 'title', 'difficulty', 'tags', 'reason')} if target_problem else None),
              "difficulty_range": [prefs.get("minimum", 1000), prefs.get("maximum", 1600)],
              "training_preferences": prefs, "daily_budget": self.settings(),
              "actual_time_evidence": self.evidence(),
@@ -315,14 +319,14 @@ class Daily:
         state = self.state()
         if not state['active']:
             raise HTTPException(409, '每日任务未开始或周期已结束，请先保存每日任务设置')
-        if not state['plan'] or state['plan']['status'] != 'ready':
-            values = self.request_generate(payload.provider, payload.model)
-            await self.generate(values)
-        else:
-            if payload.task_id is None:
-                raise HTTPException(422, '请选择要替换的一道每日题目')
+        if payload.task_id is not None:
             values = self.request_roll(payload.task_id, payload.provider, payload.model)
             await self._roll(values)
+        elif state['plan'] and state['plan']['status'] == 'ready':
+            raise HTTPException(422, '请选择要替换的一道每日题目')
+        else:
+            values = self.request_generate(payload.provider, payload.model)
+            await self.generate(values)
         return self.state()
 
     def complete(self, payload):
@@ -418,12 +422,16 @@ class Daily:
         solved = {self._canonical(platform, pid) for platform, pid in by_day.get(today, set())} - battles
         active_tasks = tasks_by_day.get(today, [])
         completed = [row['problem_id'] for row in active_tasks if row['problem_id'] in solved]
+        # Match today's immutable plan size, not editable preferences. Existing
+        # successful/reserved rolls still count when upgrading from fixed quotas.
+        rolls_limit = plan['goal_count'] if plan else settings['daily_goal']
+        rolls_remaining = max(0, rolls_limit - rolls_used)
         snapshot = {"today": today, "timezone": "Asia/Shanghai", "settings": settings,
             "time_evidence": self.evidence(),
             "active": bool(cycle and cycle["starts_on"] <= today <= cycle["ends_on"]),
             "cycle": cycle, "plan": ({"status": plan['status'], "goal_count": plan["goal_count"], "tasks": [
                 {**json.loads(row["data"]), "task_id": row["id"], "duration_minutes": times.get(row["id"]), "completed": row["problem_id"] in solved}
-                for row in active_tasks], "rolls_remaining": max(0, 2-rolls_used), "completed_ids": completed} if plan else None),
+                for row in active_tasks], "rolls_limit": rolls_limit, "rolls_remaining": rolls_remaining, "completed_ids": completed} if plan else None),
             "sign_in": {"kind": "k" if today in k_days else ("ordinary" if today in ordinary_days else "none"),
                 "monthly": {"ordinary": len(monthly_days-k_days), "k": len(monthly_days & k_days)},
                 "total": {"ordinary": len(ordinary_days-k_days), "k": len(k_days)},
@@ -432,7 +440,7 @@ class Daily:
         snapshot.update({'day': today, 'started_at': cycle['starts_on'] if cycle else None,
             'ends_at': cycle['ends_on'] if cycle else None, 'completed': len(by_day.get(today, set())),
             'locked_goal': plan['goal_count'] if plan else settings['daily_goal'],
-            'rerolls_remaining': max(0, 2-rolls_used), 'rerolls_used': rolls_used,
+            'rerolls_limit': rolls_limit, 'rerolls_remaining': rolls_remaining, 'rerolls_used': rolls_used,
             'legacy_notice': '旧版手动完成记录已保留为历史档案；签到统计现仅依据平台验证的通过记录。' if legacy_count else '',
             'checkin': {'kind': 'normal' if sign['kind']=='ordinary' else (sign['kind'] if sign['kind']=='k' else None),
                 'month_normal': sign['monthly']['ordinary'], 'month_k': sign['monthly']['k'],

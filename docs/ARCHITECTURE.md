@@ -77,7 +77,7 @@ Responses 使用 JSON Schema，兼容 Chat Completions 使用 JSON 对象，再�
 | GET/PUT /api/training | 训练偏好 |
 | GET /api/daily | 每日任务、签到和本月统计 |
 | PUT /api/daily/settings | 设置每日题量与任务周期 |
-| POST /api/daily/roll | AI 选题，每日最多两次 |
+| POST /api/daily/roll | 首次 AI 生成今日题单；之后必须指定 task_id，仅替换一道，今日 k 道题共有 k 次 Roll 机会 |
 | POST /api/daily/complete | 记录完成并更新普通签到/K 签 |
 
 本机 /api/docs 可查看参数。后台任务返回 job ID，前端轮询状态，完成后加载报告。
