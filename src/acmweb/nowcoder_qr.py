@@ -99,7 +99,14 @@ def _poll(session, ticket):
     value = _json(session, '/nccommon/oauth2/login/wechat_mp_status', params={'ticket': ticket})
     if type(value.get('code')) is not int:
         return 'failed', None, None
-    if value.get('code') == 1 and value.get('msg') == '二维码未被扫描':
+    if value.get('code') == 1:
+        message = value.get('msg')
+        # The official endpoint uses code=1 for pending QR states, but its
+        # wording varies with scan/confirmation state. Only the known malformed
+        # ticket response is terminal; all other code=1 states remain bounded
+        # by the QR expiry timer and never authorize binding.
+        if isinstance(message, str) and message.strip() == 'ticket长度错误':
+            return 'failed', None, None
         return 'waiting', None, None
     if value.get('code') != 0:
         return 'failed', None, None

@@ -128,6 +128,19 @@ def test_fixed_upstream_wait_and_unrecognized_failure():
     assert _poll(session, ticket)[0] == 'failed'
 
 
+@pytest.mark.parametrize('message', [
+    '二维码已扫描，请在微信确认',
+    '等待用户确认',
+    '官方状态文案更新',
+    '',
+    None,
+])
+def test_unknown_code_one_status_keeps_flow_waiting(message):
+    session = Upstream()
+    session.result = {'code': 1, 'msg': message}
+    assert _poll(session, 'synthetic-ticket') == ('waiting', None, None)
+
+
 @pytest.mark.parametrize('url', [
     'http://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=synthetic-ticket',
     'https://mp.weixin.qq.com:443/cgi-bin/showqrcode?ticket=synthetic-ticket',
