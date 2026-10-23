@@ -145,22 +145,34 @@ export function ProblemSubmissions({
   const currentHandle = useRef(handle)
   currentProblem.current = problemId
   currentHandle.current = handle
+  const propsHandles = useRef(handles)
+  propsHandles.current = handles
   const listingGeneration = useRef(0)
   const pollGeneration = useRef(0)
+  const codeGeneration = useRef(0)
   const syncing = useRef(false)
   const callbacks = useRef({ coach, loadCode, onChanged, onError })
   callbacks.current = { coach, loadCode, onChanged, onError }
 
-  const handleKey = handles.join('\n')
+  const handleOptions = Array.from(new Set([...handles, ...serverHandles]))
+  const handleOptionsKey = handleOptions.join('\n')
   useEffect(() => {
-    setHandle((previous) => (handles.includes(previous) ? previous : handles[0] || ''))
-  }, [handleKey])
+    // The listing can discover accounts the workbench payload did not include yet,
+    // so the selection must always point at a real option. A valid user choice is
+    // never replaced, including after switching accounts.
+    if (!handleOptionsKey) {
+      if (handle) setHandle('')
+      return
+    }
+    if (!handleOptions.includes(handle)) setHandle(handleOptions[0])
+  }, [handleOptionsKey, handle])
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
       listingGeneration.current++
       pollGeneration.current++
+      codeGeneration.current++
     }
   }, [])
   useEffect(() => {
@@ -172,6 +184,7 @@ export function ProblemSubmissions({
 
   const load = useCallback(async (target: string, account: string) => {
     const generation = ++listingGeneration.current
+    let adopting = false
     setLoading(true)
     try {
       const query = account ? `?handle=${encodeURIComponent(account)}` : ''
@@ -187,11 +200,19 @@ export function ProblemSubmissions({
         generation !== listingGeneration.current
       )
         return
-      setItems(Array.isArray(result.items) ? result.items : [])
-      if (Array.isArray(result.handles)) setServerHandles(result.handles)
+      const discovered = Array.isArray(result.handles) ? result.handles : null
+      if (discovered !== null) setServerHandles(discovered)
+      const known = new Set([...(discovered || []), ...propsHandles.current])
       setListError('')
       // A live sync owns the summary; a late list read must not replace it.
       if (!syncing.current && result.sync_status) setSync(result.sync_status)
+      // Discovering accounts must not render rows for another account (or for no
+      // account at all): the selection effect adopts a real account and reloads.
+      if (discovered?.length && !known.has(account)) {
+        adopting = true
+        return
+      }
+      setItems(Array.isArray(result.items) ? result.items : [])
     } catch (error) {
       if (
         mounted.current &&
@@ -205,7 +226,8 @@ export function ProblemSubmissions({
         mounted.current &&
         currentProblem.current === target &&
         currentHandle.current === account &&
-        generation === listingGeneration.current
+        generation === listingGeneration.current &&
+        !adopting
       )
         setLoading(false)
     }
@@ -218,9 +240,11 @@ export function ProblemSubmissions({
     // user already opened for this problem and account.
     if (resetKey.current !== key) {
       resetKey.current = key
+      codeGeneration.current++
       setItems([])
       setSync(null)
       setSyncError('')
+      setCodeBusy('')
       setCodes({})
       setCodeErrors({})
       setConfirmed({})
@@ -359,6 +383,14 @@ export function ProblemSubmissions({
     const target = problemId
     const account = handle
     const submission = item.submission_id
+    const generation = ++codeGeneration.current
+    // The response belongs to the account and problem that asked for it: a late
+    // reply must never write code, metadata or errors into another selection.
+    const stillCurrent = () =>
+      mounted.current &&
+      currentProblem.current === target &&
+      currentHandle.current === account &&
+      generation === codeGeneration.current
     setCodeBusy(submission)
     setCodeErrors((previous) => ({ ...previous, [submission]: '' }))
     try {
@@ -387,8 +419,23 @@ export function ProblemSubmissions({
           attempt_id: result.attempt_id,
         }
       }
-      if (!mounted.current || currentProblem.current !== target) return
+      if (!stillCurrent()) return
       setCodes((previous) => ({ ...previous, [submission]: state }))
+      // The first read creates the attempt record, so this row becomes reviewable
+      // immediately instead of waiting for a reload or another code card.
+      setItems((previous) =>
+        previous.map((row) =>
+          String(row.submission_id) === String(submission)
+            ? {
+                ...row,
+                attempt_id: state.attempt_id || row.attempt_id,
+                has_local_code: true,
+                code_verified: state.verified,
+                language: state.language || row.language,
+              }
+            : row,
+        ),
+      )
       // The workbench now owns an immutable record, so the existing review and
       // code view can be reused without loading the draft.
       try {
@@ -397,38 +444,46 @@ export function ProblemSubmissions({
         /* Reading the record succeeded; a background refresh failure is not fatal. */
       }
     } catch (error) {
-      if (mounted.current && currentProblem.current === target)
+      if (stillCurrent())
         setCodeErrors((previous) => ({
           ...previous,
           [submission]: `判题已同步，源码暂不可读：${text(error)}`,
         }))
     } finally {
-      if (mounted.current) setCodeBusy('')
+      if (generation === codeGeneration.current) setCodeBusy('')
     }
   }
 
-  async function review(item: ProblemSubmission) {
-    if (!item.attempt_id) return
+  async function review(attemptId: string) {
+    const target = problemId
+    const account = handle
+    const stillCurrent = () =>
+      mounted.current && currentProblem.current === target && currentHandle.current === account
     try {
       const result = await callbacks.current.coach(
-        `/workbench/attempt/${encodeURIComponent(item.attempt_id)}/review`,
+        `/workbench/attempt/${encodeURIComponent(attemptId)}/review`,
       )
-      if (result?.error) callbacks.current.onError(result.error)
+      if (result?.error && stillCurrent()) callbacks.current.onError(result.error)
     } catch (error) {
-      callbacks.current.onError(text(error))
+      if (stillCurrent()) callbacks.current.onError(text(error))
     }
   }
 
   async function loadIntoEditor(item: ProblemSubmission, state: CodeState) {
+    const target = problemId
+    const account = handle
     const submission = String(item.submission_id || item.attempt_id || '')
+    const stillCurrent = () =>
+      mounted.current && currentProblem.current === target && currentHandle.current === account
+    if (!stillCurrent()) return
     try {
       await callbacks.current.loadCode(state.code, state.language)
-      if (!mounted.current) return
+      if (!stillCurrent()) return
       setLoaded((previous) => ({ ...previous, [submission]: '已载入编辑器，正在自动保存' }))
       setCodeErrors((previous) => ({ ...previous, [submission]: '' }))
       setConfirmed((previous) => ({ ...previous, [submission]: false }))
     } catch (error) {
-      if (mounted.current)
+      if (stillCurrent())
         setCodeErrors((previous) => ({
           ...previous,
           [submission]: `未载入编辑器：${text(error)}`,
@@ -436,7 +491,6 @@ export function ProblemSubmissions({
     }
   }
 
-  const selectHandles = Array.from(new Set([...handles, ...serverHandles]))
   const count = items.length
   const syncStatus = sync?.status || ''
   // The job itself completes even when the platform read was cut short: only the
@@ -462,7 +516,7 @@ export function ProblemSubmissions({
       </h3>
       <p className="muted">
         {remote
-          ? `CF、AtCoder 可以在下方「提交到平台」由本站提交；如果你已在 ${platformName} 官方页面提交，回到这里点击一次「同步本题提交」即可读取这个账号在当前题的记录和判题，不需要填写提交号、重新粘贴代码或勾选代码校对。`
+          ? `CF、AtCoder 可以在上方「提交到平台」由本站提交；如果你已在 ${platformName} 官方页面提交，回到这里点击一次「同步本题提交」即可读取这个账号在当前题的记录和判题，不需要填写提交号、重新粘贴代码或勾选代码校对。`
           : `${platformName} 的提交请在官方页面完成；回到这里点击「同步本题提交」，本站会读取这个账号在当前题的记录和判题，不需要填写提交号、重新粘贴代码或勾选代码校对。`}{' '}
         同步只读取记录，不会替你交题。
       </p>
@@ -475,8 +529,8 @@ export function ProblemSubmissions({
             disabled={syncBusy}
             onChange={(event) => setHandle(event.target.value)}
           >
-            {!selectHandles.length && <option value="">尚未配置账号</option>}
-            {selectHandles.map((item) => (
+            {!handleOptions.length && <option value="">尚未配置账号</option>}
+            {handleOptions.map((item) => (
               <option key={item} value={item}>
                 {item}
               </option>
@@ -496,7 +550,7 @@ export function ProblemSubmissions({
           )}
           {syncBusy || running(syncStatus) ? '正在同步…' : '同步本题提交'}
         </button>
-        {!selectHandles.length && (
+        {!handleOptions.length && (
           <a className="text-button" href="#settings">
             前往连接与设置添加账号
           </a>
@@ -562,6 +616,9 @@ export function ProblemSubmissions({
             const url = allowedRecordUrl(problemId, item.url)
             const state = codes[submission]
             const note = codeErrors[submission]
+            // A first source read creates the attempt; use its metadata before any
+            // reload so the row can be reviewed immediately.
+            const attemptId = state?.attempt_id || item.attempt_id
             const replacing =
               !!state && !!editorCode.trim() && editorCode.trim() !== state.code.trim()
             return (
@@ -634,13 +691,13 @@ export function ProblemSubmissions({
                       >
                         载入编辑器
                       </button>
-                      {!!item.attempt_id && errored && (
+                      {!!attemptId && errored && (
                         <button
                           type="button"
                           className="secondary"
                           disabled={!aiReady || active}
                           title={aiReady ? undefined : '请先选择用于错因分析的模型'}
-                          onClick={() => void review(item)}
+                          onClick={() => void review(attemptId)}
                         >
                           分析本次错因（不提供答案）
                         </button>
