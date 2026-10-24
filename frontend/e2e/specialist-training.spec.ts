@@ -239,13 +239,20 @@ test('training hub generates an explicit progressive plan, opens its first probl
   ])
   await expect(panel.locator('.specialist-step').first()).toContainText('模板入门')
   await expect(panel.locator('.specialist-step')).toHaveCount(3)
+  const resolved = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return (
+      url.pathname === '/api/workbench/resolve' &&
+      url.searchParams.get('problem') === 'codeforces:4-A'
+    )
+  })
   await panel
     .locator('.specialist-step')
     .first()
     .getByRole('button', { name: '前往工作台', exact: true })
     .click()
   await expect(page.locator('.wb-statement')).toBeVisible()
-  await expect(page.getByLabel('平台题号或官方题目链接')).toHaveValue('4-A')
+  expect((await (await resolved).json()).id).toBe('codeforces:4-A')
   await openTraining(page)
   await expect(panel.getByRole('heading', { name: savedPlan.title, exact: true })).toBeVisible()
   await page.reload()
