@@ -1,0 +1,218 @@
+.specialist-training h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.specialist-setup {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr 0.65fr;
+  gap: 1rem;
+}
+.specialist-training label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.specialist-training select,
+.specialist-training textarea {
+  width: 100%;
+  min-width: 0;
+}
+.specialist-training .specialist-consent {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  margin: 1rem 0;
+  line-height: 1.65;
+}
+.specialist-consent input {
+  width: auto;
+  margin-top: 0.35rem;
+  flex-shrink: 0;
+}
+.specialist-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.specialist-history {
+  margin: 1.5rem 0;
+}
+.specialist-route-title,
+.specialist-item-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.specialist-route-title h3,
+.specialist-item-heading h4 {
+  margin: 0.4rem 0;
+}
+.specialist-route ol {
+  padding: 0;
+  list-style: none;
+}
+.specialist-step {
+  display: flex;
+  gap: 1rem;
+  position: relative;
+  padding: 1rem 0 1.5rem;
+}
+.specialist-step:not(:last-child):before {
+  content: '';
+  position: absolute;
+  left: 1.05rem;
+  top: 3.2rem;
+  bottom: 0;
+  width: 2px;
+  background: var(--border, #dbe3eb);
+}
+.specialist-step-index {
+  position: relative;
+  z-index: 1;
+  width: 2.2rem;
+  height: 2.2rem;
+  flex: 0 0 2.2rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 3px 0 #0002;
+  transition: transform 0.2s;
+}
+.specialist-step:hover .specialist-step-index {
+  transform: translateY(-2px);
+}
+.specialist-step.completed .specialist-step-index {
+  background: #20985f;
+}
+.specialist-step-body {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border, #dbe3eb);
+  border-radius: 1rem;
+  padding: 1.1rem;
+}
+.specialist-empty {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--muted, #64748b);
+}
+.specialist-review {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border, #dbe3eb);
+}
+.specialist-error {
+  color: var(--danger, #b42335);
+  padding: 0.8rem 0;
+  overflow-wrap: anywhere;
+}
+.specialist-dimensions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 0.7rem;
+}
+.specialist-dimensions article {
+  padding: 0.8rem;
+  border: 1px solid var(--border, #dbe3eb);
+  border-radius: 0.7rem;
+  overflow-wrap: anywhere;
+}
+.specialist-dimensions h5 {
+  font-size: 0.95rem;
+  margin: 0.3rem 0;
+}
+.specialist-dimensions small {
+  font-weight: 400;
+  color: var(--muted, #64748b);
+}
+.specialist-markdown {
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+.specialist-markdown pre {
+  overflow: auto;
+  max-width: 100%;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--surface-secondary, #edf1f5);
+}
+.specialist-markdown table {
+  display: block;
+  overflow: auto;
+}
+.specialist-conversation {
+  display: grid;
+  gap: 0.8rem;
+  margin: 1rem 0;
+  max-height: 620px;
+  overflow: auto;
+}
+.specialist-message {
+  border: 1px solid var(--border, #dbe3eb);
+  border-radius: 1rem;
+  padding: 0.9rem;
+  max-width: 95%;
+}
+.specialist-message.user {
+  margin-left: 1rem;
+  background: var(--surface-secondary, #edf1f5);
+}
+.specialist-message.assistant {
+  margin-right: 1rem;
+}
+.specialist-chat {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.7rem;
+  margin-top: 1rem;
+}
+.specialist-chat textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+.specialist-chat button {
+  align-self: flex-end;
+}
+.specialist-thinking {
+  color: var(--muted, #64748b);
+}
+.specialist-thinking span {
+  animation: specialist-pulse 1s ease-in-out infinite;
+}
+@keyframes specialist-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (max-width: 700px) {
+  .specialist-setup {
+    grid-template-columns: 1fr;
+  }
+  .specialist-step {
+    gap: 0.55rem;
+  }
+  .specialist-step-body {
+    padding: 0.8rem;
+  }
+  .specialist-review .button {
+    white-space: normal;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .specialist-thinking span {
+    animation: none;
+  }
+  .specialist-step-index {
+    transition: none;
+  }
+}
