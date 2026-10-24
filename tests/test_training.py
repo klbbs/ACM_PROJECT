@@ -55,9 +55,11 @@ def generate(service):
 
 def test_topics_have_clear_catalog_and_reference():
     groups = topic_groups()
-    assert len(groups) == 8 and len(TOPICS) >= 20
+    assert len(groups) == 22 and sum(len(g['topics']) for g in groups) == 262
+    assert len(TOPICS) >= 290
     assert {'dsu', 'fenwick', 'kmp', 'shortest-path', 'knapsack'} <= TOPICS.keys()
-    assert all(t['source_url'] == 'https://oi-wiki.org/' for g in groups for t in g['topics'])
+    assert all(t['source_url'] == 'https://www.luogu.com.cn/_lfe/tags' for g in groups for t in g['topics'])
+    assert all(t['path'] and t['source_version'] for g in groups for t in g['topics'])
     groups[0]['topics'][0]['title'] = 'changed'
     assert topic_groups()[0]['topics'][0]['title'] != 'changed'
 
@@ -205,7 +207,7 @@ def test_api_topic_and_plan_paths_and_strict_count(training):
     client = TestClient(app)
     assert client.get('/api/training/topics').status_code == 200
     assert client.get('/api/training/plans').json() == {'plans': []}
-    for bad in [2, 9, True, '4']:
+    for bad in [0, 51, True, '4']:
         assert client.post('/api/training/plans', json={**request().model_dump(), 'count': bad}).status_code == 422
     result = client.post('/api/training/plans', json=request().model_dump())
     assert result.status_code == 200
@@ -341,3 +343,159 @@ def test_expired_old_owner_cannot_release_new_generation_lease(training):
     assert training.db.get('specialist_generation_lock')['token'] == new
     training._unlock(new)
     assert training.db.get('specialist_generation_lock') is None
+
+
+@pytest.mark.parametrize('mode', ['learn', 'consolidate', 'variation', 'strengthen'])
+def test_four_modes_and_user_selected_single_question(training, mode):
+    plan = asyncio.run(training.generate(Generate(topic_id='dsu', count=1, mode=mode, provider='api', model='mock')))
+    assert plan['mode'] == mode
+    assert len(plan['items']) == 1
+    assert plan['items'][0]['learning_level'] == 1
+    assert plan['items'][0]['stage'] == ('template' if mode == 'learn' else mode)
+    payload = training.ai.complete.call_args.args[3]
+    assert payload['template_first_required'] is (mode == 'learn')
+    assert payload['mode'] == mode
+    assert training.get_plan(plan['id']) == plan
+
+
+@pytest.mark.parametrize('mode', ['consolidate', 'variation', 'strengthen'])
+def test_only_learning_mode_requires_a_template(training, mode):
+    with training.db.connect() as db:
+        db.execute("DELETE FROM problem_catalog WHERE id='luogu:P3367'")
+    plan = asyncio.run(training.generate(Generate(topic_id='dsu', count=4, mode=mode, provider='api', model='mock')))
+    assert len(plan['items']) == 4
+    assert all(item['stage'] == mode for item in plan['items'])
+
+
+@pytest.mark.parametrize('count', [12, 50])
+def test_full_supported_user_count_is_exact_and_progressive(training, count):
+    with training.db.connect() as db:
+        # Uniform official difficulty still permits AI learning levels: do not
+        # fabricate 50 different platform scores from absent source evidence.
+        for i in range(1, 61):
+            row = {'id': f'luogu:P{9100+i}', 'title': f'集合问题 {i}', 'platform': 'luogu',
+                   'problem_id': f'P{9100+i}', 'url': f'https://www.luogu.com.cn/problem/P{9100+i}',
+                   'tags': ['dsu'], 'native_difficulty': 3}
+            db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('luogu', row['id'], json.dumps(row)))
+    plan = asyncio.run(training.generate(Generate(topic_id='dsu', count=count, provider='api', model='mock')))
+    assert len(plan['items']) == count
+    assert len({item['problem_id'] for item in plan['items']}) == count
+    assert [item['learning_level'] for item in plan['items']] == list(range(1, count + 1))
+    assert plan['items'][0]['stage'] == 'template'
+    assert all(item['stage'] != 'template' for item in plan['items'][1:])
+
+
+def test_shared_selector_exclusions_and_non_template_daily_roll(training):
+    items = asyncio.run(training.select_items('dsu', 'learn', 1, 'api', 'mock',
+        excluded_ids=('luogu:P9001',), template_first=False, forbid_templates=True))
+    assert items[0]['problem_id'] == 'luogu:P9002'
+    payload = training.ai.complete.call_args.args[3]
+    assert payload['template_first_required'] is False
+    assert payload['forbid_templates'] is True
+    assert payload['template_candidate_ids'] == []
+    assert all(p['id'] not in {'luogu:P3367', 'luogu:P9001'} for p in payload['candidates'])
+    assert training.plans()['plans'] == []
+    assert training.db.get('specialist_generation_lock') is None
+    assert training.active_ai is False
+
+
+def test_shared_selector_forces_template_for_first_daily_roll(training):
+    items = asyncio.run(training.select_items('dsu', 'consolidate', 1, 'api', 'mock', template_first=True))
+    assert items[0]['problem_id'] == 'luogu:P3367'
+    assert training.ai.complete.call_args.args[3]['template_first_required'] is True
+
+
+def test_shared_selector_rejects_concurrent_daily_and_standalone_requests(training):
+    async def run():
+        entered, finish = asyncio.Event(), asyncio.Event()
+        original = training.ai.complete.side_effect
+        async def waiting(*args):
+            entered.set()
+            await finish.wait()
+            return await original(*args)
+        training.ai.complete.side_effect = waiting
+        pending = asyncio.create_task(training.select_items('dsu', 'learn', 1, 'api', 'mock'))
+        await entered.wait()
+        with pytest.raises(HTTPException) as err:
+            await training.generate(request())
+        assert err.value.status_code == 409
+        assert training.db.get('specialist_generation_lock') is None
+        assert training.active_ai is True
+        finish.set()
+        await pending
+    asyncio.run(run())
+    assert training.active_ai is False
+    assert training._selecting is False
+    assert training.ai.complete.call_count == 1
+
+
+def test_official_catalog_hierarchy_and_exact_platform_scoped_matching():
+    from acmweb.training_topics import matches_topic
+    groups = topic_groups()
+    rows = {t['id']: t for group in groups for t in group['topics']}
+    assert len(rows) == 262
+    assert 'luogu-47' in rows and rows['luogu-47']['parent_id'] == 'luogu-11'
+    assert rows['luogu-47']['path'] == ['树形数据结构', '并查集']
+    assert all(t['parent_id'] is None or t['parent_id'] in rows for t in rows.values())
+    problem = {'platform': 'luogu', 'id': 'luogu:P99999', 'title': '普通标题', 'tags': [47]}
+    assert matches_topic(problem, TOPICS['luogu-47'])
+    assert matches_topic(problem, TOPICS['luogu-11'])
+    assert not matches_topic(problem, TOPICS['luogu-3'])
+    assert not matches_topic({**problem, 'platform': 'atcoder'}, TOPICS['luogu-47'])
+    assert not matches_topic({**problem, 'tags': [999999], 'title': '并查集'}, TOPICS['luogu-47'])
+    assert matches_topic({'platform': 'codeforces', 'tags': ['dsu']}, TOPICS['luogu-47'])
+    assert matches_topic({'platform': 'codeforces', 'tags': ['dp']}, TOPICS['luogu-3'])
+    assert not matches_topic({'platform': 'codeforces', 'tags': ['dp']}, TOPICS['luogu-444'])
+    assert not matches_topic({'platform': 'codeforces', 'tags': ['data structures']}, TOPICS['luogu-47'])
+    # Hidden aliases survive for old API callers but do not double menu entries.
+    assert 'dsu' in TOPICS and 'dsu' not in rows
+
+
+def test_old_plan_missing_mode_is_restored_with_learning_default(training):
+    plan = _stored_plan(1, 'luogu:P3367')
+    with training.db.connect() as db:
+        db.execute('INSERT INTO training_plans VALUES(?,?,?,?)', (plan['id'], 'dsu', 1, json.dumps(plan)))
+    restored = training.get_plan(plan['id'])
+    assert restored['mode'] == 'learn'
+    assert restored['mode_title'] == '新学'
+    assert restored['items'][0]['problem_id'] == 'luogu:P3367'
+
+
+def test_topics_endpoint_describes_modes_and_free_count_limit(training):
+    app = FastAPI()
+    register(app, training)
+    response = TestClient(app).get('/api/training/topics').json()
+    assert response['max_count'] == 50
+    assert [m['id'] for m in response['modes']] == ['learn', 'consolidate', 'variation', 'strengthen']
+    assert [m['title'] for m in response['modes']] == ['新学', '巩固', '变式', '加强']
+    with pytest.raises(ValueError):
+        Generate(topic_id='dsu', count=4, provider='api', model='mock', mode='hard')
+
+
+def test_official_numeric_topic_generates_and_old_alias_still_works(training):
+    with training.db.connect() as db:
+        rows = db.execute('SELECT id,data FROM problem_catalog').fetchall()
+        for row in rows:
+            data = json.loads(row['data'])
+            data['tags'] = [47]
+            db.execute('UPDATE problem_catalog SET data=? WHERE id=?', (json.dumps(data), row['id']))
+    original = training.ai.complete.side_effect
+    async def canonical_choose(task, provider, model, payload, schema):
+        assert payload['topic']['id'] == 'luogu-47'
+        # Reuse this fixture's ordering, without changing the actual request.
+        return await original(task, provider, model, {**payload, 'topic': {**payload['topic'], 'id': 'dsu'}}, schema)
+    training.ai.complete.side_effect = canonical_choose
+    plan = asyncio.run(training.generate(Generate(topic_id='luogu-47', count=4, provider='api', model='mock')))
+    assert plan['topic_id'] == 'luogu-47'
+    assert plan['items'][0]['problem_id'] == 'luogu:P3367'
+    training.ai.complete.side_effect = original
+    assert len(generate(training)['items']) == 4
+
+
+def test_conflicting_template_roll_options_fail_before_ai(training):
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(training.select_items('dsu', 'learn', 1, 'api', 'mock',
+            template_first=True, forbid_templates=True))
+    assert error.value.status_code == 422
+    training.ai.complete.assert_not_called()
+    assert training._selecting is False

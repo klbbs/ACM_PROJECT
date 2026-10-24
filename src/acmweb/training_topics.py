@@ -1,5 +1,7 @@
 """Curated learning topics; IDs and known template examples are application owned."""
 from copy import deepcopy
+import json
+from pathlib import Path
 import re
 
 # OI Wiki is a reference taxonomy, not a source of fabricated judge problems.
@@ -67,7 +69,7 @@ LUOGU_TOPIC_TAGS = {
 
 def _luogu_tags(problem):
     return {int(tag) for tag in problem.get('tags', [])
-            if type(tag) is int or isinstance(tag, str) and tag.isascii() and tag.isdigit()}
+            if type(tag) is int or isinstance(tag, str) and re.fullmatch(r'-?[0-9]+', tag)}
 
 
 TOPICS = {}
@@ -82,6 +84,73 @@ for group_id, title, rows in _DEFINITIONS:
     GROUPS.append(group)
 
 
+# The shipped snapshot is official public metadata; no login, cookies or runtime
+# network request is needed to browse it. Old application IDs remain valid for
+# saved plans/API callers, but are not rendered as duplicate menu entries.
+_CATALOG = json.loads(Path(__file__).with_name('training_topic_catalog.json').read_text())
+_TAGS = {row['id']: row for row in _CATALOG['tags']}
+_CHILDREN = {}
+for _row in _TAGS.values():
+    _CHILDREN.setdefault(_row['parent'], []).append(_row['id'])
+
+
+def _descendants(tag_id):
+    result = {tag_id}
+    for child in _CHILDREN.get(tag_id, []):
+        result.update(_descendants(child))
+    return result
+
+
+def _path(tag_id):
+    row = _TAGS[tag_id]
+    return (_path(row['parent']) if row['parent'] is not None else []) + [row['name'].lstrip('\ufeff')]
+
+
+# Conservative, exact Codeforces tags: broad tags match only broad topics.
+# In particular `dp` never means linear/tree/interval DP, and `data structures`
+# does not establish a specific data structure.
+_CF_TAG_TO_LUOGU = {
+    'strings': 2, 'dp': 3, 'math': 5, 'graphs': 6, 'greedy': 7,
+    'geometry': 8, 'games': 13, 'binary search': 45, 'dsu': 47,
+    'fft': 69, 'number theory': 72, 'sortings': 113,
+    'dfs and similar': 4, 'shortest paths': 160, 'mst': 166,
+    'bipartite': 187, 'hashing': 235, 'combinatorics': 252,
+    'probabilities': 266,
+}
+
+GROUPS = []
+for root_id in _CHILDREN[None]:
+    root = _TAGS[root_id]
+    group = {'id': f'luogu-{root_id}', 'title': root['name'].lstrip('\ufeff'),
+             'source': 'luogu', 'topics': []}
+    def add_topic(tag_id, depth=0):
+        row, path = _TAGS[tag_id], _path(tag_id)
+        inherited = _descendants(tag_id)
+        templates = list(dict.fromkeys(pid for alias, tags in LUOGU_TOPIC_TAGS.items()
+            if tags & inherited for pid in TOPICS[alias]['template_ids']))
+        topic = {'id': f'luogu-{tag_id}', 'title': path[-1],
+                 'description': ' / '.join(path), 'path': path, 'depth': depth,
+                 'parent_id': f"luogu-{row['parent']}" if row['parent'] is not None else None,
+                 'keywords': [path[-1]], 'source_url': _CATALOG['source_url'],
+                 'source_version': _CATALOG['source_version']}
+        TOPICS[topic['id']] = {**topic, 'template_ids': templates,
+            'luogu_tags': inherited, 'official_exact': True,
+            'cf_tags': {tag for tag, target in _CF_TAG_TO_LUOGU.items() if target in inherited}}
+        group['topics'].append(topic)
+        for child in _CHILDREN.get(tag_id, []):
+            add_topic(child, depth + 1)
+    add_topic(root_id)
+    GROUPS.append(group)
+
+
+MODES = [
+    {'id': 'learn', 'title': '新学', 'description': '从模板题开始理解算法，再逐步应用'},
+    {'id': 'consolidate', 'title': '巩固', 'description': '通过递进练习熟练运用已有知识'},
+    {'id': 'variation', 'title': '变式', 'description': '理解条件变化、模型转换与不同应用'},
+    {'id': 'strengthen', 'title': '加强', 'description': '挑战综合建模与多知识点结合'},
+]
+
+
 def topic_groups():
     return deepcopy(GROUPS)
 
@@ -89,6 +158,12 @@ def topic_groups():
 def matches_topic(problem, topic):
     if problem.get('id') in topic['template_ids']:
         return True
+    if topic.get('official_exact'):
+        if problem.get('platform') == 'luogu':
+            return bool(_luogu_tags(problem) & topic.get('luogu_tags', set()))
+        if problem.get('platform') == 'codeforces':
+            return bool({str(tag).casefold() for tag in problem.get('tags', [])} & topic.get('cf_tags', set()))
+        return False
     if problem.get('platform') == 'luogu':
         tags = _luogu_tags(problem)
         if tags & LUOGU_TOPIC_TAGS.get(topic['id'], set()):
