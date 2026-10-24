@@ -64,6 +64,8 @@ def test_accepted_evidence_uses_exact_source_and_cached_repeat(setup):
     assert ai.complete.await_count == 0
     response = assess(service, attempt_id='attempt-one')
     material = ai.complete.call_args.args[3]
+    assert material['topic'] == {'topic_id': 'binary-search', 'topic_title': '二分', 'stage': 'template'}
+    assert response['sources'][0]['platform'] == 'codeforces'
     assert material['submission']['source_code'] == wb.attempt('attempt-one')['code']
     assert 'NEVER SEND THIS DRAFT' not in json.dumps(material)
     assert material['submission']['submission_id'] == '12345'
@@ -179,6 +181,7 @@ def test_chat_persists_agent_style_turns_and_failed_retry_keeps_history(setup):
     assert not result['busy']
     assert [m['role'] for m in result['messages']] == ['user', 'assistant']
     assert ai.complete.call_args.args[0] == 'specialist_chat'
+    assert ai.complete.call_args.args[3]['topic'] == {'topic_id': 'binary-search', 'topic_title': '二分', 'stage': 'template'}
     assert ai.complete.call_args.args[3]['submission']['submission_id'] == '12345'
     ai.complete.side_effect = AIError('synthetic network failure')
     with pytest.raises(AIError):
@@ -276,7 +279,7 @@ def test_official_cf_handle_case_does_not_break_verified_source(setup):
         return result
     wb.history = history
     assert service.state('plan-one', 0)['sources'][0]['source_available']
-    assert assess(service)['assessment']
+    assert assess(service, handle='dEmO')['assessment']
 
 
 def test_multiple_submissions_require_unambiguous_selection(setup):
@@ -298,3 +301,19 @@ def test_malformed_ai_output_is_a_safe_retryable_error(setup):
         assess(service)
     assert 'private model text' not in str(err.value)
     assert service.state('plan-one', 0)['assessment'] is None
+
+
+def test_non_cf_submission_handle_remains_case_sensitive(setup):
+    service, db, wb, ai, plan = setup
+    pid = 'atcoder:abc100_a'
+    plan['items'][0]['problem_id'] = pid
+    wb.accounts.document = lambda: {'accounts': [{'platform': 'atcoder', 'handle': 'demo'}]}
+    with db.connect() as conn:
+        conn.execute('UPDATE wb_attempts SET problem_id=?', (pid,))
+        conn.execute('UPDATE wb_submission_source_bindings SET problem_id=?', (pid,))
+        conn.execute('UPDATE wb_problems SET id=?', (pid,))
+    assert service.state('plan-one', 0)['sources'][0]['platform'] == 'atcoder'
+    with pytest.raises(AIError, match='没有找到'):
+        assess(service, handle='DeMo')
+    assert ai.complete.await_count == 0
+    assert assess(service, handle='demo')['assessment']
