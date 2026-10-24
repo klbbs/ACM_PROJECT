@@ -690,3 +690,56 @@ def test_daily_random_supports_twelve_items_in_exact_count_schema(daily):
     state = generate(daily)
     assert len(state['plan']['tasks']) == 12
     assert daily.ai.complete.call_args.args[3]['requested_count'] == 12
+
+
+def test_specialist_roll_uses_same_platform_neighbor_bounds_and_refunds_failure(daily):
+    service = specialist(daily)
+    daily.configure(Settings(daily_goal=3, selection_type='specialist', topic_id='binary-search', training_mode='consolidate'))
+    state = generate(daily)
+    tasks = state['plan']['tasks']
+    with daily.db.connect() as db:
+        for task, rating in zip(tasks, [1000, 1200, 1400]):
+            data = {**task, 'difficulty': rating}
+            db.execute('UPDATE daily_plan_tasks SET data=? WHERE id=?', (json.dumps(data), task['task_id']))
+        # Replaced rows and other days must not influence today's bounds.
+        for day, active in [(state['day'], 0), ('2020-01-01', 1)]:
+            db.execute('INSERT INTO daily_plan_tasks(day,ordinal,problem_id,data,active,created_at) VALUES(?,?,?,?,?,?)',
+                       (day, 0, 'luogu:P9999', json.dumps({'platform': 'luogu', 'difficulty': 9999}), active, 1))
+    before = daily.state()
+    async def no_candidate(*args, **kwargs):
+        assert kwargs['difficulty_bounds'] == {'luogu': {'minimum': 1000, 'maximum': 1400}}
+        raise AIError('当前递进难度区间没有可替换候选题，本次不扣次数')
+    service.select_items.side_effect = no_candidate
+    with pytest.raises(AIError, match='没有可替换候选题'):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=tasks[1]['task_id'])))
+    after = daily.state()
+    assert after['plan']['tasks'] == before['plan']['tasks']
+    assert after['rerolls_remaining'] == before['rerolls_remaining'] == 3
+    with daily.db.connect() as db:
+        assert not db.execute("SELECT 1 FROM daily_roll_reservations WHERE status='reserved'").fetchone()
+
+
+def test_roll_difficulty_bounds_do_not_compare_platforms_or_unknown_ratings(daily):
+    state = generate(daily)
+    day = state['day']
+    with daily.db.connect() as db:
+        db.execute('DELETE FROM daily_plan_tasks WHERE day=?', (day,))
+        neighbors = [(0, 'codeforces', 1000), (1, 'luogu', 3), (2, 'codeforces', 1100),
+                     (4, 'codeforces', 1800), (5, 'codeforces', 1600), (6, 'luogu', 6),
+                     (7, 'atcoder', None), (8, 'nowcoder', -1), (9, 'atcoder', True),
+                     (10, 'atcoder', '2000'), (11, 'atcoder', float('nan'))]
+        for ordinal, platform, difficulty in neighbors:
+            db.execute('INSERT INTO daily_plan_tasks(day,ordinal,problem_id,data,active,created_at) VALUES(?,?,?,?,1,?)',
+                       (day, ordinal, f'{platform}:p{ordinal}', json.dumps({'platform': platform, 'difficulty': difficulty}), 1))
+    assert daily._replacement_difficulty_bounds(day, -1, 3) == {
+        'codeforces': {'minimum': 1100, 'maximum': 1600}, 'luogu': {'minimum': 3, 'maximum': 6}}
+
+
+def test_single_specialist_task_roll_omits_empty_difficulty_bounds(daily):
+    service = specialist(daily)
+    daily.configure(Settings(daily_goal=1, selection_type='specialist', topic_id='binary-search'))
+    state = generate(daily)
+    task = state['plan']['tasks'][0]
+    asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=task['task_id'])))
+    assert 'difficulty_bounds' not in service.select_items.call_args.kwargs
+    assert service.select_items.call_args.kwargs['template_first'] is True
