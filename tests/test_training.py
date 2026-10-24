@@ -275,3 +275,69 @@ def test_official_rejudge_overrides_older_workbench_ac(training):
              json.dumps({'verdict': 'AC', 'submitted_at': now, 'platform': 'luogu', 'source': 'official_remote_submission'}), now))
         db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)', ('luogu', 'demo', '123', 'P3367', now, 'WA', '{}', now))
     assert not training.get_plan(plan['id'])['items'][0]['completed']
+
+
+def test_realistic_luogu_titles_and_numeric_official_tags_generate_topic_plan(training):
+    # Real catalog shape: most titles do not name their algorithm; Luogu tag 47
+    # is the official DSU category and may arrive as an int or string.
+    with training.db.connect() as db:
+        for i, title in enumerate(['亲戚', '奶酪', '朋友', '星空', '村庄'], start=1):
+            row = json.loads(db.execute('SELECT data FROM problem_catalog WHERE id=?', (f'luogu:P{9000+i}',)).fetchone()[0])
+            row.update(title=title, tags=[47 if i % 2 else '47'])
+            db.execute('UPDATE problem_catalog SET data=? WHERE id=?', (json.dumps(row), row['id']))
+    result = generate(training)
+    assert len(result['items']) == 4
+    assert result['items'][0]['problem_id'] == 'luogu:P3367'
+    assert all('并查集练习' not in p['title'] for p in result['items'])
+
+
+def test_topic_specific_numeric_tags_do_not_bleed_across_platform_or_subtypes():
+    from acmweb.training_topics import matches_topic, is_template
+    tree_template = {'platform': 'luogu', 'id': 'luogu:P9998', 'title': '【模板】树形动态规划', 'tags': ['3', '152', 'dp']}
+    assert not matches_topic(tree_template, TOPICS['linear-dp'])
+    assert not is_template(tree_template, TOPICS['linear-dp'])
+    assert matches_topic(tree_template, TOPICS['tree-dp'])
+    assert matches_topic({'platform': 'luogu', 'title': '某个普通标题', 'tags': ['444']}, TOPICS['linear-dp'])
+    assert not matches_topic({'platform': 'atcoder', 'title': 'Ordinary Task', 'tags': ['47']}, TOPICS['dsu'])
+    assert not matches_topic({'platform': 'atcoder', 'title': 'Ordinary Task', 'tags': []}, TOPICS['dsu'])
+    assert not matches_topic({'platform': 'luogu', 'title': '数字集合', 'tags': ['235']}, TOPICS['string-hash'])
+    assert matches_topic({'platform': 'luogu', 'title': '字符串比较', 'tags': ['235', '2']}, TOPICS['string-hash'])
+
+
+def _stored_plan(number, problem_id):
+    return {'id': f'old-plan-{number}', 'topic_id': 'dsu', 'topic_title': '并查集', 'title': '历史训练',
+            'created_at': number, 'items': [{'problem_id': problem_id, 'completed': False}]}
+
+
+def test_completed_historical_plans_release_unfinished_plan_quota(training):
+    with training.db.connect() as db:
+        for number in range(100):
+            plan = _stored_plan(number, 'codeforces:100-A')
+            db.execute('INSERT INTO training_plans VALUES(?,?,?,?)', (plan['id'], 'dsu', number, json.dumps(plan)))
+        now = int(time.time())
+        db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)', ('codeforces', 'demo', '456', '100-A', now, 'AC', '{}', now))
+    assert len(generate(training)['items']) == 4
+    assert len(training.plans()['plans']) == 101
+
+
+def test_one_hundred_unfinished_plans_blocks_ai_with_actionable_message(training):
+    with training.db.connect() as db:
+        for number in range(100):
+            plan = _stored_plan(number, 'codeforces:100-A')
+            db.execute('INSERT INTO training_plans VALUES(?,?,?,?)', (plan['id'], 'dsu', number, json.dumps(plan)))
+    with pytest.raises(HTTPException, match='同步官方 AC') as error:
+        generate(training)
+    assert error.value.status_code == 409
+    training.ai.complete.assert_not_called()
+    assert training.db.get('specialist_generation_lock') is None
+
+
+def test_expired_old_owner_cannot_release_new_generation_lease(training):
+    old = training._lock()
+    training.db.set('specialist_generation_lock', {'token': old, 'at': 1})
+    new = training._lock()
+    assert new != old
+    training._unlock(old)
+    assert training.db.get('specialist_generation_lock')['token'] == new
+    training._unlock(new)
+    assert training.db.get('specialist_generation_lock') is None

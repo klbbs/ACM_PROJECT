@@ -16,14 +16,14 @@ _DEFINITIONS = [
     ]),
     ('dp', '动态规划', [
         ('knapsack', '背包动态规划', '状态、转移顺序与空间优化', ['knapsack', '背包'], ['luogu:P1048']),
-        ('linear-dp', '线性动态规划', '从子问题构建状态转移', ['dynamic programming', 'dp', '线性dp', '线性动态规划'], []),
+        ('linear-dp', '线性动态规划', '从子问题构建状态转移', ['linear dp', '线性dp', '线性 dp', '线性动态规划'], []),
         ('interval-dp', '区间动态规划', '区间状态与合并顺序', ['interval dp', '区间dp', '区间动态规划'], ['luogu:P1880']),
         ('tree-dp', '树形动态规划', '树上子问题与换根', ['tree dp', '树形dp', '树形动态规划'], ['luogu:P1352']),
     ]),
     ('strings', '字符串', [
         ('kmp', 'KMP 字符串匹配', '前缀函数与模式匹配', ['kmp', 'prefix function', '前缀函数'], ['luogu:P3375']),
         ('trie', '字典树', '前缀查询与字符串集合', ['trie', '字典树'], ['luogu:P8306']),
-        ('string-hash', '字符串哈希', '字符串比较与哈希冲突', ['string hash', 'hashing', '字符串哈希'], ['luogu:P3370']),
+        ('string-hash', '字符串哈希', '字符串比较与哈希冲突', ['string hash', '字符串哈希'], ['luogu:P3370']),
     ]),
     ('math', '数学', [
         ('sieve', '素数筛法', '线性筛、埃氏筛与整除性质', ['sieve', '素数筛', '线性筛', '埃氏筛'], ['luogu:P3383']),
@@ -50,6 +50,26 @@ _DEFINITIONS = [
     ]),
 ]
 
+# Official public taxonomy checked against https://www.luogu.com.cn/_lfe/tags.
+# Numeric labels stay platform scoped. Broad DP/search/string tags never stand
+# in for one of their specialist children (e.g. DP=3 cannot mean linear DP).
+LUOGU_TOPIC_TAGS = {
+    'binary-search': {45}, 'prefix-sum': {254, 330}, 'sorting': {113},
+    'greedy': {7}, 'dfs': {127}, 'bfs': {126}, 'knapsack': {139},
+    'linear-dp': {444}, 'interval-dp': {144}, 'tree-dp': {152},
+    'kmp': {302}, 'trie': {300}, 'sieve': {475}, 'combinatorics': {252},
+    'dsu': {47}, 'fenwick': {53}, 'segment-tree': {42}, 'sparse-table': {290},
+    'heap': {51}, 'shortest-path': {160}, 'mst': {166},
+    'topological-sort': {159}, 'lca': {211}, 'scc': {179},
+    'network-flow': {79}, 'convex-hull': {291},
+}
+
+
+def _luogu_tags(problem):
+    return {int(tag) for tag in problem.get('tags', [])
+            if type(tag) is int or isinstance(tag, str) and tag.isascii() and tag.isdigit()}
+
+
 TOPICS = {}
 GROUPS = []
 for group_id, title, rows in _DEFINITIONS:
@@ -69,6 +89,13 @@ def topic_groups():
 def matches_topic(problem, topic):
     if problem.get('id') in topic['template_ids']:
         return True
+    if problem.get('platform') == 'luogu':
+        tags = _luogu_tags(problem)
+        if tags & LUOGU_TOPIC_TAGS.get(topic['id'], set()):
+            return True
+        # Hashing alone also covers numeric/set hashing; require string evidence.
+        if topic['id'] == 'string-hash' and {2, 235} <= tags:
+            return True
     text = (' '.join([str(problem.get('title', '')), *map(str, problem.get('tags', []))])).casefold()
     return any(re.search(r'(?<![a-z0-9])' + re.escape(keyword.casefold()) + r'(?![a-z0-9])', text)
                if keyword.isascii() else keyword.casefold() in text for keyword in topic['keywords'])

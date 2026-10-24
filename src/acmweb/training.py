@@ -99,6 +99,7 @@ class Training:
 
     def _lock(self):
         token, now = uuid.uuid4().hex, int(time.time())
+        completed = self._ac_ids()
         with self.db.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT value FROM web_settings WHERE key=?', (LOCK_KEY,)).fetchone()
@@ -106,13 +107,16 @@ class Training:
                 lease = json.loads(row[0])
                 if lease['at'] > now - 600:
                     raise HTTPException(409, '专项选题正在进行，请等待后再试')
-            if db.execute('SELECT COUNT(*) FROM training_plans').fetchone()[0] >= 100:
-                raise HTTPException(409, '专项训练计划已达 100 个，请先完成现有训练')
+            unfinished = sum(any(item['problem_id'] not in completed for item in json.loads(row[0])['items'])
+                for row in db.execute('SELECT data FROM training_plans'))
+            if unfinished >= 100:
+                raise HTTPException(409, '尚未完成的专项训练计划已达 100 个，请先完成现有训练并同步官方 AC 记录')
             db.execute('INSERT OR REPLACE INTO web_settings VALUES(?,?)', (LOCK_KEY, json.dumps({'token': token, 'at': now})))
         return token
 
     def _unlock(self, token):
         with self.db.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT value FROM web_settings WHERE key=?', (LOCK_KEY,)).fetchone()
             if row and json.loads(row[0]).get('token') == token:
                 db.execute('DELETE FROM web_settings WHERE key=?', (LOCK_KEY,))
