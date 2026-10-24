@@ -5,7 +5,22 @@ import { BookOpen, Check, ChevronDown, ExternalLink, RefreshCw, Send, Sparkles }
 import { api, names } from './api'
 import './specialist-training.css'
 
-type Topic = { id: string; title: string; description: string; source_url: string }
+type Topic = {
+  id: string
+  title: string
+  description: string
+  source_url: string
+  path?: string | string[]
+}
+type Mode = { id: string; title: string; description: string }
+const defaultModes: Mode[] = [
+  { id: 'learn', title: '新学', description: '从模板题起步，逐步建立专题基础。' },
+  { id: 'consolidate', title: '巩固', description: '练习常见用法，巩固已有知识与实现。' },
+  { id: 'variation', title: '变式', description: '通过不同题型与建模，迁移专题方法。' },
+  { id: 'strengthen', title: '加强', description: '挑战更复杂的综合应用与边界。' },
+]
+const topicPath = (topic: Topic) =>
+  Array.isArray(topic.path) ? topic.path.join(' / ') : topic.path || ''
 type Group = { id: string; title: string; topics: Topic[] }
 type Item = {
   position: number
@@ -25,6 +40,8 @@ type Plan = {
   topic_title: string
   title: string
   created_at: number
+  mode?: string
+  mode_title?: string
   items: Item[]
 }
 type Source = {
@@ -74,6 +91,9 @@ const stages: Record<string, string> = {
   foundation: '基础巩固',
   application: '综合应用',
   challenge: '进阶挑战',
+  consolidate: '巩固练习',
+  variation: '变式练习',
+  strengthen: '加强练习',
 }
 const dimensionNames: Record<string, string> = {
   code_quality: '代码规范',
@@ -121,14 +141,17 @@ export function SpecialistTrainingPage({
   const [groups, setGroups] = useState<Group[]>([])
   const [groupId, setGroupId] = useState('')
   const [topicId, setTopicId] = useState('')
-  const [count, setCount] = useState(4)
+  const [count, setCount] = useState('4')
+  const [mode, setMode] = useState('learn')
+  const [modes, setModes] = useState<Mode[]>(defaultModes)
+  const [maxCount, setMaxCount] = useState(50)
+  const [search, setSearch] = useState('')
   const [plans, setPlans] = useState<Plan[]>([])
   const [selected, setSelected] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [consent, setConsent] = useState(false)
   const generation = useRef(0)
   const writing = useRef(false)
   const alive = useRef(true)
@@ -145,11 +168,16 @@ export function SpecialistTrainingPage({
     setLoading(true)
     try {
       const [catalog, saved] = await Promise.all([
-        api<{ groups: Group[] }>('/training/topics'),
+        api<{ groups: Group[]; modes?: Mode[]; max_count?: number }>('/training/topics'),
         api<{ plans: Plan[] }>('/training/plans'),
       ])
       if (!alive.current || token !== generation.current) return
       setGroups(catalog.groups)
+      const supported = catalog.modes?.filter((entry) =>
+        defaultModes.some((known) => known.id === entry.id),
+      )
+      setModes(supported?.length === 4 ? supported : defaultModes)
+      setMaxCount(Math.max(1, Math.min(50, catalog.max_count || 50)))
       setGroupId((old) =>
         catalog.groups.some((group) => group.id === old) ? old : catalog.groups[0]?.id || '',
       )
@@ -175,10 +203,37 @@ export function SpecialistTrainingPage({
   useEffect(() => {
     setTopicId((old) => (topics.some((topic) => topic.id === old) ? old : topics[0]?.id || ''))
   }, [groupId, groups])
-  const topic = topics.find((candidate) => candidate.id === topicId)
+  const allTopics = groups.flatMap((entry) =>
+    entry.topics.map((candidate) => ({ ...candidate, group: entry })),
+  )
+  const query = search.trim().toLocaleLowerCase()
+  const matches = query
+    ? allTopics.filter((candidate) =>
+        [
+          candidate.title,
+          candidate.id,
+          topicPath(candidate),
+          candidate.group.title,
+          candidate.description,
+        ]
+          .join(' ')
+          .toLocaleLowerCase()
+          .includes(query),
+      )
+    : topics
+  const topic = allTopics.find((candidate) => candidate.id === topicId)
+  const visibleTopics =
+    topic && !matches.some((entry) => entry.id === topic.id) ? [topic, ...matches] : matches
+  const amount = Number(count)
+  const countValid =
+    count.trim() !== '' && Number.isInteger(amount) && amount >= 1 && amount <= maxCount
+  const modeTitle = (value = 'learn') =>
+    modes.find((entry) => entry.id === value)?.title ||
+    defaultModes.find((entry) => entry.id === value)?.title ||
+    value
   const plan = plans.find((candidate) => candidate.id === selected)
   const generate = async () => {
-    if (writing.current || !topicId || !model || !aiReady || !consent) return
+    if (writing.current || !topicId || !model || !aiReady || !countValid) return
     writing.current = true
     const token = ++generation.current
     setBusy(true)
@@ -187,7 +242,8 @@ export function SpecialistTrainingPage({
     try {
       const generated = await api<Plan>('/training/plans', 'POST', {
         topic_id: topicId,
-        count,
+        count: amount,
+        mode,
         provider,
         model,
       })
@@ -195,7 +251,11 @@ export function SpecialistTrainingPage({
       setPlans((old) => [generated, ...old.filter((candidate) => candidate.id !== generated.id)])
       setSelected(generated.id)
       setExpanded(null)
-      onNotice('专项题单已保存，按路线从模板题开始练习。')
+      onNotice(
+        mode === 'learn'
+          ? '新学题单已保存，从模板题开始练习。'
+          : `${modeTitle(mode)}题单已保存，可随时继续练习。`,
+      )
     } catch (caught) {
       if (alive.current && token === generation.current) {
         setError(message(caught))
@@ -214,13 +274,29 @@ export function SpecialistTrainingPage({
           <h2>
             <BookOpen size={22} /> 专项训练
           </h2>
-          <p>选择一个专题，从模板入门到综合应用，循序渐进建立解题能力。</p>
+          <p>选择专题、学习阶段和题量，安排适合自己的训练路线。</p>
         </div>
         <button className="button secondary" disabled={loading || busy} onClick={() => void load()}>
           <RefreshCw size={16} />
           刷新训练
         </button>
       </div>
+      <label className="specialist-search">
+        搜索训练专题
+        <input
+          type="search"
+          aria-label="搜索训练专题"
+          value={search}
+          disabled={busy}
+          placeholder="搜索洛谷分类、算法名称或 Codeforces tag"
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </label>
+      {query && (
+        <p className="help" role="status">
+          找到 {matches.length} 个匹配专题；当前选择会保留。
+        </p>
+      )}
       <div className="specialist-setup">
         <label>
           专题分类
@@ -228,7 +304,10 @@ export function SpecialistTrainingPage({
             aria-label="专题分类"
             value={groupId}
             disabled={!groups.length || busy}
-            onChange={(event) => setGroupId(event.target.value)}
+            onChange={(event) => {
+              setGroupId(event.target.value)
+              setSearch('')
+            }}
           >
             {groups.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
@@ -242,11 +321,16 @@ export function SpecialistTrainingPage({
           <select
             aria-label="训练专题"
             value={topicId}
-            disabled={!topics.length || busy}
-            onChange={(event) => setTopicId(event.target.value)}
+            disabled={!visibleTopics.length || busy}
+            onChange={(event) => {
+              setTopicId(event.target.value)
+              const chosen = allTopics.find((candidate) => candidate.id === event.target.value)
+              if (chosen) setGroupId(chosen.group.id)
+            }}
           >
-            {topics.map((candidate) => (
+            {visibleTopics.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
+                {query && topicPath(candidate) ? `${topicPath(candidate)} · ` : ''}
                 {candidate.title}
               </option>
             ))}
@@ -254,20 +338,41 @@ export function SpecialistTrainingPage({
         </label>
         <label>
           题目数量
-          <select
+          <input
+            type="number"
             aria-label="专项题量"
+            min={1}
+            max={maxCount}
+            step={1}
             value={count}
             disabled={busy}
-            onChange={(event) => setCount(Number(event.target.value))}
-          >
-            {[3, 4, 5, 6, 7, 8].map((value) => (
-              <option key={value} value={value}>
-                {value} 道
-              </option>
-            ))}
-          </select>
+            onChange={(event) => setCount(event.target.value)}
+          />
+          <span className="help">1–{maxCount} 道，自由设置</span>
         </label>
       </div>
+      <fieldset className="specialist-modes" disabled={busy}>
+        <legend>训练阶段</legend>
+        <p className="help">按学习目标选择阶段；这不是平台的题目评分。仅“新学”要求首题为模板题。</p>
+        <div className="specialist-mode-options">
+          {modes.map((entry) => (
+            <label
+              key={entry.id}
+              className={mode === entry.id ? 'specialist-mode selected' : 'specialist-mode'}
+            >
+              <input
+                type="radio"
+                name="specialist-mode"
+                value={entry.id}
+                checked={mode === entry.id}
+                onChange={() => setMode(entry.id)}
+              />
+              <strong>{entry.title}</strong>
+              <span>{entry.description}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       {topic && (
         <p className="help">
           {topic.description}{' '}
@@ -277,20 +382,14 @@ export function SpecialistTrainingPage({
         </p>
       )}
       {aiPicker}
-      <label className="specialist-consent">
-        <input
-          type="checkbox"
-          checked={consent}
-          disabled={busy}
-          onChange={(event) => setConsent(event.target.checked)}
-        />
-        同意将训练偏好和候选题资料发送至当前 AI 生成题单，可能产生模型费用。
-      </label>
+      <p className="help specialist-ai-note">
+        点击生成会将训练偏好和候选题资料发送至当前 AI，可能产生模型费用。
+      </p>
       <div className="specialist-actions">
         <button
           className="button"
-          disabled={busy || loading || !topicId || !!modelReason || !consent}
-          title={modelReason || (!consent ? '请先确认 AI 数据发送范围' : '')}
+          disabled={busy || loading || !topicId || !!modelReason || !countValid}
+          title={modelReason || (!countValid ? `题目数量需为 1–${maxCount} 的整数` : '')}
           onClick={() => void generate()}
         >
           <Sparkles size={17} />
@@ -331,6 +430,7 @@ export function SpecialistTrainingPage({
         <div className="specialist-route">
           <div className="specialist-route-title">
             <h3>{plan.title || plan.topic_title}</h3>
+            <span className="badge neutral">{plan.mode_title || modeTitle(plan.mode)}</span>
             <span className="badge neutral">
               {plan.items.filter((item) => item.completed).length}/{plan.items.length} 已完成
             </span>
@@ -347,7 +447,7 @@ export function SpecialistTrainingPage({
                 <div className="specialist-step-body">
                   <div className="specialist-item-heading">
                     <h4>{item.title}</h4>
-                    <span className={`badge ${item.position === 0 ? 'success' : 'neutral'}`}>
+                    <span className={`badge ${item.stage === 'template' ? 'success' : 'neutral'}`}>
                       {stages[item.stage] || item.stage}
                     </span>
                   </div>
@@ -433,7 +533,6 @@ function ItemReview({
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<'assessment' | 'chat' | null>(null)
   const [error, setError] = useState('')
-  const [consent, setConsent] = useState(false)
   const [draft, setDraft] = useState('')
   const alive = useRef(true)
   const pending = useRef(false)
@@ -487,7 +586,7 @@ function ItemReview({
           : '') ||
         (!['AC', 'Accepted', 'OK'].includes(source.verdict) ? '仅支持评估本题已通过的官方提交' : '')
   const assess = async () => {
-    if (pending.current || loading || blocked || modelReason || !consent || !source) return
+    if (pending.current || loading || blocked || modelReason || !source) return
     pending.current = true
     setBusy('assessment')
     setError('')
@@ -499,7 +598,6 @@ function ItemReview({
           : { submission_id: source.submission_id, handle: source.account }),
         provider,
         model,
-        consent: true,
       })
       if (alive.current && token === generation.current) apply(value)
     } catch (caught) {
@@ -513,7 +611,7 @@ function ItemReview({
     }
   }
   const chat = async (prompt = draft) => {
-    if (pending.current || !data?.assessment || !prompt.trim() || modelReason || !consent) return
+    if (pending.current || !data?.assessment || !prompt.trim() || modelReason) return
     pending.current = true
     setBusy('chat')
     setError('')
@@ -523,7 +621,6 @@ function ItemReview({
         message: prompt.trim(),
         provider,
         model,
-        consent: true,
       })
       if (alive.current && token === generation.current) {
         apply(value)
@@ -593,19 +690,14 @@ function ItemReview({
               点击评估后尝试获取这次提交的官方源码；无法获取时会说明原因，不会使用其他代码。
             </p>
           )}
-          <label className="specialist-consent">
-            <input
-              type="checkbox"
-              checked={consent}
-              disabled={!!busy}
-              onChange={(event) => setConsent(event.target.checked)}
-            />
-            同意将本题题面、所选提交源码及判题信息和讨论内容发送至当前 AI，可能产生费用。
-          </label>
+          <p className="help specialist-ai-note">
+            点击评估或发送追问会将本题题面、匹配提交源码和判题信息及讨论内容发送至当前
+            AI，可能产生费用。
+          </p>
           <button
             className="button"
-            disabled={!!busy || loading || !!blocked || !!modelReason || !consent}
-            title={blocked || modelReason || (!consent ? '请先同意发送分析资料' : '')}
+            disabled={!!busy || loading || !!blocked || !!modelReason}
+            title={blocked || modelReason}
             onClick={() => void assess()}
           >
             <Sparkles size={15} />
@@ -684,7 +776,7 @@ function ItemReview({
               <div className="specialist-actions">
                 <button
                   className="button secondary"
-                  disabled={!!busy || !consent || !!modelReason}
+                  disabled={!!busy || !!modelReason}
                   onClick={() =>
                     void chat(
                       '这道题还有哪些不同的解法或思路？请比较适用条件和复杂度，先给引导，不要直接给出完整代码。',
@@ -715,7 +807,7 @@ function ItemReview({
                 <button
                   className="button"
                   type="submit"
-                  disabled={!!busy || !draft.trim() || !consent || !!modelReason}
+                  disabled={!!busy || !draft.trim() || !!modelReason}
                 >
                   <Send size={15} />
                   发送追问
