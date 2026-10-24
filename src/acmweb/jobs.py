@@ -9,7 +9,7 @@ from argparse import Namespace
 from . import analytics
 from .catalog import refresh_catalog, recommendation_candidates, recommendation_status, refresh_recommendation_sessions
 from .codex_bridge import AIError
-from .runtime_logs import emit_event
+from .runtime_logs import emit_event, known_failure_reason
 from ojcrawler.config import load
 from ojcrawler.cli import crawl
 
@@ -55,7 +55,8 @@ class Jobs:
         if previous and previous['status'] != status and status in {'completed', 'partial', 'failed', 'interrupted'}:
             level = 'ERROR' if status == 'failed' else ('WARNING' if status in {'partial', 'interrupted'} else 'INFO')
             emit_event(self.event_log, 'job.' + status, level=level,
-                       job_id=job_id, kind=previous['kind'], job_status=status)
+                       job_id=job_id, kind=previous['kind'], job_status=status,
+                       **({'reason': reason} if (reason := known_failure_reason(error)) else {}))
 
     async def _run(self,job_id,kind,payload):
         self.update(job_id,"running")

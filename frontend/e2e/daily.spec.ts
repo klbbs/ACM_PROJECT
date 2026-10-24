@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('daily plan generates every target, replaces one problem twice, and cannot claim a fake check-in', async ({
+test('daily plan locks k Roll chances, replaces only the selected problem, and cannot claim a fake check-in', async ({
   page,
 }) => {
   const rollRequests: unknown[] = []
@@ -31,21 +31,32 @@ test('daily plan generates every target, replaces one problem twice, and cannot 
   await daily.getByRole('button', { name: '读取可用模型', exact: true }).click()
   await daily.getByLabel('选择模型').selectOption('fixture-daily')
   await expect(daily.getByRole('checkbox', { name: /同意将训练偏好/ })).toHaveCount(0)
-  await expect(daily).toContainText('点击“AI 生成”或“换这道题”会将训练偏好')
+  await expect(daily).toContainText('点击“AI 生成”或“Roll · 换这道题”会将训练偏好')
   await expect(daily.getByRole('button', { name: 'AI 生成今日 2 道题' })).toBeEnabled()
   expect(rollRequests).toHaveLength(0)
   await daily.getByRole('button', { name: 'AI 生成今日 2 道题' }).click()
   await expect(daily.locator('.daily-problem')).toHaveCount(2)
   expect(rollRequests).toEqual([{ provider: 'api', model: 'fixture-daily' }])
-  await expect(daily).toContainText('今日还可换题 2 次')
+  await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 2 次')
+  const selectedTask = (await (await page.request.get('/api/daily')).json()).plan.tasks[0]
   const original = await daily.locator('.daily-problem').first().locator('strong').innerText()
-  await daily.getByRole('button', { name: '换这道题', exact: true }).first().click()
-  await expect(daily).toContainText('今日还可换题 1 次')
+  const unchanged = await daily.locator('.daily-problem').nth(1).locator('strong').innerText()
+  const rollSelected = daily.locator('.daily-problem').first().getByRole('button', { name: /^Roll · 换这道题：/ })
+  await rollSelected.click()
+  await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 1 次')
   await expect(daily.locator('.daily-problem').first().locator('strong')).not.toHaveText(original)
-  await daily.getByRole('button', { name: '换这道题', exact: true }).first().click()
-  await expect(daily).toContainText('今日还可换题 0 次')
-  expect(rollRequests).toHaveLength(3)
-  await expect(daily.getByRole('button', { name: '换这道题', exact: true }).first()).toBeDisabled()
+  await expect(daily.locator('.daily-problem').nth(1).locator('strong')).toHaveText(unchanged)
+  const replacementTask = (await (await page.request.get('/api/daily')).json()).plan.tasks[0]
+  await rollSelected.click()
+  await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 0 次')
+  await expect(daily.locator('.daily-problem').nth(1).locator('strong')).toHaveText(unchanged)
+  expect(rollRequests).toEqual([
+    { provider: 'api', model: 'fixture-daily' },
+    { provider: 'api', model: 'fixture-daily', task_id: selectedTask.task_id },
+    { provider: 'api', model: 'fixture-daily', task_id: replacementTask.task_id },
+  ])
+  await expect(rollSelected).toBeDisabled()
+  await expect(daily.locator('.daily-problem').nth(1).getByRole('button', { name: /^Roll · 换这道题：/ })).toBeDisabled()
   await expect(daily.getByRole('button', { name: '记录完成', exact: true })).toHaveCount(0)
   const forged = await page.request.post('/api/daily/complete', {
     data: { problem_id: 'codeforces:999-A' },
@@ -70,7 +81,7 @@ test('daily plan generates every target, replaces one problem twice, and cannot 
   expect(rollRequests).toHaveLength(3)
   await page.getByRole('button', { name: '今日练习', exact: true }).click()
   await expect(daily.locator('.daily-problem')).toHaveCount(2)
-  await expect(daily).toContainText('今日还可换题 0 次')
+  await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 0 次')
 })
 
 test('verified completed task accepts actual minutes and allows corrections without changing check-in', async ({
@@ -84,7 +95,8 @@ test('verified completed task accepts actual minutes and allows corrections with
     started_at: '2026-10-20',
     ends_at: '2026-11-02',
     locked_goal: 1,
-    rerolls_remaining: 2,
+    rerolls_limit: 1,
+    rerolls_remaining: 1,
     checkin: { kind: 'k', month_k: 1, all_k: 1, month_total: 1, all_total: 1 },
     plan: {
       status: 'ready',

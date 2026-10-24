@@ -49,6 +49,9 @@ it('starts on the explicit action, explains session saving, supports existing UI
   expect(host.querySelector('button')?.disabled).toBe(false)
   expect(host.querySelector('input[type="checkbox"]')).toBeNull()
   expect(host.textContent).toContain('点击获取即申请本人扫码登录，验证后保存会话至当前账户')
+  expect(host.textContent).toContain('两种独立的绑定入口，任选其一即可')
+  expect(host.textContent).toContain('无需手动复制或再导入 Cookie')
+  expect(host.querySelector('input[type="password"], textarea')).toBeNull()
   expect(api).not.toHaveBeenCalled()
   await act(async () => {
     const select = host.querySelector('select')!

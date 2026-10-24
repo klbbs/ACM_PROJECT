@@ -9,6 +9,9 @@ test('sync without code, fetch official source and review it without replacing t
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user',
       cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })).ok()).toBe(true)
+  expect((await page.request.put('/api/ai/settings', {
+    data: { model: 'fixture-coach', api_key: 'synthetic-only-key' },
+  })).ok()).toBe(true)
   await page.route('**/api/ai/models?provider=api', (route) => route.fulfill({
     json: { items: [{ id: 'fixture-coach', name: '合成教练模型' }], default_model: 'fixture-coach' },
   }))
@@ -42,13 +45,17 @@ test('sync without code, fetch official source and review it without replacing t
   await page.getByLabel('AI 通道').selectOption('api')
   await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
   await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
-  const review = record.getByRole('button', { name: '分析本次错因（不提供答案）', exact: true })
+  const review = record.getByRole('button', { name: 'AI 分析', exact: true })
   await expect(review).toBeEnabled()
   await review.click()
-  await expect(page.getByText(/仅针对本地快照检查边界/)).toBeVisible({ timeout: 15000 })
+  await expect(record.getByText(/已核验本次提交源码、题面及 WA 判题/)).toBeVisible({ timeout: 15000 })
   await expect(page.getByLabel('源代码', { exact: true })).toHaveText(currentDraft)
   const after = await (await page.request.get('/api/workbench/problem/4-A')).json()
   expect(after.attempts[0].code).toBe('print("fixture_wrong")')
   expect(after.draft.code).toBe(currentDraft)
-  expect((await (await page.request.post('/_fixture/remote-count')).json()).sent).toBe(0)
+  const transport = await (await page.request.post('/_fixture/remote-count')).json()
+  expect(transport.sent).toBe(0)
+  expect(transport.submission_reviews).toEqual([{
+    submission_id: '920001', source_code: 'print("fixture_wrong")', language: 'python3', verdict: 'WA',
+  }])
 })

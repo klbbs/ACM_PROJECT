@@ -113,7 +113,7 @@ def create_app(settings=None):
                 emit_event(event_log, 'service.stopped', mode='single')
 
     private_schema = settings.production or settings.isolated
-    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.20.3",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.20.4",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     app.state.settings=settings
     app.state.account_config=account_config
     app.state.event_log=event_log
@@ -152,7 +152,10 @@ def create_app(settings=None):
         return response
 
     @app.exception_handler(AIError)
-    async def ai_error(request,exc):return JSONResponse({"detail":str(exc)},status_code=400)
+    async def ai_error(request,exc):
+        from .runtime_logs import record_failure
+        record_failure(request.scope, exc)
+        return JSONResponse({"detail":str(exc)},status_code=400)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request,exc):
@@ -160,7 +163,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.20.3"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.20.4"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -214,7 +217,13 @@ def create_app(settings=None):
     def ai_presets():return ai.presets()
 
     @app.post("/api/ai/test")
-    async def test_ai():return jobs.start("ai_test")
+    async def test_ai():
+        config = ai.config()
+        if not config['model'].strip():
+            raise AIError('请先保存默认模型 ID')
+        if not ai.key(config):
+            raise AIError('尚未为当前 API 地址配置 Key，请保存该提供方的密钥')
+        return jobs.start("ai_test")
 
     @app.get("/api/ai/settings")
     def get_ai():return ai.public_config()

@@ -87,3 +87,31 @@ def test_invalid_event_and_symlink_target_are_not_written(tmp_path):
     store.emit('service.started', mode='single')
     assert outside.read_text() == ''
     assert store.last_error == 'storage_unavailable'
+
+
+def test_nested_dispatch_records_child_route_once_with_only_known_reason(tmp_path):
+    from acmweb.runtime_logs import record_failure
+    from types import SimpleNamespace
+    store = RuntimeLogs(tmp_path / 'logs')
+
+    async def child(scope, receive, send):
+        scope['route'] = SimpleNamespace(path='/api/ai/settings')
+        record_failure(scope, '该 AI 提供方域名尚未加入服务器白名单，请联系管理员在管理后台添加')
+        record_failure(scope, 'PRIVATE-cookie=secret')
+        await send({'type': 'http.response.start', 'status': 400, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async def dispatch(scope, receive, send):
+        scope['route'] = SimpleNamespace(path='/{path:path}')
+        await RuntimeLogMiddleware(child, store)({**scope}, receive, send)
+
+    async def run():
+        async def send(message): pass
+        await RuntimeLogMiddleware(dispatch, store)(
+            {'type': 'http', 'path': '/api/ai/settings', 'method': 'PUT', 'state': {}}, None, send)
+    asyncio.run(run())
+    rows = store.listing()['items']
+    assert len(rows) == 1
+    assert rows[0]['details']['route'] == '/api/ai/settings'
+    assert rows[0]['details']['reason'] == 'ai_host_not_allowed'
+    assert 'PRIVATE' not in json.dumps(rows)

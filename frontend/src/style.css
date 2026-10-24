@@ -1958,6 +1958,34 @@ td small {
 .admin-card {
   min-width: 0;
 }
+.ai-hosts-admin .card-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ai-host-defaults {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 18px;
+}
+.ai-host-defaults code {
+  padding: 4px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  color: var(--muted, #64748b);
+  overflow-wrap: anywhere;
+}
+.ai-hosts-admin form {
+  display: grid;
+  gap: 10px;
+  max-width: 720px;
+}
+.ai-hosts-admin textarea {
+  width: 100%;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .admin-translation-list {
   display: grid;
   gap: 14px;

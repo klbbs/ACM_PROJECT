@@ -42,6 +42,7 @@ import { ProblemRecordsList } from './problem-records'
 import { OnlineUsers } from './online-users'
 import { PlatformConnections } from './platform-connections'
 import { AccountCookieField } from './account-cookie-field'
+import { AIConnectionTest } from './ai-connection-test'
 import { AdminPage } from './admin'
 import { DailyTasksPage } from './daily-tasks'
 import { SocialPage } from './social'
@@ -2419,6 +2420,9 @@ function SettingsPage({
               密钥按 API 地址分别保存；切换提供方不会把旧密钥发送给新地址。区域和 Key
               必须匹配。Gemini 使用官方兼容接口；智谱按量 API 与 Coding Plan 地址不同。
             </p>
+            {config.vendor === 'custom' && <p className="help">
+              自定义中转站域名须先在「管理后台 → AI 中转站域名白名单」批准；未获批准时保存会被拒绝。
+            </p>}
             {presets.find((p) => p.id === config.vendor)?.docs && (
               <a
                 href={presets.find((p) => p.id === config.vendor)?.docs}
@@ -2648,14 +2652,14 @@ function SettingsPage({
               <Button className="primary" loading={saving} onClick={() => save()}>
                 保存 API 配置 <Check size={16} />
               </Button>
-              <button
-                disabled={jobs.some(
+              <AIConnectionTest
+                disabled={saving || readingModels || !config.model?.trim() || jobs.some(
                   (j: Row) => j.kind === 'ai_test' && ['queued', 'running'].includes(j.status),
                 )}
-                onClick={() => run('/ai/test')}
-              >
-                测试已保存配置（会计费）
-              </button>
+                save={() => save()}
+                run={() => run('/ai/test')}
+                onError={onError}
+              />
               <button
                 className="text-button"
                 onClick={() => {

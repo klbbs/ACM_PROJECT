@@ -298,7 +298,7 @@ test('AI presets expose dedicated fields and preserve secrets per endpoint', asy
     'placeholder',
     '输入提供方的 API Key',
   )
-  await expect(page.getByRole('button', { name: '测试已保存配置（会计费）' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '保存并测试连接（会计费）' })).toBeVisible()
   // Deliberately do not trigger a billable request: no actual provider key is used.
 })
 
@@ -312,7 +312,7 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   const manualAiRequests: string[] = []
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname
-    if (/\/api\/workbench\/(?:problem\/[^/]+\/hint|attempt\/[^/]+\/review)$/.test(path))
+    if (/\/api\/workbench\/(?:problem\/[^/]+\/hint|attempt\/[^/]+\/submission-review)$/.test(path))
       manualAiRequests.push(path)
   })
   // All upstream judge/AI responses are synthetic in the isolated test server.
@@ -329,6 +329,9 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user', cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })
+  expect((await page.request.put('/api/ai/settings', {
+    data: { model: 'fixture-coach', api_key: 'synthetic-only-key' },
+  })).ok()).toBe(true)
   await open(page)
   await page.getByLabel('代码语言').selectOption('python3')
   const editor = page.getByLabel('源代码', { exact: true })
@@ -384,12 +387,18 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
     .filter({ has: page.getByText('WA', { exact: true }) })
     .last()
   await expect(wa.getByText('WA', { exact: true })).toBeVisible({ timeout: 15000 })
-  await wa.getByRole('button', { name: '分析本次错因（不提供答案）' }).click()
-  await expect(wa.getByText(/仅针对本地快照检查边界/)).toBeVisible()
-  expect(manualAiRequests).toHaveLength(2)
   await editor.fill('print("corrected practice version")')
   await editor.press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
+  await wa.getByRole('button', { name: 'AI 分析本次提交', exact: true }).click()
+  await expect(wa.getByText(/已核验本次提交源码、题面及 WA 判题/)).toBeVisible({ timeout: 15000 })
+  expect(manualAiRequests).toHaveLength(2)
+  await expect(editor).toHaveText('print("corrected practice version")')
+  const analysisState = await (await page.request.post('/_fixture/remote-count')).json()
+  expect(analysisState.submission_reviews).toEqual([{
+    submission_id: '930001', source_code: 'print("deliberately wrong")',
+    language: 'python3', verdict: 'WA',
+  }])
   await wa.getByText('查看当次代码（只读）', { exact: true }).click()
   await expect(wa.locator('.wb-snapshot')).toHaveText('print("deliberately wrong")')
   await page.getByLabel('源代码', { exact: true }).fill('print("fixture_correct")')
@@ -399,7 +408,7 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
     .filter({ has: page.getByText('AC', { exact: true }) })
     .last()
   await expect(ac.getByText('AC', { exact: true })).toBeVisible({ timeout: 25000 })
-  await expect(ac.getByRole('button', { name: '分析本次错因（不提供答案）' })).toHaveCount(0)
+  await expect(ac.getByRole('button', { name: 'AI 分析本次提交', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '提交记录', exact: true }).click()
   await expect(page.getByText('4-A · #930001', { exact: true })).toBeVisible()
   await expect(page.getByText('4-A · #930002', { exact: true })).toBeVisible()
@@ -520,7 +529,7 @@ test('self-test uses custom input, compares output and keeps results out of subm
   await expect(page.locator('.wb-editor .wb-selftest')).toBeVisible()
 })
 
-test('automatic error coaching needs opt-in and gives a small hint after a verified WA', async ({
+test('a verified WA does not automatically send source to AI and supports explicit analysis', async ({
   page,
 }) => {
   await page.route('**/api/ai/models?provider=api', (route) =>
@@ -536,32 +545,29 @@ test('automatic error coaching needs opt-in and gives a small hint after a verif
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user', cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })
+  expect((await page.request.put('/api/ai/settings', {
+    data: { model: 'fixture-coach', api_key: 'synthetic-only-key' },
+  })).ok()).toBe(true)
   await open(page)
-  const toggle = page.getByRole('checkbox', { name: '开启自动错误提示', exact: true })
-  await expect(toggle).not.toBeChecked()
-  await expect(toggle).toBeDisabled()
+  await expect(page.getByRole('checkbox', { name: '开启自动错误提示', exact: true })).toHaveCount(0)
   await page.getByLabel('AI 通道').selectOption('api')
   await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
   await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
-  await toggle.check()
-  await expect(page.getByText(/已开启 · 使用 api \/ fixture-coach/)).toBeVisible()
   await page.getByLabel('代码语言').selectOption('python3')
-  await page.getByLabel('源代码', { exact: true }).fill('print("automatic coach opt-in test")')
+  await page.getByLabel('源代码', { exact: true }).fill('print("manual analysis only")')
   const form = page.getByRole('region', { name: '真实平台提交', exact: true })
   await page.getByRole('button', { name: '读取平台编译器', exact: true }).click()
   await form.getByRole('button', { name: '提交到平台', exact: true }).click()
   const attempt = page.locator('article.wb-attempt').last()
   await expect(attempt.getByText('WA', { exact: true })).toBeVisible({ timeout: 25000 })
-  await expect(attempt.getByText(/仅针对本地快照检查边界/)).toBeVisible({ timeout: 15000 })
-  // Automatic coaching stays opt-in; manual actions need only a chosen model and an explicit click.
+  expect((await (await page.request.post('/_fixture/remote-count')).json()).submission_reviews).toEqual([])
+  await page.getByLabel('源代码', { exact: true }).fill('print("keep this new draft")')
+  await attempt.getByRole('button', { name: 'AI 分析本次提交', exact: true }).click()
+  await expect(attempt.getByText(/已核验本次提交源码、题面及 WA 判题/)).toBeVisible({ timeout: 15000 })
+  await expect(page.getByLabel('源代码', { exact: true })).toHaveText('print("keep this new draft")')
+  expect((await (await page.request.post('/_fixture/remote-count')).json()).submission_reviews).toEqual([{
+    submission_id: '930001', source_code: 'print("manual analysis only")', language: 'python3', verdict: 'WA',
+  }])
   await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).toHaveCount(0)
-  await toggle.uncheck()
-  await expect(
-    page.getByText('自动提示已关闭，不会自动发送代码。仍可手动获取小提示或分析错因。'),
-  ).toBeVisible()
-  await expect
-    .poll(
-      async () => (await (await page.request.get('/api/workbench/coach-settings')).json()).enabled,
-    )
-    .toBe(false)
+  expect((await (await page.request.get('/api/workbench/coach-settings')).json()).enabled).toBe(false)
 })

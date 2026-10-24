@@ -4,6 +4,7 @@ import { api, date } from './api'
 import { TranslationStatement } from './translation-panel'
 import { AdministratorApproval } from './administrator-requests'
 import { SystemLogs } from './system-logs'
+import { AIHostsAdmin } from './ai-hosts-admin'
 
 type Row = Record<string, any>
 type Status = 'pending' | 'approved' | 'rejected' | 'revoked'
@@ -294,6 +295,8 @@ export function AdminPage({
       </section>
 
       <AdministratorApproval onError={onError} onNotice={onNotice} />
+
+      <AIHostsAdmin onError={onError} onNotice={onNotice} />
 
       <SystemLogs />
 

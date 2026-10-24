@@ -283,8 +283,7 @@ export function NowcoderQrLogin({ handles = [], onBound }: Props) {
       {error && <p role="alert">{error}</p>}
       <p className="help">
         扫码登录与 Cookie
-        导入二选一。当前扫码方式不需要你在浏览器额外登录；不使用微信时，可切换上方“导入浏览器
-        Cookie”。
+        导入是两种独立的绑定入口，任选其一即可。扫码会自动保存本次官方登录会话，无需手动复制或再导入 Cookie；不使用微信时，可切换上方“导入浏览器 Cookie”。
       </p>
     </section>
   )

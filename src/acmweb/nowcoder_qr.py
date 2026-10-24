@@ -136,11 +136,10 @@ def _poll(session, ticket):
         return 'waiting', None, None
     if value.get('code') != 0:
         return reject('upstream_status_rejected')
-    if 'data' not in value:
-        return reject('success_data_missing')
     data = value.get('data')
-    # Some successful official responses complete login via Set-Cookie and
-    # return JSON null. They still need the fixed homepage identity check.
+    # Successful official responses may omit data or return JSON null after
+    # establishing this QR flow's own session. The user does not import a
+    # separate Cookie; _identity() still verifies the UID before binding.
     if data is None:
         data = {}
     if not isinstance(data, dict):
@@ -461,7 +460,6 @@ class NowcoderQR:
                 'account_incomplete': '请前往牛客官方页面完善账号后重新扫码，或使用 Cookie 绑定',
                 'invalid_ticket': '牛客返回二维码票据无效，请重新获取二维码；原绑定未修改。',
                 'upstream_code_invalid': '牛客状态接口未返回可识别的状态码，尚未绑定，请稍后重新获取二维码。',
-                'success_data_missing': '牛客返回成功状态但缺少登录数据，尚未绑定，请稍后重新获取二维码。',
                 'success_data_invalid': '牛客返回的登录数据格式暂不支持，尚未绑定，请稍后重新获取二维码。',
             }.get(reason, '牛客扫码接口拒绝本次登录或返回暂不支持的状态，请重新获取二维码。')
             return dict(self._result(login_id, 'failed', message),

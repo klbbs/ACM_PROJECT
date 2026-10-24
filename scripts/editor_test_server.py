@@ -34,6 +34,8 @@ def main():
         # Exercise the actual queue, persistence and UI with a synthetic OJ transport.
         # This replacement exists only in this explicitly guarded fixture process.
         remote_receipts = {}
+        remote_sources = {}
+        submission_reviews = []
         class FixtureRemoteJudge:
             before_send = None
 
@@ -45,6 +47,7 @@ def main():
                 if self.before_send:
                     self.before_send()
                 sid = str(930001 + len(remote_receipts))
+                remote_sources[sid] = code
                 remote_receipts[sid] = {'id':sid, 'problem_id':pid.split(':',1)[1],
                     'account':handle, 'submitted_at':int(time.time()),
                     'verdict':'AC' if 'fixture_correct' in code else 'WA',
@@ -66,7 +69,8 @@ def main():
                         'url':f'https://codeforces.com/contest/4/submission/{sid}'}
                 else:
                     raise SubmissionError('record_unavailable')
-                return {**record,'code':'print("fixture_correct")' if record['verdict'] == 'AC' else 'print("fixture_wrong")'}
+                return {**record,'code':remote_sources.get(sid,
+                    'print("fixture_correct")' if record['verdict'] == 'AC' else 'print("fixture_wrong")')}
 
             def close(self):
                 pass
@@ -75,7 +79,7 @@ def main():
 
         @app.post('/_fixture/remote-count')
         def remote_count():
-            return {'sent':len(remote_receipts)}
+            return {'sent':len(remote_receipts), 'submission_reviews':submission_reviews}
 
         # Test-process-only substitutes: never post code or call paid AI APIs.
         from acmweb import workbench
@@ -88,6 +92,20 @@ def main():
                 return json.dumps({'focus':'边界检查','hint':'先检查输入较小的一端。','question':'边界输入是否满足所有要求？'},ensure_ascii=False)
             if schema.get('title') == 'Review':
                 return json.dumps({'category':'boundary','line':1,'evidence':'仅针对本地快照检查边界；未运行代码。','question':'最小输入符合要求吗？','confidence':'low'},ensure_ascii=False)
+            if schema.get('title') == 'SubmissionReview':
+                payload = json.loads(prompt.rsplit('\n', 1)[-1])
+                submission = payload['submission']
+                sid = submission['submission_id']
+                expected_source = remote_sources.get(sid, 'print("fixture_wrong")' if sid in {'920001', '920003'} else None)
+                assert expected_source is not None and submission['source_code'] == expected_source
+                assert submission['verdict'] == 'WA' and submission['account'].casefold() == 'fixture_user'
+                assert payload['problem']['id'] == 'codeforces:4-A'
+                submission_reviews.append({key:submission[key] for key in
+                    ('submission_id', 'source_code', 'language', 'verdict')})
+                return json.dumps({'categories':['boundary_conditions','unable_to_determine'],
+                    'phenomenon':'官方合成判题为 WA，具体失败输入未知。',
+                    'evidence':['已核验本次提交源码、题面及 WA 判题；缺少失败测试点，无法确定根因。'],
+                    'check_directions':['先检查输入边界是否满足题目条件。'], 'confidence':'low'},ensure_ascii=False)
             raise RuntimeError('Unexpected test AI schema')
         app.state.ai._api_generate = fixture_ai
         original_json = workbench.Client.json
@@ -129,8 +147,11 @@ def main():
                               'wb_auto_reviews', 'wb_hints', 'wb_attempts', 'wb_drafts', 'wb_problems',
                               'submissions', 'accounts', 'snapshots', 'runs', 'practice_feedback'):
                     db.execute('DELETE FROM ' + table)
+                db.execute("DELETE FROM web_settings WHERE key LIKE 'problem_sync:%'")
                 db.executemany('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements)
             remote_receipts.clear()
+            remote_sources.clear()
+            submission_reviews.clear()
             return {'ok': True}
 
         uvicorn.run(app, host='127.0.0.1', port=int(os.getenv('ACM_EDITOR_TEST_PORT', '18766')), access_log=False)

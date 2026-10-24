@@ -47,6 +47,7 @@ class Upstream(requests.Session):
 class StatusAdapter(requests.adapters.BaseAdapter):
     """Exercise Requests Set-Cookie extraction without real network or secrets."""
     status_data = None
+    omit_status_data = False
     status_set_cookie = True
     home_page = None
     interrupt_url = None
@@ -62,7 +63,10 @@ class StatusAdapter(requests.adapters.BaseAdapter):
         self.calls.append(request.url)
         headers = {'Content-Type': 'text/html'}
         if '/wechat_mp_status?' in request.url:
-            body = json.dumps({'code': 0, 'data': self.status_data}).encode()
+            status = {'code': 0}
+            if not self.omit_status_data:
+                status['data'] = self.status_data
+            body = json.dumps(status).encode()
             if self.status_set_cookie:
                 headers['Set-Cookie'] = 'test_session=EXCHANGED; Path=/; Secure; HttpOnly'
         elif request.url == ORIGIN + '/':
@@ -186,15 +190,58 @@ def test_null_success_needs_authenticated_homepage_and_valid_cookie(set_cookie, 
     assert _poll(session, 'synthetic-ticket') == ('unverified', None, None)
 
 
-@pytest.mark.parametrize('value', [{'code': 0}] + [
+@pytest.mark.parametrize('value', [
     {'code': 0, 'data': data} for data in [[], '', 'unexpected', 1, False]
 ])
-def test_unknown_status_payload_types_still_fail_without_homepage(monkeypatch, value):
+def test_malformed_status_payload_types_fail_without_homepage(monkeypatch, value):
     monkeypatch.setattr('acmweb.nowcoder_qr._json', lambda *a, **kw: value)
     def unexpected(*a, **kw):
         pytest.fail('unknown payload must not trigger homepage request')
     monkeypatch.setattr('acmweb.nowcoder_qr._body', unexpected)
     assert _poll(object(), 'synthetic-ticket') == ('failed', None, None)
+
+
+def test_success_without_data_still_requires_authenticated_homepage():
+    session = AnonymousUpstream()
+    session.adapter.omit_status_data = True
+    session.adapter.status_set_cookie = True
+    assert _poll(session, 'synthetic-ticket') == ('verified', '123', 'test_session=EXCHANGED')
+    assert session.adapter.calls == [
+        ORIGIN + '/nccommon/oauth2/login/wechat_mp_status?ticket=synthetic-ticket', ORIGIN + '/']
+
+
+def test_success_without_data_does_not_bind_without_authenticated_homepage():
+    session = AnonymousUpstream()
+    session.adapter.omit_status_data = True
+    session.adapter.status_set_cookie = False
+    session.adapter.home_page = b'<script>window.isLogin = false;</script>'
+    assert _poll(session, 'synthetic-ticket') == ('unverified', None, None)
+    assert session.adapter.calls[-1] == ORIGIN + '/'
+
+
+@pytest.mark.parametrize('set_cookie, page', [
+    (False, None),
+    (True, b'<script>window.isLogin = false;</script>'),
+    (False, Upstream.page),
+])
+def test_missing_data_scan_without_identity_or_session_never_creates_binding(tmp_path, set_cookie, page):
+    async def run():
+        value = manager(tmp_path)
+        value.session_factory = AnonymousUpstream
+        started = await value.start('owner', True)
+        session = value.flow['session']
+        session.adapter.omit_status_data = True
+        session.adapter.status_set_cookie = set_cookie
+        session.adapter.home_page = page
+        try:
+            result = await value.poll('owner', started['login_id'])
+            assert result['status'] == 'authorizing' and result['retryable'] is True
+            assert 'accounts' not in result and 'verified_uid' not in result
+            assert not value.accounts.path.exists()
+            assert value.checker.statuses()['items'] == []
+        finally:
+            value.close()
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('callback', [
@@ -209,18 +256,21 @@ def test_anonymous_callback_payload_never_triggers_callback_request(callback):
         ORIGIN + '/nccommon/oauth2/login/wechat_mp_status?ticket=synthetic-ticket', ORIGIN + '/']
 
 
-def test_null_status_cookie_binds_only_after_homepage_identity(tmp_path):
+@pytest.mark.parametrize('omit_data', [False, True])
+def test_qr_session_binds_empty_configuration_only_after_homepage_identity(tmp_path, omit_data):
     async def run():
         value = manager(tmp_path)
         value.session_factory = AnonymousUpstream
         started = await value.start('owner', True)
         session = value.flow['session']
+        session.adapter.omit_status_data = omit_data
         try:
             assert not session.cookies and not value.accounts.path.exists()
             result = await value.poll('owner', started['login_id'])
             assert result['status'] == 'verified' and result['verified_uid'] == '123'
             assert 'EXCHANGED' not in str(result)
             assert value.accounts.document()['accounts'][0]['cookie'] == 'test_session=EXCHANGED'
+            assert value.accounts.public()['items'][0]['login_method'] == 'qr'
             assert value.checker.statuses()['items'][0]['login_verified'] is True
         finally:
             value.close()
@@ -229,13 +279,15 @@ def test_null_status_cookie_binds_only_after_homepage_identity(tmp_path):
 
 @pytest.mark.parametrize('invalidate', ['cancel', 'expire'])
 @pytest.mark.parametrize('phase', ['status_close', 'status_stream', 'home_stream'])
-def test_status_homepage_flow_stops_when_cancelled_or_expired(tmp_path, invalidate, phase):
+@pytest.mark.parametrize('omit_data', [False, True])
+def test_status_homepage_flow_stops_when_cancelled_or_expired(tmp_path, invalidate, phase, omit_data):
     async def run():
         value = manager(tmp_path)
         value.session_factory = AnonymousUpstream
         started = await value.start('owner', True)
         flow = value.flow
         session = flow['session']
+        session.adapter.omit_status_data = omit_data
         def interrupt():
             if invalidate == 'cancel':
                 value.cancel('owner', started['login_id'])
@@ -514,13 +566,15 @@ def test_busy_network_pool_does_not_discard_valid_qr_flow(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize('failure', ['timeout', 'http503', 'anonymous'])
-def test_confirmed_scan_retries_only_identity_and_keeps_session_cookie(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize('omit_data', [False, True])
+def test_confirmed_scan_retries_only_identity_and_keeps_session_cookie(tmp_path, monkeypatch, failure, omit_data):
     async def run():
         value = manager(tmp_path)
         value.session_factory = AnonymousUpstream
         started = await value.start('owner', True)
         flow = value.flow
         session, deadline = flow['session'], flow['deadline']
+        session.adapter.omit_status_data = omit_data
         timer = flow['timer']
         send = session.adapter.send
         calls = []
@@ -584,7 +638,7 @@ def test_legal_success_payload_marks_confirmation_before_identity_request(data):
 
 
 @pytest.mark.parametrize('payload', [
-    {'code': 1, 'msg': '二维码未被扫描'}, {'code': 0}, {'code': '0', 'data': {}},
+    {'code': 1, 'msg': '二维码未被扫描'}, {'code': '0', 'data': {}},
     {'code': 0, 'data': []}, {'code': 0, 'data': {'needComplete': True}},
 ])
 def test_pending_malformed_or_incomplete_status_never_marks_confirmation(payload):
@@ -599,7 +653,8 @@ def test_pending_malformed_or_incomplete_status_never_marks_confirmation(payload
         session.close()
 
 
-def test_expired_identity_pending_flow_preserves_original_account_credentials(tmp_path):
+@pytest.mark.parametrize('omit_data', [False, True])
+def test_expired_identity_pending_flow_preserves_original_account_credentials(tmp_path, omit_data):
     from acmweb.accounts import AccountList
 
     async def run():
@@ -610,6 +665,7 @@ def test_expired_identity_pending_flow_preserves_original_account_credentials(tm
         value.session_factory = AnonymousUpstream
         started = await value.start('owner', True)
         flow = value.flow
+        flow['session'].adapter.omit_status_data = omit_data
         flow['session'].adapter.home_page = b'<script>window.isLogin = false;</script>'
         try:
             pending = await value.poll('owner', started['login_id'])
@@ -627,7 +683,7 @@ def test_expired_identity_pending_flow_preserves_original_account_credentials(tm
 
 
 @pytest.mark.parametrize('payload', [
-    {'code': 1, 'msg': 'ticket长度错误'}, {'code': 0}, {'code': '0', 'data': {}},
+    {'code': 1, 'msg': 'ticket长度错误'}, {'code': '0', 'data': {}},
     {'code': 0, 'data': []}, {'code': 0, 'data': {'needComplete': True}},
 ])
 def test_explicit_rejected_or_malformed_status_terminates_without_writing_credentials(tmp_path, payload):

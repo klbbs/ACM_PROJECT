@@ -115,6 +115,43 @@ def test_bad_upstream_shapes_are_safe(ai,monkeypatch):
     with pytest.raises(AIError,match='JSON'):asyncio.run(ai._api_generate('m','prompt',{}))
 
 
+@pytest.mark.parametrize('operation', ['generate', 'models'])
+@pytest.mark.parametrize('failure,reason', [
+    ('timeout', '超时'), ('network', '网络连接失败'),
+    ('json', '不是有效 JSON'), ('structure', '结构'),
+])
+def test_upstream_failure_types_have_distinct_safe_messages(ai, monkeypatch, operation, failure, reason):
+    ai.save(ProviderConfig(api_key='fixture-key', protocol='chat', model='fixture-model'))
+    calls = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def request(self, *_args, **_kwargs):
+            calls.append(operation)
+            if failure == 'timeout':
+                raise httpx.ReadTimeout('PRIVATE upstream timeout URL or credentials')
+            if failure == 'network':
+                raise httpx.ConnectError('PRIVATE upstream URL or credentials')
+            if failure == 'json':
+                return httpx.Response(200, content=b'PRIVATE non-json upstream response')
+            return httpx.Response(200, json={'PRIVATE': 'invalid fields', 'data': ['PRIVATE']})
+
+        post = request
+        get = request
+
+    monkeypatch.setattr('acmweb.ai.httpx.AsyncClient', lambda **_kwargs: FakeClient())
+    with pytest.raises(AIError, match=reason) as error:
+        asyncio.run(ai._api_generate('fixture-model', 'prompt', {}) if operation == 'generate' else ai.models('api'))
+    assert 'PRIVATE' not in str(error.value)
+    assert error.value.__suppress_context__
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize('vendor,protocol,base', [
     ('gemini', 'chat', 'https://generativelanguage.googleapis.com/v1beta/openai'),
     ('anthropic', 'anthropic', 'https://api.anthropic.com/v1'),

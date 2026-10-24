@@ -112,6 +112,8 @@ class Users:
             CREATE TABLE IF NOT EXISTS online_presence (
               user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
               seen_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS site_settings (
+              key TEXT PRIMARY KEY, value TEXT NOT NULL);
             ''')
         path.chmod(0o600)
         # Unknown users still perform the same expensive password verification.

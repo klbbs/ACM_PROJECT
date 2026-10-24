@@ -48,7 +48,36 @@ REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'bindi
            'network_busy', 'upstream_timeout', 'upstream_connection_failed', 'upstream_http',
            'upstream_response_invalid', 'upstream_response_too_large', 'status_check_unavailable',
            'account_incomplete', 'invalid_ticket', 'upstream_code_invalid',
-           'success_data_missing', 'success_data_invalid', 'upstream_status_rejected'}
+           'success_data_missing', 'success_data_invalid', 'upstream_status_rejected',
+           'ai_model_missing', 'ai_key_missing', 'ai_host_not_allowed',
+           'ai_timeout', 'ai_network', 'ai_invalid_json', 'ai_invalid_structure',
+           'model_list_timeout', 'model_list_network', 'model_list_invalid_json', 'model_list_invalid_structure'}
+
+
+def known_failure_reason(error):
+    # Exact, application-owned messages only. Never reflect an upstream body.
+    from .ai import (AI_TIMEOUT_ERROR, AI_NETWORK_ERROR, AI_JSON_ERROR, AI_STRUCTURE_ERROR,
+                     MODEL_TIMEOUT_ERROR, MODEL_NETWORK_ERROR, MODEL_JSON_ERROR, MODEL_STRUCTURE_ERROR)
+    return {
+        '请先保存默认模型 ID': 'ai_model_missing',
+        '请先选择可用模型': 'ai_model_missing',
+        '请先配置 API Key': 'ai_key_missing',
+        '尚未为当前 API 地址配置 Key，请保存该提供方的密钥': 'ai_key_missing',
+        '该 AI 提供方域名尚未加入服务器白名单，请联系管理员在管理后台添加': 'ai_host_not_allowed',
+        AI_TIMEOUT_ERROR: 'ai_timeout', AI_NETWORK_ERROR: 'ai_network',
+        AI_JSON_ERROR: 'ai_invalid_json', AI_STRUCTURE_ERROR: 'ai_invalid_structure',
+        MODEL_TIMEOUT_ERROR: 'model_list_timeout', MODEL_NETWORK_ERROR: 'model_list_network',
+        MODEL_JSON_ERROR: 'model_list_invalid_json', MODEL_STRUCTURE_ERROR: 'model_list_invalid_structure',
+    }.get(str(error))
+
+
+def record_failure(scope, error):
+    context = scope.get('_acm_runtime_context')
+    reason = known_failure_reason(error)
+    if context is not None and reason:
+        context['reason'] = reason
+
+
 COMPONENTS = {'auth', 'admin', 'accounts', 'workbench', 'remote-submissions', 'problem-submissions',
               'platform-login', 'platforms', 'translations', 'daily', 'ai', 'catalog', 'social',
               'crawl', 'analysis', 'recommend', 'shared', 'other'}
@@ -247,9 +276,20 @@ class RuntimeLogMiddleware:
         self.app, self.store = app, store
 
     async def __call__(self, scope, receive, send):
-        if scope['type'] != 'http' or scope.get('_acm_runtime_log'):
+        if scope['type'] != 'http':
             return await self.app(scope, receive, send)
+        if scope.get('_acm_runtime_log'):
+            try:
+                return await self.app(scope, receive, send)
+            finally:
+                # dispatch copies the scope, so propagate only the matched
+                # template through a shared context, never raw path parameters.
+                context = scope.get('_acm_runtime_context')
+                route = getattr(scope.get('route'), 'path', None)
+                if context is not None and route:
+                    context['route'] = route
         scope['_acm_runtime_log'] = True
+        scope['_acm_runtime_context'] = {}
         request_id = uuid.uuid4().hex
         token = request_id_context.set(request_id)
         user_token = user_id_context.set(None)
@@ -278,7 +318,8 @@ class RuntimeLogMiddleware:
                 duration = max(0, int((time.monotonic() - started) * 1000))
                 if path.startswith('/api/') and not (path == '/api/admin/logs' and status < 400 and not failed and not cancelled) and (
                         failed or cancelled or status >= 400 or scope['method'] not in {'GET', 'HEAD', 'OPTIONS'} or duration >= 1500):
-                    route = getattr(scope.get('route'), 'path', '/unmatched')
+                    context = scope['_acm_runtime_context']
+                    route = context.get('route') or getattr(scope.get('route'), 'path', '/unmatched')
                     component = path.split('/')[2] if len(path.split('/')) > 2 else 'other'
                     if component not in COMPONENTS:
                         component = 'other'
@@ -293,7 +334,8 @@ class RuntimeLogMiddleware:
                     else:
                         event, level = ('request.rejected', 'WARNING') if status >= 400 else ('request.completed', 'INFO')
                     emit_event(self.store, event, level=level, method=scope['method'], route=route,
-                               component=component, status=status, duration_ms=duration)
+                               component=component, status=status, duration_ms=duration,
+                               reason=context.get('reason'))
             finally:
                 request_id_context.reset(token)
                 user_id_context.reset(user_token)

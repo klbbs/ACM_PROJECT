@@ -97,6 +97,25 @@ def test_failed_job_records_safe_transition_without_exception_text(tmp_path, eve
     assert 'PRIVATE' not in str(captured)
 
 
+def test_failed_ai_job_records_only_the_known_diagnostic_code(tmp_path, events):
+    from acmweb.ai import AI_NETWORK_ERROR
+    store, captured = events
+    jobs = Jobs(Database(tmp_path / 'jobs.sqlite3'), SimpleNamespace(), AsyncMock())
+    jobs.event_log = store
+
+    async def failure():
+        raise AIError(AI_NETWORK_ERROR)
+    jobs.ai.test_connection = failure
+
+    async def run():
+        queued = jobs.start('ai_test')
+        await jobs.tasks[queued['id']][1]
+    asyncio.run(run())
+    assert captured[-1]['event'] == 'job.failed'
+    assert captured[-1]['details']['reason'] == 'ai_network'
+    assert set(captured[-1]['details']) == {'job_id', 'kind', 'job_status', 'reason'}
+
+
 @pytest.fixture
 def qr(tmp_path, monkeypatch, events):
     store, _ = events

@@ -16,6 +16,15 @@ from .codex_bridge import AIError
 from .providers import PRESETS
 from .prompts import build_prompt, PROMPT_VERSION
 
+AI_TIMEOUT_ERROR = 'AI 请求超时；未自动重试，请检查网络或调整超时设置'
+AI_NETWORK_ERROR = 'AI 网络连接失败；未自动重试，请检查提供方地址和服务器网络'
+AI_JSON_ERROR = 'AI 提供方返回的响应不是有效 JSON；未自动重试'
+AI_STRUCTURE_ERROR = 'AI 提供方返回的 JSON 响应结构不符合协议；未自动重试'
+MODEL_TIMEOUT_ERROR = '模型列表请求超时；请稍后重试或手动填写模型 ID'
+MODEL_NETWORK_ERROR = '模型列表网络连接失败；请检查提供方地址和服务器网络'
+MODEL_JSON_ERROR = '模型列表响应不是有效 JSON；请检查提供方 API 地址'
+MODEL_STRUCTURE_ERROR = '模型列表 JSON 响应结构无效；请检查提供方协议或手动填写模型 ID'
+
 
 @dataclass(frozen=True)
 class AIResult:
@@ -103,9 +112,14 @@ class AIProvider:
         config=ProviderConfig.model_validate(raw).model_dump(exclude={'api_key'})
         if 'vendor' not in raw:
             config['vendor']=next((p['id'] for p in PRESETS if p['id']!='custom' and p['base_url']==config['base_url'].rstrip('/') and p['protocol']==config['protocol']),'custom')
-        if self.settings.isolated and urlsplit(config['base_url']).hostname not in self.settings.ai_allowed_hosts:
-            raise AIError('该 AI 提供方尚未由管理员加入 ACM_AI_ALLOWED_HOSTS 白名单')
+        self.authorize_host(config)
         return config
+
+    def authorize_host(self, config):
+        # Config/credentials are captured together for each request, while host
+        # permission stays live so a queued request cannot bypass revocation.
+        if self.settings.isolated and urlsplit(config['base_url']).hostname not in self.settings.ai_allowed_hosts:
+            raise AIError('该 AI 提供方域名尚未加入服务器白名单，请联系管理员在管理后台添加')
 
     def presets(self):
         return {'items':[{**p,'allowed':not self.settings.isolated or urlsplit(p['base_url']).hostname in self.settings.ai_allowed_hosts} for p in PRESETS]}
@@ -136,8 +150,7 @@ class AIProvider:
     def _save(self, config):
         data=config.model_dump(exclude={"api_key"})
         data["base_url"]=self.validate_url(data["base_url"])
-        if self.settings.isolated and urlsplit(data['base_url']).hostname not in self.settings.ai_allowed_hosts:
-            raise AIError('该 AI 提供方尚未由管理员加入 ACM_AI_ALLOWED_HOSTS 白名单')
+        self.authorize_host(data)
         if data['thinking']!='auto' and not (data['protocol']=='chat' and data['vendor'] in {'deepseek','qwen','qwen_global'}):
             raise AIError('思考开关仅适用于 DeepSeek / Qwen 的 Chat 协议；其他协议请使用模型默认')
         if data['reasoning_effort']!='auto' and not (data['vendor'] in {'openai','deepseek','moonshot','gemini'} and data['protocol'] in {'responses','chat'}):
@@ -189,6 +202,7 @@ class AIProvider:
             async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
                 for page in range(10):
                     params = ({'pageToken' if gemini else 'after_id': cursor} if cursor else {})
+                    self.authorize_host(config)
                     response = await client.get(url, headers=headers, **({'params': params} if params else {}))
                     if response.status_code != 200:
                         if page == 0 and response.status_code in {404, 405, 501} and config.get('model'):
@@ -224,8 +238,14 @@ class AIProvider:
                 note = '来自当前提供方的实时模型列表；列表权限不代表生成权限'
                 if truncated: note += '；目录过大，仅展示前 10 页，可手动填写其他模型 ID'
                 return {'items': items, 'note': note, 'source': 'remote', 'default_model': config['model']}
-        except (httpx.HTTPError, ValueError, TypeError) as exc:
-            raise AIError("无法读取模型列表，请检查网络、API 地址和 Key") from exc
+        except httpx.TimeoutException:
+            raise AIError(MODEL_TIMEOUT_ERROR) from None
+        except httpx.HTTPError:
+            raise AIError(MODEL_NETWORK_ERROR) from None
+        except json.JSONDecodeError:
+            raise AIError(MODEL_JSON_ERROR) from None
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            raise AIError(MODEL_STRUCTURE_ERROR) from None
 
     async def complete(self, task, provider, model, payload: dict, schema: type[BaseModel]) -> AIResult:
         """Validate one task and invoke one transport with a captured server configuration."""
@@ -345,6 +365,7 @@ class AIProvider:
         if config['temperature'] is not None:payload['temperature']=config['temperature']
         try:
             async with httpx.AsyncClient(timeout=config['timeout'],follow_redirects=False) as client:
+                self.authorize_host(config)
                 response=await client.post(self.validate_url(config['base_url'])+path,json=payload,headers=self.headers(config))
             if response.status_code!=200:
                 reasons={401:'密钥无效或区域不匹配',403:'账号或模型权限不足',404:'地址或模型不存在',429:'额度不足或触发限流',400:'模型不支持当前参数，请检查输出模式、思考设置和 token 上限'}
@@ -368,5 +389,11 @@ class AIProvider:
             parsed=json.loads(clean)
             if not isinstance(parsed,dict):raise AIError('AI 输出必须为 JSON 对象')
             return json.dumps(parsed,ensure_ascii=False)
-        except (httpx.HTTPError,ValueError,KeyError,IndexError,TypeError,AttributeError):
-            raise AIError('AI 请求超时、网络异常或输出不是有效 JSON；未自动重试，请检查配置') from None
+        except httpx.TimeoutException:
+            raise AIError(AI_TIMEOUT_ERROR) from None
+        except httpx.HTTPError:
+            raise AIError(AI_NETWORK_ERROR) from None
+        except json.JSONDecodeError:
+            raise AIError(AI_JSON_ERROR) from None
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise AIError(AI_STRUCTURE_ERROR) from None

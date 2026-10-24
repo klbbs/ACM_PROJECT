@@ -123,6 +123,8 @@ def create_multi_app(settings, factory):
     from .runtime_logs import get_event_log, emit_event, register_admin_logs, user_id_context
     event_log = get_event_log(settings.log_directory or settings.data_dir / 'logs')
     identities = Users(settings.data_dir/'users.sqlite3')
+    from .ai_host_allowlist import AIHostAllowlist, register as register_ai_hosts
+    ai_host_allowlist = AIHostAllowlist(identities, settings)
     workspaces = Workspaces(settings,factory)
     assets = factory(replace(settings,multi_user=False,access_token=secrets.token_urlsafe(40),
                              data_dir=settings.data_dir/'site-static',config_path=settings.data_dir/'site-static/missing.toml',
@@ -161,7 +163,7 @@ def create_multi_app(settings, factory):
                 await workspaces.close()
                 emit_event(event_log, 'service.stopped', mode='multi')
 
-    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.3',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.20.4',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.state.event_log = event_log
 
@@ -247,7 +249,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.3','mode':'multi-user'}
+        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.20.4','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -470,6 +472,11 @@ def create_multi_app(settings, factory):
         identities.limit('admin-logs:' + actor['id'], 60, 60)
 
     register_admin_logs(app, event_log, authorize_logs)
+
+    def authorize_ai_hosts(request):
+        return require(request, True)
+
+    register_ai_hosts(app, ai_host_allowlist, identities, workspaces, authorize_ai_hosts, current_admin)
 
     @app.get('/api/shared')
     def shared(request:Request,search:str=Query(default='',max_length=100),offset:int=Query(default=0,ge=0),limit:int=Query(default=30,ge=1,le=50),trashed:bool=False):

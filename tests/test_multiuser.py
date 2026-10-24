@@ -270,6 +270,13 @@ def test_ai_connection_test_is_private_csrf_protected_and_does_not_create_report
     assert request(None,'POST','/api/ai/test',{}).status_code==401
     assert request(admin,'POST','/api/ai/test',{},extra={'X-CSRF-Token':'wrong'}).status_code==403
     assert request(admin,'GET','/api/ai/presets').status_code==200
+    missing = request(admin,'POST','/api/ai/test',{})
+    assert missing.status_code == 400
+    assert request(admin,'GET','/api/jobs').json()['items'] == []
+    configured = request(admin, 'PUT', '/api/ai/settings', {
+        'model': 'synthetic', 'api_key': 'isolated-test-key',
+    })
+    assert configured.status_code == 200
     response=request(admin,'POST','/api/ai/test',{})
     assert response.status_code==200,response.text
     job_id=response.json()['id']
