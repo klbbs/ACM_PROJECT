@@ -116,7 +116,7 @@ class TrainingAssessment:
                 '递交 AI 时会尝试读取并核验该次官方源码' if fetchable else
                 '记录已保留；此平台暂不支持读取并核验官方源码，不能用编辑器草稿替代')
             result.append({key: row.get(key) for key in ('attempt_id', 'submission_id', 'account', 'platform', 'language', 'verdict')} |
-                          {'source_available': bool(accepted and verified), 'can_fetch_source': fetchable, 'disabled_reason': reason})
+                          {'platform': platform, 'source_available': bool(accepted and verified), 'can_fetch_source': fetchable, 'disabled_reason': reason})
         return result
 
     @staticmethod
@@ -178,14 +178,15 @@ class TrainingAssessment:
         try:
             await self._guard()
             self.active_ai = True
-            _, item = self._item(plan_id, position)
+            plan, item = self._item(plan_id, position)
             if not item.get('completed'):
                 raise AIError('请先同步本题官方 AC 提交，再递交 AI 评估')
             sources = self._sources(item)
             chosen = [row for row in sources if
                       (not request.attempt_id or row.get('attempt_id') == request.attempt_id) and
                       (not request.submission_id or row['submission_id'] == request.submission_id) and
-                      (not request.handle or row['account'] == request.handle) and row['verdict'] == 'AC']
+                      (not request.handle or (row['account'].casefold() == request.handle.casefold()
+                          if item['problem_id'].startswith('codeforces:') else row['account'] == request.handle)) and row['verdict'] == 'AC']
             if not chosen:
                 raise AIError('没有找到该平台账号对应的已同步 AC 提交，请先同步本题记录')
             if not request.attempt_id and not request.submission_id and len(chosen) > 1:
@@ -215,7 +216,7 @@ class TrainingAssessment:
             if saved and saved['fingerprint'] == fingerprint:
                 return self.state(*key) | {'busy': False}
             result = await self.ai.complete('specialist_assessment', request.provider, request.model,
-                self._material(item, attempt, statement), SpecialistAssessment)
+                self._material(item, attempt, statement, plan), SpecialistAssessment)
             try:
                 data = SpecialistAssessment.model_validate(result.data).model_dump()
             except ValidationError:
@@ -242,8 +243,10 @@ class TrainingAssessment:
                 'account': attempt['handle'], 'platform': attempt['problem_id'].split(':')[0],
                 'language': attempt['language'], 'verdict': attempt['verdict']}
 
-    def _material(self, item, attempt, statement):
-        return {'topic': item.get('stage'), 'problem': statement,
+    def _material(self, item, attempt, statement, plan=None):
+        plan = plan or {}
+        return {'topic': {'topic_id': plan.get('topic_id'), 'topic_title': plan.get('topic_title'),
+                          'stage': item.get('stage')}, 'problem': statement,
                 'submission': self._submission(attempt) | {'source_code': attempt['code'],
                  'source_code_sha256': attempt['code_hash'], 'judge_result': attempt['judge_data'],
                  'source_provenance': '已核验的该次官方 AC 提交源码'},
@@ -259,7 +262,7 @@ class TrainingAssessment:
         try:
             await self._guard()
             self.active_ai = True
-            _, item = self._item(*key)
+            plan, item = self._item(*key)
             with self.db.connect() as conn:
                 saved = conn.execute('SELECT * FROM specialist_assessments WHERE plan_id=? AND position=?', key).fetchone()
             if not saved:
@@ -270,7 +273,7 @@ class TrainingAssessment:
             messages = json.loads(saved['messages'])
             if len(messages) >= 24:
                 raise AIError('本题本次评估已达到 12 轮讨论上限，请整理结论后继续训练')
-            material = self._material(item, attempt, statement)
+            material = self._material(item, attempt, statement, plan)
             material.update(assessment=json.loads(saved['assessment'])['result'], messages=messages,
                             question=request.message.strip())
             result = await self.ai.complete('specialist_chat', request.provider, request.model, material, SpecialistChat)
