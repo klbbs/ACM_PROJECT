@@ -1,5 +1,6 @@
 """Per-user daily practice plans and submission-derived check-ins."""
 import json
+import math
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -349,10 +350,15 @@ class Daily:
         options = payload.get("training_options", self._plan_options(payload["day"]))
         learn = options["training_mode"] == "learn"
         template_first = (payload.get("ordinal") == 0) if replacing and learn else None
+        constraints = {}
+        if replacing:
+            bounds = self._replacement_difficulty_bounds(payload["day"], payload["task_id"], payload["ordinal"])
+            if bounds:
+                constraints["difficulty_bounds"] = bounds
         items = await self.specialist_training.select_items(
             options["topic_id"], options["training_mode"], count, payload["provider"], payload["model"],
             excluded_ids=excluded, template_first=template_first,
-            forbid_templates=bool(replacing and learn and payload.get("ordinal") != 0))
+            forbid_templates=bool(replacing and learn and payload.get("ordinal") != 0), **constraints)
         if len(items) != count:
             raise DailyCountError(count, len(items))
         rows, seen = [], set()
@@ -364,6 +370,26 @@ class Daily:
             platform, raw = pid.split(':', 1)
             rows.append({**item, "id": pid, "problem_id": raw, "platform": platform})
         return rows
+
+    def _replacement_difficulty_bounds(self, day, task_id, ordinal):
+        # Ratings are native to each judge. Never compare or convert across platforms.
+        bounds = {}
+        with self.db.connect() as db:
+            rows = db.execute("SELECT ordinal,data FROM daily_plan_tasks WHERE day=? AND active=1 AND id<>?",
+                              (day, task_id)).fetchall()
+        for row in rows:
+            item = json.loads(row["data"])
+            difficulty = item.get("difficulty")
+            if type(difficulty) not in (int, float) or not math.isfinite(difficulty) or difficulty <= 0:
+                continue
+            platform = item.get("platform") or str(item.get("id", "")).split(':', 1)[0]
+            if not platform or row["ordinal"] == ordinal:
+                continue
+            side = "minimum" if row["ordinal"] < ordinal else "maximum"
+            limits = bounds.setdefault(platform, {})
+            previous = limits.get(side)
+            limits[side] = difficulty if previous is None else (max(previous, difficulty) if side == "minimum" else min(previous, difficulty))
+        return bounds
 
     def _learning_evidence(self):
         # Only aggregate, source-derived training signals; no code, credentials or profiles.
