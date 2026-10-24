@@ -14,6 +14,7 @@ from acmweb.daily import Complete, Daily, Roll, Settings, TaskTime, TZ
 from acmweb.ai import AIResult
 from acmweb.database import Database
 from acmweb.codex_bridge import AIError
+from acmweb.runtime_logs import RuntimeLogs
 
 
 @pytest.fixture
@@ -30,6 +31,10 @@ def daily(tmp_path):
                 'url': f'https://codeforces.com/problemset/problem/{i}/A'})) for i in range(1, 12)])
     async def choose(task, provider, model, payload, schema):
         assert task == 'daily_selection'
+        output_schema = schema.model_json_schema()
+        assert output_schema['title'] == 'DailySelection'
+        selected_schema = output_schema['properties']['selected_problems']
+        assert selected_schema['minItems'] == selected_schema['maxItems'] == payload['requested_count']
         return AIResult({'selected_problems': [{'id': row['id'], 'reason': '适合练习'}
             for row in payload['candidates'][:payload['requested_count']]]}, {'model': model})
     ai.complete.side_effect = choose
@@ -47,7 +52,7 @@ def generate(daily):
     return asyncio.run(daily.roll(Roll(provider='api', model='mock')))
 
 
-@pytest.mark.parametrize('goal', [1, 2, 3])
+@pytest.mark.parametrize('goal', [1, 2, 3, 4])
 def test_exact_daily_plan_and_goal_count_single_problem_rerolls(daily, goal):
     daily.configure(Settings(daily_goal=goal))
     state = generate(daily)
@@ -240,6 +245,134 @@ def test_invalid_ai_id_or_count_does_not_create_plan(daily):
         with pytest.raises(AIError):
             generate(daily)
         assert daily.state()['plan']['status'] == 'failed'
+
+
+def test_four_daily_tasks_reject_five_model_choices_without_saving_tasks(daily):
+    """A relay ignoring the count may fail the request, never expand today's goal."""
+    daily.configure(Settings(daily_goal=4))
+    daily.ai.complete.side_effect = None
+    daily.ai.complete.return_value = AIResult({'selected_problems': [
+        {'id': f'codeforces:{i}-A', 'reason': '练习'} for i in range(1, 6)
+    ]}, {})
+    with pytest.raises(AIError, match='要求 4 道，AI 实际返回 5 道'):
+        generate(daily)
+    state = daily.state()
+    assert state['plan']['status'] == 'failed'
+    assert state['plan']['goal_count'] == 4
+    assert state['plan']['tasks'] == []
+    assert state['plan']['failure']['code'] == 'invalid_count'
+    assert '要求 4 道，AI 实际返回 5 道' in state['plan']['failure']['message']
+    assert state['rerolls_remaining'] == 4
+    with daily.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM daily_plan_tasks').fetchone()[0] == 0
+
+    restored = Daily(Database(daily.db.path), daily.ai, daily.accounts)
+    assert restored.state()['plan']['failure'] == state['plan']['failure']
+
+
+def test_four_daily_tasks_survive_database_reopen_without_new_ai_call(daily):
+    daily.configure(Settings(daily_goal=4))
+    before = generate(daily)
+    before = asyncio.run(daily.roll(Roll(provider='api', model='relay-model',
+        task_id=before['plan']['tasks'][2]['task_id'])))
+    daily.ai.complete.reset_mock()
+    restored = Daily(Database(daily.db.path), daily.ai, daily.accounts)
+    after = restored.state()
+    assert after['plan'] == before['plan']
+    assert len(after['plan']['tasks']) == after['locked_goal'] == 4
+    assert after['rerolls_remaining'] == 3
+    with pytest.raises(HTTPException, match='请选择要替换'):
+        asyncio.run(restored.roll(Roll(provider='api', model='another-model')))
+    daily.ai.complete.assert_not_called()
+    assert restored.state()['plan'] == before['plan']
+
+
+@pytest.mark.parametrize('error', [AIError('upstream secret-key-DO-NOT-STORE'),
+                                  ValueError('raw secret-key-DO-NOT-STORE'), asyncio.CancelledError()])
+def test_generation_failure_is_persistent_safe_and_preserves_previous_tasks(daily, error):
+    before = generate(daily)
+    # An interrupted/failed legacy regeneration may already have saved task rows.
+    with daily.db.connect() as db:
+        db.execute("UPDATE daily_plans SET status='failed'")
+    choose = daily.ai.complete.side_effect
+    daily.ai.complete.side_effect = error
+    with pytest.raises(type(error)):
+        generate(daily)
+    restored = Daily(Database(daily.db.path), daily.ai, daily.accounts)
+    failure_state = restored.state()
+    assert failure_state['plan']['status'] == 'failed'
+    assert failure_state['plan']['tasks'] == before['plan']['tasks']
+    assert failure_state['plan']['failure']['message']
+    with daily.db.connect() as db:
+        stored = db.execute('SELECT value FROM web_settings WHERE key=?',
+                            (daily._failure_key(daily.today().isoformat()),)).fetchone()[0]
+        assert 'secret-key' not in stored and 'upstream' not in stored
+    daily.ai.complete.side_effect = choose
+    assert generate(restored)['plan']['failure'] is None
+    with daily.db.connect() as db:
+        assert db.execute('SELECT value FROM web_settings WHERE key=?',
+                          (daily._failure_key(daily.today().isoformat()),)).fetchone() is None
+
+
+def test_bad_daily_model_output_never_persists_validation_input_or_other_user_failure(daily, tmp_path):
+    daily.ai.complete.side_effect = None
+    daily.ai.complete.return_value = AIResult({'selected_problems': [{'id': {'secret': 'PRIVATE-INPUT'}}]}, {})
+    with pytest.raises(AIError, match='每日题目格式') as error:
+        generate(daily)
+    assert 'PRIVATE-INPUT' not in str(error.value)
+    assert daily.state()['plan']['failure']['code'] == 'invalid_output'
+    with daily.db.connect() as db:
+        assert 'PRIVATE-INPUT' not in db.execute('SELECT value FROM web_settings WHERE key=?',
+            (daily._failure_key(daily.today().isoformat()),)).fetchone()[0]
+    other = Daily(Database(tmp_path / 'other-daily.sqlite3'), daily.ai, daily.accounts)
+    assert other.state()['plan'] is None
+
+
+def test_daily_generation_writes_only_safe_counts_to_runtime_logs(daily, tmp_path):
+    daily.event_log = RuntimeLogs(tmp_path / 'runtime-logs')
+    daily.configure(Settings(daily_goal=4))
+    choose = daily.ai.complete.side_effect
+
+    async def selection_with_private_reason(*args):
+        result = await choose(*args)
+        for item in result.data['selected_problems']:
+            item['reason'] = 'PRIVATE-TRAINING-REASON'
+        return result
+
+    daily.ai.complete.side_effect = selection_with_private_reason
+    generate(daily)
+    records = daily.event_log.listing()['items']
+    assert len(records) == 1
+    assert records[0]['event'] == 'daily.generated'
+    assert records[0]['level'] == 'INFO'
+    assert records[0]['details'] == {'requested_count': 4, 'actual_count': 4}
+    raw = (daily.event_log.directory / 'runtime.jsonl').read_text()
+    assert 'PRIVATE' not in raw and 'codeforces:' not in raw
+
+
+@pytest.mark.parametrize('wrong_count', [True, False])
+def test_daily_generation_failure_runtime_logs_include_safe_reason_not_upstream_text(daily, tmp_path, wrong_count):
+    daily.event_log = RuntimeLogs(tmp_path / 'failure-runtime-logs')
+    daily.configure(Settings(daily_goal=4))
+    if wrong_count:
+        daily.ai.complete.side_effect = None
+        daily.ai.complete.return_value = AIResult({'selected_problems': [
+            {'id': f'codeforces:{i}-A', 'reason': 'PRIVATE-SOURCE'} for i in range(1, 6)
+        ]}, {})
+    else:
+        daily.ai.complete.side_effect = AIError('PRIVATE-COOKIE PRIVATE-KEY PRIVATE-SOURCE')
+    with pytest.raises(AIError):
+        generate(daily)
+    records = daily.event_log.listing()['items']
+    assert len(records) == 1
+    assert records[0]['event'] == 'daily.failed'
+    assert records[0]['level'] == 'ERROR'
+    expected = {'reason': 'daily_invalid_count' if wrong_count else 'daily_generation_failed', 'requested_count': 4}
+    if wrong_count:
+        expected['actual_count'] = 5
+    assert records[0]['details'] == expected
+    raw = (daily.event_log.directory / 'runtime.jsonl').read_text()
+    assert 'PRIVATE' not in raw and 'codeforces:' not in raw
 
 
 def test_not_enough_candidates_no_billed_ai_call(daily):

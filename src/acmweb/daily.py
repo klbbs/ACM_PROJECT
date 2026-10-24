@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
 from .catalog import recommendation_candidates, refresh_recommendation_sessions
 from .codex_bridge import AIError
+from .runtime_logs import emit_event
 
 TZ = ZoneInfo("Asia/Shanghai")
 DAILY_DDL = """
@@ -71,6 +72,12 @@ class DailySelection(Strict):
     selected_problems: list[SelectedProblem] = Field(max_length=20)
 
 
+class DailyCountError(AIError):
+    def __init__(self, required, actual):
+        self.required, self.actual = required, actual
+        super().__init__(f"每日题单要求 {required} 道，AI 实际返回 {actual} 道，本次未保存；已保存题单不受影响，请手动重试")
+
+
 class GenerateRequest(Strict):
     provider: Literal["api", "codex"]
     model: str = Field(min_length=1, max_length=150)
@@ -85,8 +92,9 @@ class Complete(Strict):
 
 
 class Daily:
-    def __init__(self, database, ai, accounts=None):
+    def __init__(self, database, ai, accounts=None, event_log=None):
         self.db, self.ai, self.accounts = database, ai, accounts
+        self.event_log = event_log
         self.guard = None
         self.active_ai = False
         with self.db.connect() as db:
@@ -156,6 +164,7 @@ class Daily:
                 VALUES(?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET status='generating',goal_count=excluded.goal_count,
                 starts_on=excluded.starts_on,ends_on=excluded.ends_on,created_at=excluded.created_at""",
                 (day, "generating", settings["daily_goal"], cycle["starts_on"], cycle["ends_on"], int(time.time())))
+            db.execute("DELETE FROM web_settings WHERE key=?", (self._failure_key(day),))
         # A generated plan snapshots its goal; later preference edits cannot lower today's K threshold.
         return {"day": day, "count": settings["daily_goal"], "provider": provider, "model": model}
 
@@ -217,11 +226,46 @@ class Daily:
                 db.executemany("INSERT INTO daily_plan_tasks(day,ordinal,problem_id,data,active,created_at) VALUES(?,?,?,?,1,?)",
                     [(day, i, row["id"], json.dumps(row, ensure_ascii=False), now) for i, row in enumerate(chosen)])
                 db.execute("UPDATE daily_plans SET status='ready' WHERE day=?", (day,))
+                db.execute("DELETE FROM web_settings WHERE key=?", (self._failure_key(day),))
+            emit_event(self.event_log, 'daily.generated', requested_count=count, actual_count=len(chosen))
             return {"day": day, "tasks": chosen}
-        except BaseException:
+        except BaseException as error:
             with self.db.connect() as db:
-                db.execute("UPDATE daily_plans SET status='failed' WHERE day=? AND status='generating'", (day,))
+                db.execute("BEGIN IMMEDIATE")
+                changed = db.execute("UPDATE daily_plans SET status='failed' WHERE day=? AND status='generating'", (day,)).rowcount
+                if changed:
+                    # Persist only our fixed descriptions, never upstream text or validation inputs.
+                    failure = self._generation_failure(error)
+                    db.execute("INSERT INTO web_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (self._failure_key(day), json.dumps(failure, ensure_ascii=False)))
+            if changed:
+                details = {'reason': 'daily_' + failure['code'], 'requested_count': count}
+                if isinstance(error, DailyCountError):
+                    details['actual_count'] = error.actual
+                emit_event(self.event_log, 'daily.failed', level='ERROR', **details)
             raise
+
+    @staticmethod
+    def _failure_key(day):
+        return f"daily_generation_failure:{day}"
+
+    @staticmethod
+    def _generation_failure(error):
+        # Messages are chosen locally so a provider cannot persist secrets in its errors.
+        if isinstance(error, DailyCountError):
+            return {"code": "invalid_count", "message": str(error)}
+        text = str(error) if isinstance(error, (AIError, HTTPException)) else ''
+        if isinstance(error, ValidationError) or '格式' in text or 'JSON' in text or '结构' in text:
+            return {"code": "invalid_output", "message": "AI 返回格式或题目数量不符合每日任务要求，未保存题单；请检查模型后手动重试。"}
+        if '候选' in text or '题库中只有' in text:
+            return {"code": "candidates_unavailable", "message": "符合条件的候选题不足、无效或资格已变化，未保存题单；请检查平台登录、题库与训练条件后重试。"}
+        if '超时' in text or '网络' in text or 'HTTP' in text:
+            return {"code": "provider_unavailable", "message": "AI 服务连接失败、超时或拒绝请求，未保存题单；请检查提供方设置后手动重试。"}
+        if 'Key' in text or '模型' in text or '白名单' in text or '通道' in text:
+            return {"code": "provider_configuration", "message": "AI 模型、密钥或提供方权限尚未配置好，未保存题单；请检查连接与设置后重试。"}
+        if isinstance(error, (KeyboardInterrupt, SystemExit)) or type(error).__name__ == 'CancelledError':
+            return {"code": "interrupted", "message": "每日题单生成已中断，未保存新题单；已有题目保留，可手动重试。"}
+        return {"code": "generation_failed", "message": "每日题单生成失败，未保存新题单；已有题目保留，请检查设置后手动重试。"}
 
     async def _roll(self, payload):
         token, day, task_id = payload["token"], payload["day"], payload["task_id"]
@@ -265,6 +309,9 @@ class Daily:
         if self.guard:
             self.guard()
         self.active_ai = True
+        # Every transport receives today's exact count, including schema-less relay prompts.
+        selection_schema = create_model('DailySelection', __base__=DailySelection,
+            selected_problems=(list[SelectedProblem], Field(min_length=count, max_length=count)))
         try:
             result = await self.ai.complete("daily_selection", provider, model,
             {"requested_count": count, "excluded_ids": excluded, "target_id": target_id,
@@ -274,12 +321,15 @@ class Daily:
              "difficulty_range": [prefs.get("minimum", 1000), prefs.get("maximum", 1600)],
              "training_preferences": prefs, "daily_budget": self.settings(),
              "actual_time_evidence": self.evidence(),
-             "candidates": [{k: p.get(k) for k in ("id", "platform", "title", "difficulty", "difficulty_source", "native_difficulty", "difficulty_label", "tags", "url", "published_at", "published_at_source")} for p in pool]}, DailySelection)
+             "candidates": [{k: p.get(k) for k in ("id", "platform", "title", "difficulty", "difficulty_source", "native_difficulty", "difficulty_label", "tags", "url", "published_at", "published_at_source")} for p in pool]}, selection_schema)
         finally:
             self.active_ai = False
         allowed = {item["id"]: item for item in pool}
         selected, seen = [], set()
-        validated = DailySelection.model_validate(result.data)
+        try:
+            validated = DailySelection.model_validate(result.data)
+        except ValidationError:
+            raise AIError("AI 返回的每日题目格式不符合要求，未保存题单") from None
         for item in validated.selected_problems:
             row = item.model_dump()
             pid = row.get("id")
@@ -288,7 +338,7 @@ class Daily:
             seen.add(pid)
             selected.append({**allowed[pid], "reason": str(row.get("reason", ""))[:500]})
         if len(selected) != count:
-            raise AIError(f"AI 未按要求返回 {count} 道不同题目，请重试")
+            raise DailyCountError(count, len(selected))
         current = recommendation_candidates(self.db, self.accounts, minimum=prefs.get("minimum", 1000),
             maximum=prefs.get("maximum", 1600), limit=count, preferred_ids=[row["id"] for row in selected])
         if not {row["id"] for row in selected} <= {row["id"] for row in current}:
@@ -383,6 +433,7 @@ class Daily:
             db.execute("DELETE FROM daily_roll_reservations WHERE status='reserved' AND created_at<?", (int(time.time())-600,))
             db.execute("UPDATE daily_plans SET status='failed' WHERE status='generating' AND created_at<?", (int(time.time())-600,))
             plan = db.execute("SELECT * FROM daily_plans WHERE day=?", (today,)).fetchone()
+            failure_row = db.execute("SELECT value FROM web_settings WHERE key=?", (self._failure_key(today),)).fetchone()
             times = {row["task_id"]: row["duration_minutes"] for row in db.execute("SELECT * FROM daily_task_times")}
             all_tasks = db.execute("SELECT id,day,data,problem_id FROM daily_plan_tasks WHERE active=1 ORDER BY ordinal").fetchall()
             rolls_used = db.execute("SELECT COUNT(*) FROM daily_roll_reservations WHERE day=? AND status IN ('reserved','used')", (today,)).fetchone()[0]
@@ -426,10 +477,12 @@ class Daily:
         # successful/reserved rolls still count when upgrading from fixed quotas.
         rolls_limit = plan['goal_count'] if plan else settings['daily_goal']
         rolls_remaining = max(0, rolls_limit - rolls_used)
+        failure = json.loads(failure_row[0]) if failure_row else {"code": "interrupted", "message": "上次每日题单未生成成功，未保存新题单；请检查设置后手动重试。"}
         snapshot = {"today": today, "timezone": "Asia/Shanghai", "settings": settings,
             "time_evidence": self.evidence(),
             "active": bool(cycle and cycle["starts_on"] <= today <= cycle["ends_on"]),
-            "cycle": cycle, "plan": ({"status": plan['status'], "goal_count": plan["goal_count"], "tasks": [
+            "cycle": cycle, "plan": ({"status": plan['status'], "goal_count": plan["goal_count"],
+                "failure": failure if plan['status'] == 'failed' else None, "tasks": [
                 {**json.loads(row["data"]), "task_id": row["id"], "duration_minutes": times.get(row["id"]), "completed": row["problem_id"] in solved}
                 for row in active_tasks], "rolls_limit": rolls_limit, "rolls_remaining": rolls_remaining, "completed_ids": completed} if plan else None),
             "sign_in": {"kind": "k" if today in k_days else ("ordinary" if today in ordinary_days else "none"),

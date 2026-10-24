@@ -33,6 +33,8 @@ EVENTS = {
     'job.partial': ('task', '后台任务部分完成'),
     'job.failed': ('task', '后台任务失败'),
     'job.interrupted': ('task', '后台任务已中断'),
+    'daily.generated': ('task', '每日题单已保存'),
+    'daily.failed': ('task', '每日题单生成失败，原有题单保留'),
     'platform.qr.retry': ('platform', '牛客扫码检测暂未完成，正在重试'),
     'platform.qr.failed': ('platform', '牛客扫码绑定未完成'),
     'platform.qr.verified': ('platform', '牛客扫码身份已验证并绑定'),
@@ -51,7 +53,10 @@ REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'bindi
            'success_data_missing', 'success_data_invalid', 'upstream_status_rejected',
            'ai_model_missing', 'ai_key_missing', 'ai_host_not_allowed',
            'ai_timeout', 'ai_network', 'ai_invalid_json', 'ai_invalid_structure',
-           'model_list_timeout', 'model_list_network', 'model_list_invalid_json', 'model_list_invalid_structure'}
+           'model_list_timeout', 'model_list_network', 'model_list_invalid_json', 'model_list_invalid_structure',
+           'daily_invalid_output', 'daily_invalid_count', 'daily_candidates_unavailable',
+           'daily_provider_unavailable', 'daily_provider_configuration', 'daily_interrupted',
+           'daily_generation_failed'}
 
 
 def known_failure_reason(error):
@@ -113,6 +118,8 @@ def safe_details(details):
         elif key in {'status', 'upstream_status'} and type(value) is int and 100 <= value <= 599:
             clean[key] = value
         elif key == 'upstream_code' and type(value) is int and abs(value) <= 10**9:
+            clean[key] = value
+        elif key in {'requested_count', 'actual_count'} and type(value) is int and 0 <= value <= 1000:
             clean[key] = value
         elif key in {'duration_ms', 'warning_count', 'finding_count'} and type(value) is int and 0 <= value <= 86400000:
             clean[key] = value

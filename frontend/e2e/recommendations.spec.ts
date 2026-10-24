@@ -1,5 +1,65 @@
 import { test, expect } from '@playwright/test'
 
+test('saved recommendations survive newer analysis, an unavailable candidate pool and a reload', async ({
+  page,
+}) => {
+  const recommendation = {
+    id: 'saved-recommendation',
+    kind: 'recommend',
+    data: {
+      selected_problems: [
+        {
+          id: 'codeforces:2264C',
+          platform: 'codeforces',
+          problem_id: '2264C',
+          title: '已保存的推荐题',
+          difficulty: 1400,
+          tags: [],
+          reason: '上次已生成',
+          url: 'https://codeforces.com/problemset/problem/2264/C',
+        },
+      ],
+    },
+  }
+  await page.route('**/api/reports*', (route) =>
+    route.fulfill({
+      json: {
+        items: route.request().url().includes('kind=recommend')
+          ? [{ id: recommendation.id, kind: 'recommend' }]
+          : [
+              { id: 'new-analysis', kind: 'analysis' },
+              { id: recommendation.id, kind: 'recommend' },
+            ],
+      },
+    }),
+  )
+  await page.route('**/api/reports/new-analysis', (route) =>
+    route.fulfill({
+      json: {
+        id: 'new-analysis',
+        kind: 'analysis',
+        data: { summary: '新训练分析' },
+      },
+    }),
+  )
+  await page.route('**/api/reports/saved-recommendation', (route) =>
+    route.fulfill({ json: recommendation }),
+  )
+  await page.route('**/api/catalog?**', (route) =>
+    route.fulfill({
+      status: 503,
+      json: { detail: '隔离模拟题库不可用' },
+    }),
+  )
+  await page.goto('/')
+  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '已保存的推荐题', exact: true })).toBeVisible()
+  await expect(page.locator('.candidate-list')).toContainText('隔离模拟题库不可用')
+  await page.reload()
+  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '已保存的推荐题', exact: true })).toBeVisible()
+})
+
 test('recommendation mixes platforms, inherits the saved date and can renew expired login checks', async ({
   page,
 }) => {

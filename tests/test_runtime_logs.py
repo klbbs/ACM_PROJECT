@@ -36,6 +36,18 @@ def test_runtime_store_rotates_bounded_files_and_pages_newest_first(tmp_path):
     assert sum(file.stat().st_size for file in (tmp_path / 'logs').iterdir()) <= 3 * 1024
 
 
+def test_daily_count_metadata_is_bounded_and_does_not_accept_provider_text(tmp_path):
+    store = RuntimeLogs(tmp_path / 'logs')
+    store.emit('daily.failed', level='ERROR', reason='daily_invalid_count',
+               requested_count=4, actual_count=5, raw_error='PRIVATE-SOURCE')
+    assert store.listing()['items'][0]['details'] == {
+        'reason': 'daily_invalid_count', 'requested_count': 4, 'actual_count': 5,
+    }
+    store.emit('daily.failed', reason='PRIVATE-KEY', requested_count=True, actual_count=1001)
+    assert store.listing()['items'][0]['details'] == {}
+    assert 'PRIVATE' not in (tmp_path / 'logs' / 'runtime.jsonl').read_text()
+
+
 def test_admin_log_route_calls_authorizer_and_does_not_reflect_untrusted_file_data(tmp_path):
     store = RuntimeLogs(tmp_path / 'logs')
     store.emit('request.completed', method='GET', route='/api/overview', status=200)

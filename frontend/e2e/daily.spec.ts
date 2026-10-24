@@ -82,6 +82,13 @@ test('daily plan locks k Roll chances, replaces only the selected problem, and c
   await page.getByRole('button', { name: '今日练习', exact: true }).click()
   await expect(daily.locator('.daily-problem')).toHaveCount(2)
   await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 0 次')
+  const savedTitles = await daily.locator('.daily-problem strong').allTextContents()
+  await page.reload()
+  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await expect(daily.locator('.daily-problem')).toHaveCount(2)
+  await expect(daily.locator('.daily-problem strong')).toHaveText(savedTitles)
+  await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 0 次')
+  expect(rollRequests).toHaveLength(3)
 })
 
 test('verified completed task accepts actual minutes and allows corrections without changing check-in', async ({

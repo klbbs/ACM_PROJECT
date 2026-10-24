@@ -15,6 +15,7 @@ type Props = {
 
 export function DailyTasksPage({ revision, provider, model, aiPicker, onError, onNotice, onOpenProblem }: Props) {
   const [data, setData] = useState<Row | null>(null)
+  const [readError, setReadError] = useState('')
   const [formReady, setFormReady] = useState(false)
   const dirty = useRef(false)
   const mutationVersion = useRef(0)
@@ -30,6 +31,7 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
     onError(error instanceof Error ? error.message : '每日任务请求失败')
   const applyRead = (value: Row) => {
     setData(value)
+    setReadError('')
     setFormReady(true)
     // Background progress refreshes must not replace a preference the user is editing.
     if (!dirty.current) {
@@ -39,9 +41,14 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
   }
   const load = async () => {
     const version = mutationVersion.current
-    const value = await api('/daily')
-    if (version === mutationVersion.current && !writing.current) applyRead(value)
-    return value
+    try {
+      const value = await api('/daily')
+      if (version === mutationVersion.current && !writing.current) applyRead(value)
+      return value
+    } catch (error) {
+      if (version === mutationVersion.current) setReadError(error instanceof Error ? error.message : '每日任务读取失败')
+      throw error
+    }
   }
   useEffect(() => {
     let alive = true
@@ -52,7 +59,10 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
         applyRead(value)
       })
       .catch((error) => {
-        if (alive) fail(error)
+        if (alive && version === mutationVersion.current) {
+          setReadError(error instanceof Error ? error.message : '每日任务读取失败')
+          fail(error)
+        }
       })
     return () => {
       alive = false
@@ -138,6 +148,7 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
   const rerollsLimit = data?.rerolls_limit ?? lockedGoal
   const rerollsRemaining = data?.rerolls_remaining ?? 0
   const rollDisabledReason = (task: Row) => {
+    if (!ready) return '题单尚未生成成功，请先重试生成'
     if (task.completed) return '已完成题目不能 Roll'
     if (!model) return '请先配置并选择 AI 模型'
     if (!data?.active) return '训练周期未开启，请先保存每日任务'
@@ -159,7 +170,13 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
           {check.kind === 'k' ? '今日 K 签' : check.kind === 'normal' ? '今日普通签到' : '尚未签到'}
         </span>
       </div>
-      {!formReady && <p role="status">正在读取每日任务设置；加载完成后可编辑。</p>}
+      {!formReady && !readError && <p role="status">正在读取每日任务设置；加载完成后可编辑。</p>}
+      {readError && (
+        <div role="alert" className="help">
+          <p>每日任务读取失败：{readError}。{data ? '已显示的题单已保留。' : '尚未读取到题单，请重试；这不表示已保存的题目丢失。'}</p>
+          <button className="button secondary" disabled={busy} onClick={() => load().catch(fail)}>重试读取每日任务</button>
+        </div>
+      )}
       <div className="practice-filters">
         <label>
           每日题量
@@ -263,6 +280,12 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
         点击“AI 生成”或“Roll · 换这道题”会将训练偏好、每日目标、练习用时资料和公开候选题信息发送给所选
         AI，可能产生 API 费用。 查看题单、修改偏好和刷新进度不会触发 AI 选题。
       </p>
+      {data?.plan?.status === 'failed' && (
+        <p className="help" role="alert">
+          上次生成失败：{data.plan.failure?.message || '题单未生成成功，请检查设置后手动重试。'}
+          {' '}不会自动重试或产生新的 AI 费用；点击“AI 生成”才会重新请求。
+        </p>
+      )}
       {ready && (
         <p className="help">
           今日 Roll 总额度 {rerollsLimit} 次，剩余 {rerollsRemaining}{' '}
@@ -270,8 +293,7 @@ export function DailyTasksPage({ revision, provider, model, aiPicker, onError, o
         </p>
       )}
       <div className="daily-task-list">
-        {ready &&
-          data.plan.tasks.map((task: Row) => (
+        {(data?.plan?.tasks || []).map((task: Row) => (
             <article className="daily-problem" key={task.task_id}>
               <div>
                 <strong>

@@ -257,7 +257,8 @@ def create_app(settings=None):
         return jobs.start("recommend",{**payload.model_dump(), 'platform':''})
 
     @app.get("/api/reports")
-    def reports():return {"items":database.reports()}
+    def reports(kind: Literal['analysis','recommend'] | None = None):
+        return {"items":database.reports(kind)}
 
     @app.get("/api/reports/{report_id}")
     def report(report_id:str):
@@ -295,6 +296,7 @@ def create_app(settings=None):
 
     from .daily import Daily, register as register_daily
     app.state.daily = Daily(database, ai, account_config)
+    app.state.daily.event_log = event_log
     jobs.daily_evidence = app.state.daily.evidence
     register_daily(app, app.state.daily)
 

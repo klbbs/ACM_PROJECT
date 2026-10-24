@@ -56,7 +56,9 @@ class Database:
         result["data"] = json.loads(result["data"])
         return result
 
-    def reports(self):
+    def reports(self, kind=None):
         with self.connect() as db:
-            rows = db.execute("SELECT id,created_at,kind,provider,model FROM ai_reports ORDER BY created_at DESC LIMIT 50").fetchall()
+            rows = db.execute("SELECT id,created_at,kind,provider,model FROM ai_reports "
+                              + ("WHERE kind=? " if kind else "")
+                              + "ORDER BY created_at DESC,id DESC LIMIT 50", (kind,) if kind else ()).fetchall()
         return [dict(row) for row in rows]

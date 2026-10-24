@@ -70,6 +70,22 @@ it('disables preferences and saving until the initial server settings arrive', a
   expect(save().disabled).toBe(false)
 })
 
+it('shows a local read failure and retries without generating another paid AI request', async () => {
+  const onError = vi.fn()
+  apiMock.mockRejectedValueOnce(new Error('读取超时')).mockResolvedValueOnce(value(4))
+  await render(0, { onError })
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('每日任务读取失败：读取超时')
+  expect(host.textContent).toContain('这不表示已保存的题目丢失')
+  expect(host.textContent).not.toContain('正在读取每日任务设置')
+  expect(save().disabled).toBe(true)
+  await act(async () => findButton('重试读取每日任务').click())
+  expect(goal().value).toBe('4')
+  expect(save().disabled).toBe(false)
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+  expect(apiMock.mock.calls).toEqual([['/daily'], ['/daily']])
+  expect(onError).toHaveBeenCalledWith('读取超时')
+})
+
 it('does not replace unsaved preferences when a revision refreshes verified progress', async () => {
   apiMock.mockResolvedValue(value())
   await render()
@@ -223,6 +239,34 @@ function taskCards() {
 function rollButton(index: number) {
   return taskCards()[index].querySelector<HTMLButtonElement>('button[aria-label^="Roll"]')!
 }
+
+it('retains an already loaded daily plan when refreshing progress fails', async () => {
+  apiMock.mockResolvedValueOnce(readyDay()).mockRejectedValueOnce(new Error('连接失败'))
+  await render()
+  await act(async () => findButton('刷新已验证进度').click())
+  expect(taskCards()).toHaveLength(2)
+  expect(host.textContent).toContain(dailyTask.title)
+  expect(host.textContent).toContain('已显示的题单已保留')
+  expect(apiMock.mock.calls.some(([path]) => path === '/daily/roll')).toBe(false)
+})
+
+it('restores the persisted generation reason on entry and keeps old tasks visible', async () => {
+  apiMock.mockResolvedValue(readyDay({
+    locked_goal: 4,
+    settings: { daily_goal: 4, duration_days: 30 },
+    plan: {
+      status: 'failed', tasks: [dailyTask], completed_ids: [],
+      failure: { code: 'invalid_count', message: '每日题单要求 4 道，AI 实际返回 5 道，本次未保存；已保存题单不受影响，请手动重试' },
+    },
+  }))
+  await render()
+  expect(host.textContent).toContain('上次生成失败：每日题单要求 4 道，AI 实际返回 5 道')
+  expect(host.textContent).toContain('不会自动重试或产生新的 AI 费用')
+  expect(taskCards()).toHaveLength(1)
+  expect(findButton('AI 生成今日 4 道题').disabled).toBe(false)
+  expect(rollButton(0).disabled).toBe(true)
+  expect(apiMock.mock.calls).toEqual([['/daily']])
+})
 
 it('shows a clear Roll button beside each task and sends only the clicked task id', async () => {
   let state = readyDay()

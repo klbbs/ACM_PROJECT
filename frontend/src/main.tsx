@@ -52,6 +52,7 @@ import { CatalogSyncPanel } from './catalog-sync'
 import { SettingsSection, revealSettingsSection } from './settings-section'
 import { RetainedPage, usePageMotion } from './page-motion'
 import { useSettingsDraft } from './settings-draft'
+import { useRecommendationReport } from './recommendation-report'
 
 type Row = Record<string, any>
 const statusNames: Record<string, string> = {
@@ -212,6 +213,11 @@ function App() {
   const [modelBusy, setModelBusy] = useState(false),
     [modelNote, setModelNote] = useState('')
   const unlocked = auth?.authenticated
+  const recommendationReport = useRecommendationReport(
+    unlocked ? (auth.multi_user ? String(auth.user?.id || auth.user?.username || '') : 'local') : null,
+    revision,
+    setError,
+  )
   const announcements = useAnnouncements(Boolean(unlocked))
   useEffect(() => {
     const expired = () => {
@@ -1057,7 +1063,7 @@ function App() {
               jobsReadError={jobsReadError}
               start={(extra: Row) => startAnalysis(true, extra)}
               run={run}
-              report={report}
+              report={recommendationReport}
               revision={revision}
               onError={setError}
               onNotice={setNotice}
@@ -1607,9 +1613,7 @@ function PracticePage({
   }, [minimum, maximum, tag, publishedAfter, revision, catalogQueryRevision])
   const selected =
     report?.kind === 'recommend'
-      ? report.data.selected_problems.filter((item: Row) =>
-          catalog.items.some((candidate: Row) => candidate.id === item.id),
-        )
+      ? report.data.selected_problems || []
       : []
   const mark = async (p: Row, status: string) => {
     try {
