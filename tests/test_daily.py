@@ -543,8 +543,8 @@ def test_time_validation_isolated_and_legacy_budget_ignored(daily, tmp_path):
         with pytest.raises(Exception):
             TaskTime(task_id=task['task_id'], duration_minutes=bad)
     daily.db.set('daily_settings', {'daily_goal': 3, 'duration_days': 9, 'minutes_per_day': 60})
-    assert daily.settings() == {'daily_goal': 3, 'duration_days': 9}
-    assert Settings(minutes_per_day=0).model_dump() == {'daily_goal': 1, 'duration_days': 30}
+    assert daily.settings() == {'daily_goal': 3, 'duration_days': 9, 'selection_type': 'random', 'topic_id': None, 'training_mode': 'learn'}
+    assert Settings(minutes_per_day=0).model_dump() == {'daily_goal': 1, 'duration_days': 30, 'selection_type': 'random', 'topic_id': None, 'training_mode': 'learn'}
 
 
 def test_prior_or_future_ac_cannot_support_task_time(daily):
@@ -585,3 +585,108 @@ def test_daily_ai_receives_actual_time_not_retired_budget(daily):
     assert 'minutes_per_day' not in payload['daily_budget']
     assert payload['actual_time_evidence'][0]['duration_minutes'] == 35
     assert payload['actual_time_evidence'][0]['source'] == 'self_reported'
+
+
+def specialist(daily):
+    async def select_items(topic_id, mode, count, provider, model, **options):
+        excluded = set(options['excluded_ids'])
+        rows = [dict(position=i + 1, problem_id=f'luogu:P{i}', platform='luogu', title=f'模板{i}',
+                     url=f'https://www.luogu.com.cn/problem/P{i}', difficulty=1000+i,
+                     stage='模板' if i == 1 else '巩固', reason='专题证据')
+                for i in range(1, 100) if f'luogu:P{i}' not in excluded][:count]
+        return rows
+    service = SimpleNamespace(select_items=AsyncMock(side_effect=select_items))
+    daily.specialist_training = service
+    return service
+
+
+def test_daily_selection_settings_modes_and_legacy_defaults(daily):
+    daily.db.set('daily_settings', {'daily_goal': 4, 'duration_days': 7})
+    assert daily.settings() == {'daily_goal': 4, 'duration_days': 7,
+                               'selection_type': 'random', 'topic_id': None, 'training_mode': 'learn'}
+    assert Settings(selection_type='random', topic_id='does-not-exist', training_mode='strengthen').topic_id is None
+    for values in ({'daily_goal': 51}, {'selection_type': 'specialist'},
+                   {'selection_type': 'specialist', 'topic_id': 'invalid'}, {'training_mode': 'invalid'}):
+        with pytest.raises(ValueError):
+            Settings(**values)
+    assert Settings(daily_goal=50).daily_goal == 50
+
+
+def test_daily_specialist_snapshot_survives_settings_changes_and_roll(daily):
+    service = specialist(daily)
+    daily.configure(Settings(daily_goal=3, selection_type='specialist', topic_id='binary-search', training_mode='learn'))
+    state = generate(daily)
+    assert len(state['plan']['tasks']) == 3
+    assert state['plan']['training_options'] == state['locked_options'] == {
+        'selection_type': 'specialist', 'topic_id': 'binary-search', 'training_mode': 'learn'}
+    assert state['plan']['tasks'][0]['id'] == 'luogu:P1'
+    assert state['plan']['tasks'][0]['problem_id'] == 'P1'
+    daily.ai.complete.assert_not_awaited()
+    daily.configure(Settings(daily_goal=8, selection_type='random'))
+    for ordinal in [1, 0]:
+        task = state['plan']['tasks'][ordinal]
+        state = asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=task['task_id'])))
+        call = service.select_items.call_args
+        assert call.args[:3] == ('binary-search', 'learn', 1)
+        assert call.kwargs['template_first'] == (ordinal == 0)
+        assert call.kwargs['forbid_templates'] == (ordinal != 0)
+        assert task['id'] in call.kwargs['excluded_ids']
+        assert len(state['plan']['tasks']) == state['locked_goal'] == 3
+    assert state['rerolls_remaining'] == 1
+    assert state['settings']['selection_type'] == 'random'
+
+
+def test_daily_random_plan_does_not_change_to_new_specialist_preferences(daily):
+    state = generate(daily)
+    service = specialist(daily)
+    daily.configure(Settings(selection_type='specialist', topic_id='binary-search', training_mode='strengthen'))
+    task_id = state['plan']['tasks'][0]['task_id']
+    state = asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=task_id)))
+    service.select_items.assert_not_awaited()
+    assert state['locked_options']['selection_type'] == 'random'
+
+
+def test_daily_old_plan_defaults_random_even_after_new_preferences(daily):
+    state = generate(daily)
+    with daily.db.connect() as conn:
+        conn.execute('DELETE FROM web_settings WHERE key=?', (daily._options_key(state['day']),))
+    daily.configure(Settings(selection_type='specialist', topic_id='binary-search'))
+    assert daily.state()['locked_options']['selection_type'] == 'random'
+
+
+def test_daily_allows_twelve_specialist_problems_and_failed_roll_refunds(daily):
+    service = specialist(daily)
+    daily.configure(Settings(daily_goal=12, selection_type='specialist', topic_id='binary-search', training_mode='variation'))
+    state = generate(daily)
+    assert len(state['plan']['tasks']) == state['rerolls_remaining'] == 12
+    assert service.select_items.call_args.args[:3] == ('binary-search', 'variation', 12)
+    service.select_items.side_effect = AIError('没有候选')
+    with pytest.raises(AIError):
+        asyncio.run(daily.roll(Roll(provider='api', model='mock', task_id=state['plan']['tasks'][0]['task_id'])))
+    assert daily.state()['rerolls_remaining'] == 12
+    assert daily.state()['plan']['tasks'] == state['plan']['tasks']
+
+
+def test_daily_random_ai_receives_source_aggregates_not_private_records(daily, monkeypatch):
+    import acmweb.daily as module
+    monkeypatch.setattr(module, 'overview', lambda db, days: {
+        'stats': {'submissions': 7, 'solved': 2}, 'topics': [{'tag': 'dp', 'acceptance': 20}],
+        'verdicts': {'WA': 5, 'AC': 2}, 'suggested_cf_difficulty': 1100,
+        'recent': [{'source': 'PRIVATE-CODE'}], 'platforms': [{'account': 'PRIVATE-HANDLE'}]})
+    generate(daily)
+    evidence = daily.ai.complete.call_args.args[3]['recent_learning_evidence']
+    assert evidence['stats']['submissions'] == 7 and evidence['topics'][0]['tag'] == 'dp'
+    assert 'PRIVATE' not in json.dumps(evidence)
+
+
+def test_daily_random_supports_twelve_items_in_exact_count_schema(daily):
+    with daily.db.connect() as db:
+        for i in range(12, 24):
+            row = {'id': f'codeforces:{i}-A', 'problem_id': f'{i}-A', 'platform': 'codeforces',
+                   'title': f'problem{i}', 'difficulty': 1000, 'tags': [], 'contest_id': i,
+                   'url': f'https://codeforces.com/problemset/problem/{i}/A'}
+            db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', row['id'], json.dumps(row)))
+    daily.configure(Settings(daily_goal=12))
+    state = generate(daily)
+    assert len(state['plan']['tasks']) == 12
+    assert daily.ai.complete.call_args.args[3]['requested_count'] == 12

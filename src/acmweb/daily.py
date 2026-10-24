@@ -10,6 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
 from .catalog import recommendation_candidates, refresh_recommendation_sessions
+from .analytics import overview
+from .training_topics import TOPICS
 from .codex_bridge import AIError
 from .runtime_logs import emit_event
 
@@ -46,8 +48,20 @@ class Strict(BaseModel):
 
 
 class Settings(Strict):
-    daily_goal: int = Field(default=1, ge=1, le=10, strict=True)
+    daily_goal: int = Field(default=1, ge=1, le=50, strict=True)
     duration_days: int = Field(default=30, ge=1, le=365, strict=True)
+    selection_type: Literal["random", "specialist"] = "random"
+    topic_id: str | None = Field(default=None, max_length=80)
+    training_mode: Literal["learn", "consolidate", "variation", "strengthen"] = "learn"
+
+    @model_validator(mode="after")
+    def valid_topic(self):
+        if self.selection_type == "specialist" and self.topic_id not in TOPICS:
+            raise ValueError("请选择支持的训练专题")
+        if self.selection_type == "random":
+            self.topic_id = None
+            self.training_mode = "learn"
+        return self
 
 
     @model_validator(mode="before")
@@ -69,7 +83,7 @@ class SelectedProblem(Strict):
 
 
 class DailySelection(Strict):
-    selected_problems: list[SelectedProblem] = Field(max_length=20)
+    selected_problems: list[SelectedProblem] = Field(max_length=50)
 
 
 class DailyCountError(AIError):
@@ -95,6 +109,7 @@ class Daily:
     def __init__(self, database, ai, accounts=None, event_log=None):
         self.db, self.ai, self.accounts = database, ai, accounts
         self.event_log = event_log
+        self.specialist_training = None
         self.guard = None
         self.active_ai = False
         with self.db.connect() as db:
@@ -165,8 +180,24 @@ class Daily:
                 starts_on=excluded.starts_on,ends_on=excluded.ends_on,created_at=excluded.created_at""",
                 (day, "generating", settings["daily_goal"], cycle["starts_on"], cycle["ends_on"], int(time.time())))
             db.execute("DELETE FROM web_settings WHERE key=?", (self._failure_key(day),))
+            options = self._options(settings)
+            db.execute("INSERT INTO web_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (self._options_key(day), json.dumps(options, ensure_ascii=False)))
         # A generated plan snapshots its goal; later preference edits cannot lower today's K threshold.
-        return {"day": day, "count": settings["daily_goal"], "provider": provider, "model": model}
+        return {"day": day, "count": settings["daily_goal"], "provider": provider, "model": model, "training_options": options}
+
+    @staticmethod
+    def _options_key(day):
+        return f"daily_plan_options:{day}"
+
+    @staticmethod
+    def _options(settings):
+        return {key: settings[key] for key in ("selection_type", "topic_id", "training_mode")}
+
+    def _plan_options(self, day):
+        # Old plans always used random selection, regardless of newly edited preferences.
+        raw = self.db.get(self._options_key(day), {})
+        return self._options(Settings.model_validate(raw).model_dump())
 
     def request_roll(self, task_id, provider, model, today=None):
         day = today or self.today().isoformat()
@@ -174,7 +205,7 @@ class Daily:
         with self.db.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM daily_roll_reservations WHERE status='reserved' AND created_at<?", (int(time.time())-600,))
-            task = db.execute("SELECT problem_id,data FROM daily_plan_tasks WHERE id=? AND day=? AND active=1", (task_id, day)).fetchone()
+            task = db.execute("SELECT problem_id,data,ordinal FROM daily_plan_tasks WHERE id=? AND day=? AND active=1", (task_id, day)).fetchone()
             plan = db.execute("SELECT status,goal_count FROM daily_plans WHERE day=?", (day,)).fetchone()
             used = db.execute("SELECT COUNT(*) FROM daily_roll_reservations WHERE day=? AND status IN ('reserved','used')", (day,)).fetchone()[0]
             if not task or not plan or plan[0] != "ready":
@@ -191,7 +222,8 @@ class Daily:
             excluded.update(row[0] for row in db.execute("SELECT problem_id FROM daily_roll_history WHERE day=?", (day,)))
             db.execute("INSERT OR IGNORE INTO daily_roll_history VALUES(?,?)", (day, task[0]))
         return {"day": day, "token": token, "task_id": task_id, "excluded_ids": sorted(excluded),
-                "provider": provider, "model": model, "target_problem": json.loads(task['data'])}
+                "provider": provider, "model": model, "target_problem": json.loads(task['data']),
+                "training_options": self._plan_options(day), "ordinal": task["ordinal"]}
 
     def _candidate_pool(self, count, excluded):
         prefs = self.db.get("training", {})
@@ -206,13 +238,17 @@ class Daily:
     async def generate(self, payload):
         day, count = payload["day"], payload["count"]
         try:
-            await refresh_recommendation_sessions(self.accounts)
             with self.db.connect() as db:
                 history = [row[0] for row in db.execute('SELECT problem_id FROM daily_roll_history WHERE day=?', (day,))]
-            pool = self._candidate_pool(count, history)
-            if len(pool) < count:
-                raise AIError(f"题库中只有 {len(pool)} 道符合条件的未完成题，无法生成 {count} 道每日题目")
-            chosen = await self._select(payload["provider"], payload["model"], pool, count, [])
+            options = payload.get("training_options", self._plan_options(day))
+            if options["selection_type"] == "specialist":
+                chosen = await self._select_specialist(payload, count, history)
+            else:
+                await refresh_recommendation_sessions(self.accounts)
+                pool = self._candidate_pool(count, history)
+                if len(pool) < count:
+                    raise AIError(f"题库中只有 {len(pool)} 道符合条件的未完成题，无法生成 {count} 道每日题目")
+                chosen = await self._select(payload["provider"], payload["model"], pool, count, [])
             if day != self.today().isoformat():
                 raise AIError("日期已变化，请为新的一天重新生成任务")
             now = int(time.time())
@@ -270,12 +306,15 @@ class Daily:
     async def _roll(self, payload):
         token, day, task_id = payload["token"], payload["day"], payload["task_id"]
         try:
-            await refresh_recommendation_sessions(self.accounts)
-            pool = self._candidate_pool(1, payload["excluded_ids"])
-            if not pool:
-                raise AIError("没有新的候选题可替换，请同步题库或调整训练难度")
-            chosen = await self._select(payload["provider"], payload["model"], pool, 1, payload["excluded_ids"],
-                                        task_id, payload.get('target_problem'))
+            if payload.get("training_options", self._plan_options(day))["selection_type"] == "specialist":
+                chosen = await self._select_specialist(payload, 1, payload["excluded_ids"], replacing=True)
+            else:
+                await refresh_recommendation_sessions(self.accounts)
+                pool = self._candidate_pool(1, payload["excluded_ids"])
+                if not pool:
+                    raise AIError("没有新的候选题可替换，请同步题库或调整训练难度")
+                chosen = await self._select(payload["provider"], payload["model"], pool, 1, payload["excluded_ids"],
+                                            task_id, payload.get('target_problem'))
             replacement = chosen[0]
             if day != self.today().isoformat():
                 raise AIError("日期已变化，本次换题不消耗额度")
@@ -304,6 +343,38 @@ class Daily:
                 db.execute("DELETE FROM daily_roll_reservations WHERE token=? AND status='reserved'", (token,))
             raise
 
+    async def _select_specialist(self, payload, count, excluded, replacing=False):
+        if self.specialist_training is None:
+            raise AIError("专项选题服务尚未配置，请稍后重试")
+        options = payload.get("training_options", self._plan_options(payload["day"]))
+        learn = options["training_mode"] == "learn"
+        template_first = (payload.get("ordinal") == 0) if replacing and learn else None
+        items = await self.specialist_training.select_items(
+            options["topic_id"], options["training_mode"], count, payload["provider"], payload["model"],
+            excluded_ids=excluded, template_first=template_first,
+            forbid_templates=bool(replacing and learn and payload.get("ordinal") != 0))
+        if len(items) != count:
+            raise DailyCountError(count, len(items))
+        rows, seen = [], set()
+        for item in items:
+            pid = item["problem_id"]
+            if pid in seen or pid in excluded or ':' not in pid:
+                raise AIError("专项候选无效或重复，未保存每日计划")
+            seen.add(pid)
+            platform, raw = pid.split(':', 1)
+            rows.append({**item, "id": pid, "problem_id": raw, "platform": platform})
+        return rows
+
+    def _learning_evidence(self):
+        # Only aggregate, source-derived training signals; no code, credentials or profiles.
+        try:
+            data = overview(self.db, days=30)
+        except (ValueError, KeyError, TypeError):
+            return {"days": 30, "available": False, "notice": "近期提交材料不足，不能推断薄弱专题"}
+        return {"days": 30, "stats": data["stats"], "topics": data["topics"],
+                "verdicts": data["verdicts"], "suggested_cf_difficulty": data["suggested_cf_difficulty"],
+                "notice": "标签通过率仅为练习证据，不等同能力评分；无证据时不要虚构薄弱点"}
+
     async def _select(self, provider, model, pool, count, excluded, target_id=None, target_problem=None):
         prefs = self.db.get("training", {})
         if self.guard:
@@ -320,7 +391,7 @@ class Daily:
                  ('id', 'platform', 'title', 'difficulty', 'tags', 'reason')} if target_problem else None),
              "difficulty_range": [prefs.get("minimum", 1000), prefs.get("maximum", 1600)],
              "training_preferences": prefs, "daily_budget": self.settings(),
-             "actual_time_evidence": self.evidence(),
+             "actual_time_evidence": self.evidence(), "recent_learning_evidence": self._learning_evidence(),
              "candidates": [{k: p.get(k) for k in ("id", "platform", "title", "difficulty", "difficulty_source", "native_difficulty", "difficulty_label", "tags", "url", "published_at", "published_at_source")} for p in pool]}, selection_schema)
         finally:
             self.active_ai = False
@@ -478,11 +549,12 @@ class Daily:
         rolls_limit = plan['goal_count'] if plan else settings['daily_goal']
         rolls_remaining = max(0, rolls_limit - rolls_used)
         failure = json.loads(failure_row[0]) if failure_row else {"code": "interrupted", "message": "上次每日题单未生成成功，未保存新题单；请检查设置后手动重试。"}
-        snapshot = {"today": today, "timezone": "Asia/Shanghai", "settings": settings,
+        options = self._plan_options(today) if plan else self._options(settings)
+        snapshot = {"today": today, "locked_options": options, "timezone": "Asia/Shanghai", "settings": settings,
             "time_evidence": self.evidence(),
             "active": bool(cycle and cycle["starts_on"] <= today <= cycle["ends_on"]),
             "cycle": cycle, "plan": ({"status": plan['status'], "goal_count": plan["goal_count"],
-                "failure": failure if plan['status'] == 'failed' else None, "tasks": [
+                "failure": failure if plan['status'] == 'failed' else None, "training_options": options, "tasks": [
                 {**json.loads(row["data"]), "task_id": row["id"], "duration_minutes": times.get(row["id"]), "completed": row["problem_id"] in solved}
                 for row in active_tasks], "rolls_limit": rolls_limit, "rolls_remaining": rolls_remaining, "completed_ids": completed} if plan else None),
             "sign_in": {"kind": "k" if today in k_days else ("ordinary" if today in ordinary_days else "none"),
