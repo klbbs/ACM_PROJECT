@@ -53,6 +53,8 @@ import { SettingsSection, revealSettingsSection } from './settings-section'
 import { RetainedPage, usePageMotion } from './page-motion'
 import { useSettingsDraft } from './settings-draft'
 import { useRecommendationReport } from './recommendation-report'
+import { TrainingHub } from './training-hub'
+import { SpecialistTrainingPage } from './specialist-training'
 
 type Row = Record<string, any>
 const statusNames: Record<string, string> = {
@@ -214,7 +216,11 @@ function App() {
     [modelNote, setModelNote] = useState('')
   const unlocked = auth?.authenticated
   const recommendationReport = useRecommendationReport(
-    unlocked ? (auth.multi_user ? String(auth.user?.id || auth.user?.username || '') : 'local') : null,
+    unlocked
+      ? auth.multi_user
+        ? String(auth.user?.id || auth.user?.username || '')
+        : 'local'
+      : null,
     revision,
     setError,
   )
@@ -243,12 +249,16 @@ function App() {
   }, [])
   useEffect(() => {
     if (!auth?.authenticated) return
-    const refreshReadiness = () => api('/ai/settings')
-      .then((config) => {
-        setAiReadiness({ has_key: Boolean(config.has_key), codex_enabled: Boolean(config.codex_enabled) })
-        if (!config.codex_enabled) chooseProvider('api')
-      })
-      .catch(() => setAiReadiness({ has_key: false, codex_enabled: false }))
+    const refreshReadiness = () =>
+      api('/ai/settings')
+        .then((config) => {
+          setAiReadiness({
+            has_key: Boolean(config.has_key),
+            codex_enabled: Boolean(config.codex_enabled),
+          })
+          if (!config.codex_enabled) chooseProvider('api')
+        })
+        .catch(() => setAiReadiness({ has_key: false, codex_enabled: false }))
     void refreshReadiness()
     window.addEventListener('acm:ai-config-changed', refreshReadiness)
     return () => window.removeEventListener('acm:ai-config-changed', refreshReadiness)
@@ -1052,22 +1062,43 @@ function App() {
             </>
           )}
           {page === 'practice' && (
-            <PracticePage
-              aiPicker={aiPicker}
-              overview={overview}
-              model={model}
-              provider={provider}
-              busy={running('recommend')}
-              catalogBusy={running('catalog')}
-              jobs={jobs}
-              jobsReadError={jobsReadError}
-              start={(extra: Row) => startAnalysis(true, extra)}
-              run={run}
-              report={recommendationReport}
-              revision={revision}
-              onError={setError}
-              onNotice={setNotice}
-              onOpenProblem={openProblem}
+            <TrainingHub
+              key={auth.multi_user ? String(auth.user?.id || auth.user?.username) : 'local'}
+              account={auth.multi_user ? String(auth.user?.id || auth.user?.username) : 'local'}
+              specialist={
+                <SpecialistTrainingPage
+                  provider={provider}
+                  model={model}
+                  aiPicker={aiPicker}
+                  revision={revision}
+                  onOpenProblem={openProblem}
+                  onError={setError}
+                  onNotice={setNotice}
+                  aiReady={
+                    !!model &&
+                    (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)
+                  }
+                />
+              }
+              daily={
+                <PracticePage
+                  aiPicker={aiPicker}
+                  overview={overview}
+                  model={model}
+                  provider={provider}
+                  busy={running('recommend')}
+                  catalogBusy={running('catalog')}
+                  jobs={jobs}
+                  jobsReadError={jobsReadError}
+                  start={(extra: Row) => startAnalysis(true, extra)}
+                  run={run}
+                  report={recommendationReport}
+                  revision={revision}
+                  onError={setError}
+                  onNotice={setNotice}
+                  onOpenProblem={openProblem}
+                />
+              }
             />
           )}
           {page === 'announcements' && <AnnouncementPage state={announcements} />}
@@ -1082,7 +1113,9 @@ function App() {
               jobs={jobs}
               run={run}
               onError={setError}
-              aiReady={!!model && (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)}
+              aiReady={
+                !!model && (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)
+              }
             />
           )}
           {page === 'social' && auth.multi_user && (
@@ -1619,10 +1652,7 @@ function PracticePage({
       current = false
     }
   }, [minimum, maximum, tag, publishedAfter, revision, catalogQueryRevision])
-  const selected =
-    report?.kind === 'recommend'
-      ? report.data.selected_problems || []
-      : []
+  const selected = report?.kind === 'recommend' ? report.data.selected_problems || [] : []
   const mark = async (p: Row, status: string) => {
     try {
       await api('/feedback', 'POST', {
@@ -2432,9 +2462,12 @@ function SettingsPage({
               密钥按 API 地址分别保存；切换提供方不会把旧密钥发送给新地址。区域和 Key
               必须匹配。Gemini 使用官方兼容接口；智谱按量 API 与 Coding Plan 地址不同。
             </p>
-            {config.vendor === 'custom' && <p className="help">
-              自定义中转站域名须先在「管理后台 → AI 中转站域名白名单」批准；未获批准时保存会被拒绝。
-            </p>}
+            {config.vendor === 'custom' && (
+              <p className="help">
+                自定义中转站域名须先在「管理后台 → AI
+                中转站域名白名单」批准；未获批准时保存会被拒绝。
+              </p>
+            )}
             {presets.find((p) => p.id === config.vendor)?.docs && (
               <a
                 href={presets.find((p) => p.id === config.vendor)?.docs}
@@ -2665,9 +2698,14 @@ function SettingsPage({
                 保存 API 配置 <Check size={16} />
               </Button>
               <AIConnectionTest
-                disabled={saving || readingModels || !config.model?.trim() || jobs.some(
-                  (j: Row) => j.kind === 'ai_test' && ['queued', 'running'].includes(j.status),
-                )}
+                disabled={
+                  saving ||
+                  readingModels ||
+                  !config.model?.trim() ||
+                  jobs.some(
+                    (j: Row) => j.kind === 'ai_test' && ['queued', 'running'].includes(j.status),
+                  )
+                }
                 save={() => save()}
                 run={() => run('/ai/test')}
                 onError={onError}

@@ -40,11 +40,11 @@ export const nav = [
   },
   {
     id: 'practice',
-    name: '今日练习',
+    name: '训练',
     icon: Target,
     group: 'training',
-    description: '设置每日题量，AI 跨平台选题、换题与签到。',
-    keywords: '每日 任务 推荐 题单 K签',
+    description: '每日训练与专项训练，模板起步、逐级进阶和 AI 评估。',
+    keywords: '每日 专项 专题 模板 评估 对话 任务 推荐 题单 K签',
   },
   {
     id: 'workbench',

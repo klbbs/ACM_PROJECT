@@ -75,6 +75,19 @@ const stages: Record<string, string> = {
   application: '综合应用',
   challenge: '进阶挑战',
 }
+const dimensionNames: Record<string, string> = {
+  code_quality: '代码规范',
+  boundaries: '边界条件',
+  correctness: '正确性',
+  complexity: '复杂度与资源',
+  strategy: '解题策略',
+}
+const confidenceNames: Record<string, string> = {
+  high: '高',
+  medium: '中',
+  low: '低',
+  uncertain: '无法确定',
+}
 const message = (error: unknown) => (error instanceof Error ? error.message : '请求未完成，请重试')
 const sourceKey = (source: Source) =>
   JSON.stringify([source.attempt_id, source.platform, source.account, source.submission_id])
@@ -340,8 +353,12 @@ export function SpecialistTrainingPage({
                   </div>
                   <p className="help">
                     {names[item.platform] || item.platform} ·{' '}
-                    {item.difficulty_label ||
-                      (item.difficulty != null ? `难度 ${item.difficulty}` : '平台未标注难度')}{' '}
+                    {item.difficulty != null
+                      ? `难度 ${item.difficulty}`
+                      : item.difficulty_label || '平台未标注难度'}{' '}
+                    {item.difficulty != null && item.difficulty_label
+                      ? `（${item.difficulty_label}）`
+                      : ''}{' '}
                     · {item.problem_id}
                   </p>
                   <p>{item.reason}</p>
@@ -564,8 +581,8 @@ function ItemReview({
               <option value="">请选择提交</option>
               {data.sources.map((candidate) => (
                 <option key={sourceKey(candidate)} value={sourceKey(candidate)}>
-                  {candidate.platform} · {candidate.account} · #{candidate.submission_id} ·{' '}
-                  {candidate.verdict} · {candidate.language}
+                  {names[candidate.platform] || candidate.platform} · {candidate.account} · #
+                  {candidate.submission_id} · {candidate.verdict} · {candidate.language}
                   {candidate.disabled_reason ? ` · ${candidate.disabled_reason}` : ''}
                 </option>
               ))}
@@ -603,14 +620,18 @@ function ItemReview({
             <div className="specialist-assessment">
               <p className="help">
                 评估对应提交 #{data.assessment?.submission?.submission_id || '已记录'} · 可信度：
-                {result.overall_confidence || '未标注'}；AI 判断不等同官方解释。
+                {confidenceNames[result.overall_confidence] ||
+                  result.overall_confidence ||
+                  '未标注'}
+                ；AI 判断不等同官方解释。
               </p>
               <RichText>{result.summary}</RichText>
               <div className="specialist-dimensions">
                 {result.dimensions?.map((dimension, index) => (
                   <article key={index}>
                     <h5>
-                      {dimension.category} <small>{dimension.confidence}</small>
+                      {dimensionNames[dimension.category] || dimension.category}{' '}
+                      <small>{confidenceNames[dimension.confidence] || dimension.confidence}</small>
                     </h5>
                     <RichText>{dimension.finding}</RichText>
                     <p>
@@ -685,7 +706,7 @@ function ItemReview({
                   <textarea
                     aria-label="追问 AI 教练"
                     value={draft}
-                    maxLength={4000}
+                    maxLength={2000}
                     disabled={!!busy}
                     onChange={(event) => setDraft(event.target.value)}
                     placeholder="例如：我的边界处理有哪些隐患？还有更简洁的解法吗？"

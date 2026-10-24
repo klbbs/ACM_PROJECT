@@ -32,7 +32,7 @@ export function MainDirectory({
         <p>先选题，再练习，最后回看。所有工具都在这份主要目录里。</p>
         <div className="directory-quick-start">
           <button className="primary" onClick={() => onNavigate('practice')}>
-            开始今日练习 <ArrowRight size={16} />
+            开始训练 <ArrowRight size={16} />
           </button>
           <button className="secondary" onClick={() => onNavigate('workbench')}>
             进入刷题工作台

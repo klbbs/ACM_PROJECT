@@ -239,6 +239,7 @@ test('training hub generates an explicit progressive plan, opens its first probl
   ])
   await expect(panel.locator('.specialist-step').first()).toContainText('模板入门')
   await expect(panel.locator('.specialist-step')).toHaveCount(3)
+  await page.screenshot({ path: 'test-results/specialist-training-desktop.png', fullPage: true })
   const resolved = page.waitForResponse((response) => {
     const url = new URL(response.url())
     return (
@@ -277,7 +278,7 @@ test('a selected official AC submission is evaluated with consent and alternativ
   const review = first.locator('.specialist-review')
   await review
     .getByLabel('选择本题提交', { exact: true })
-    .selectOption({ label: 'codeforces · fixture_owner · #920002 · AC · Python 3' })
+    .selectOption({ label: 'Codeforces · fixture_owner · #920002 · AC · Python 3' })
   await expect(review.getByRole('button', { name: '递交 AI 评估', exact: true })).toBeDisabled()
   await review.getByRole('checkbox').check()
   await review.getByRole('button', { name: '递交 AI 评估', exact: true }).click()
@@ -343,6 +344,7 @@ test('failed generation retains saved training and late item results cannot leak
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true)
+    await page.screenshot({ path: 'test-results/specialist-training-mobile.png', fullPage: true })
   } finally {
     release()
   }

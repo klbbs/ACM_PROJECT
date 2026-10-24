@@ -52,11 +52,11 @@ test('saved recommendations survive newer analysis, an unavailable candidate poo
     }),
   )
   await page.goto('/')
-  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await page.getByRole('button', { name: '训练', exact: true }).click()
   await expect(page.getByRole('heading', { name: '已保存的推荐题', exact: true })).toBeVisible()
   await expect(page.locator('.candidate-list')).toContainText('隔离模拟题库不可用')
   await page.reload()
-  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await page.getByRole('button', { name: '训练', exact: true }).click()
   await expect(page.getByRole('heading', { name: '已保存的推荐题', exact: true })).toBeVisible()
 })
 
@@ -112,7 +112,7 @@ test('recommendation mixes platforms, inherits the saved date and can renew expi
     return route.fulfill({ status: 400, json: { detail: '隔离验收已捕获选题请求，不调用真实AI' } })
   })
   await page.goto('/')
-  await page.getByRole('button', { name: '今日练习', exact: true }).click()
+  await page.getByRole('button', { name: '训练', exact: true }).click()
   const panel = page.locator('.practice-setup')
   await expect(page.getByLabel('推荐平台', { exact: true })).toHaveCount(0)
   await expect(panel.getByLabel('选题发布日期下限')).toHaveValue('2025-01-01')

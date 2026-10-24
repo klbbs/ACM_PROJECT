@@ -85,7 +85,7 @@ def record_failure(scope, error):
 
 COMPONENTS = {'auth', 'admin', 'accounts', 'workbench', 'remote-submissions', 'problem-submissions',
               'platform-login', 'platforms', 'translations', 'daily', 'ai', 'catalog', 'social',
-              'crawl', 'analysis', 'recommend', 'shared', 'other'}
+              'crawl', 'analysis', 'recommend', 'training', 'shared', 'other'}
 HEX = re.compile(r'[a-f0-9]{32}')
 _registry = weakref.WeakValueDictionary()
 _registry_lock = threading.RLock()

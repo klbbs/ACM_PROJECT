@@ -36,6 +36,9 @@ def test_all_tasks_share_untrusted_material_boundary_and_distinct_policies():
     assert 'category=unknown' in TASK_POLICIES['review']
     assert '数量、顺序、id 完全一致' in TASK_POLICIES['translation']
     assert 'no user data' in TASK_POLICIES['connection_test']
+    assert 'template_candidate_ids' in TASK_POLICIES['specialist_selection']
+    assert '当前编辑器草稿' in TASK_POLICIES['specialist_assessment']
+    assert '其他算法思路' in TASK_POLICIES['specialist_chat']
 
 
 def test_complete_validates_schema_and_does_not_accept_client_provenance(ai, monkeypatch):

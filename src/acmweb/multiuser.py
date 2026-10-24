@@ -79,6 +79,8 @@ class Workspaces:
     def budget(self):
         count = sum(not task.done() for app, _ in self.apps.values() for _,task in app.state.jobs.tasks.values())
         count += sum(bool(getattr(app.state.daily, 'active_ai', False)) for app, _ in self.apps.values())
+        count += sum(bool(getattr(getattr(app.state, name, None), 'active_ai', False))
+                     for app, _ in self.apps.values() for name in ('specialist_training', 'training_assessment'))
         if count >= 4:
             from .codex_bridge import AIError
             raise AIError('服务器任务已满，请稍后重试')
@@ -102,6 +104,8 @@ class Workspaces:
                 app.state.translations.owner = uid
                 app.state.jobs.guard = self.budget
                 app.state.daily.guard = self.budget
+                app.state.specialist_training.guard = self.budget
+                app.state.training_assessment.guard = self.budget
                 app.state.codex.process_slots = self.process_slots
                 lifecycle = app.router.lifespan_context(app)
                 await lifecycle.__aenter__()
@@ -238,7 +242,7 @@ def create_multi_app(settings, factory):
                     elif user and path == '/api/platform-login/nowcoder/start':
                         identities.limit('platform-login-start:'+user['id'],6,60)
                         identities.limit('platform-login-start-global',30,60)
-                    elif user and ((path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/problem-submissions/') or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings','/code-templates')) or path.startswith('/api/remote-submissions') and not path.endswith('/dismiss') or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
+                    elif user and ((path.startswith('/api/training/plans') and request.method == 'POST') or (path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/problem-submissions/') or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings','/code-templates')) or path.startswith('/api/remote-submissions') and not path.endswith('/dismiss') or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
             else:
