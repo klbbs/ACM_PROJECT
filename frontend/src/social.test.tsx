@@ -151,3 +151,59 @@ it('single-user mode does not request another user data', async () => {
     await act(async () => root.unmount())
   }
 })
+
+it('syncs account submissions and refreshes the daily board after the background job finishes', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  let completed = false
+  vi.mocked(api).mockClear()
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/social/me')
+      return {
+        profile: { ...own, leaderboard: true },
+        accounts: [{ platform: 'codeforces', handle: 'Owner' }],
+        bindings: [{ platform: 'codeforces', handle: 'Owner' }],
+      } as never
+    if (path === '/crawl') return { id: 'sync-job', status: 'queued' } as never
+    if (path.startsWith('/social/leaderboard'))
+      return {
+        items: [{ id: 'self', display_name: '练习者', count: completed ? 3 : 2, rank: 1 }],
+        rule: '当天官方 AC',
+      } as never
+    return defaults(path) as never
+  })
+  try {
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} revision={0} />))
+    expect(host.textContent).toContain('当天做题量排行榜')
+    expect(host.textContent).toContain('2 题')
+    expect(host.textContent).toContain('每日任务以外的题目同样计入')
+    expect(host.textContent).toContain('同步题库只更新题目资料')
+    await act(async () => button(host, '同步我的提交记录').click())
+    expect(api).toHaveBeenCalledWith('/crawl', 'POST', {})
+    expect(host.textContent).toContain('完成后自动更新排行榜')
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} revision={0} syncing />))
+    expect(button(host, '正在同步提交记录…').disabled).toBe(true)
+    completed = true
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} revision={1} />))
+    expect(host.textContent).toContain('3 题')
+    expect(button(host, '同步我的提交记录').disabled).toBe(false)
+    expect(vi.mocked(api).mock.calls.filter(([path]) => path === '/crawl')).toHaveLength(1)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+it('explains why an unclaimed platform identity is not counted and disables sync without an account', async () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  vi.mocked(api).mockImplementation(async (path: string) => defaults(path) as never)
+  try {
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} />))
+    expect(host.textContent).toContain('尚未认领已验证的平台身份，记录暂不计入榜单')
+    expect(button(host, '同步我的提交记录').disabled).toBe(true)
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

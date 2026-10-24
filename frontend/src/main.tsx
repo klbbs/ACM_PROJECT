@@ -1085,7 +1085,15 @@ function App() {
               aiReady={!!model && (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)}
             />
           )}
-          {page === 'social' && auth.multi_user && <SocialPage onOpenProblem={openProblem} />}
+          {page === 'social' && auth.multi_user && (
+            <SocialPage
+              onOpenProblem={openProblem}
+              revision={revision}
+              syncing={jobs.some(
+                (job) => job.kind === 'crawl' && ['queued', 'running'].includes(job.status),
+              )}
+            />
+          )}
           {page === 'community' && auth.multi_user && (
             <MemberPage user={auth.user} onError={setError} onNotice={setNotice} />
           )}

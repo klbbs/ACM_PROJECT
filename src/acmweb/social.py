@@ -227,6 +227,7 @@ class Social:
         if not allowed:
             return []
         start = int(datetime.fromisoformat(day).replace(tzinfo=TZ).timestamp())
+        end = min(start + 86400, int(time.time()) + 1)
         items = {}
         with child.state.database.connect() as db:
             # Match the catalog's (platform,id) primary key only for today's ACs.
@@ -237,7 +238,37 @@ class Social:
                     WHEN substr(s.problem_id,1,length(s.platform)+1)=s.platform||':' THEN s.problem_id
                     ELSE s.platform||':'||s.problem_id END
                 WHERE s.verdict='AC' AND s.submitted_at>=? AND s.submitted_at<?
-                ORDER BY s.submitted_at""", (start, start+86400)).fetchall()
+                ORDER BY s.submitted_at""", (start, end)).fetchall()
+            rows = [dict(row) for row in rows]
+            # Older workbench versions may have saved verified judge evidence
+            # without copying it to submissions. Never count drafts/self-tests,
+            # and let a collected official record (including rejudges) win.
+            attempts = db.execute("""SELECT a.problem_id,a.handle,a.judge_data,c.data AS catalog_data
+                FROM wb_attempts a LEFT JOIN problem_catalog c ON c.id=a.problem_id
+                    AND c.platform=substr(a.problem_id,1,instr(a.problem_id,':')-1)
+                WHERE a.verdict='AC' AND a.submission_id IS NOT NULL AND a.last_synced>0
+                AND a.handle<>'' AND NOT EXISTS (
+                    SELECT 1 FROM submissions s WHERE s.id=CAST(a.submission_id AS TEXT)
+                    AND s.platform=substr(a.problem_id,1,instr(a.problem_id,':')-1)
+                    AND CASE WHEN s.platform='codeforces' THEN lower(s.account)=lower(a.handle)
+                             ELSE s.account=a.handle END)""").fetchall()
+            for attempt in attempts:
+                platform, sep, raw = attempt['problem_id'].partition(':')
+                if not sep or platform not in PLATFORMS:
+                    continue
+                try:
+                    judge = json.loads(attempt['judge_data'] or '{}')
+                    timestamp = judge.get('creationTimeSeconds') if platform == 'codeforces' else judge.get('submitted_at')
+                    if (judge.get('verdict') not in {'OK', 'AC'} or type(timestamp) is not int
+                            or not start <= timestamp < end
+                            or judge.get('platform', platform) != platform
+                            or platform != 'codeforces' and judge.get('source') != 'official_remote_submission'):
+                        continue
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                rows.append({'platform': platform, 'account': attempt['handle'], 'problem_id': raw,
+                    'submitted_at': timestamp, 'data': '{}', 'catalog_data': attempt['catalog_data']})
+        rows.sort(key=lambda row: row['submitted_at'])
         for r in rows:
             platform, handle = r['platform'], r['account']
             if (platform, handle.casefold() if platform == 'codeforces' else handle) not in allowed:
@@ -535,7 +566,7 @@ def register(app, identities, workspaces, require):
         result.sort(key=lambda r: (-r['count'], r['username']))
         for i, r in enumerate(result):
             r['rank'] = i + 1 if i == 0 or r['count'] != result[i - 1]['count'] else result[i - 1]['rank']
-        return {'day': day, 'items': result, 'rule': 'Asia/Shanghai 每日官方 AC 按平台及题号去重；仅统计已验证并认领身份；对战计入，重复 AC 不重复计数。公开榜单默认关闭。'}
+        return {'day': day, 'items': result, 'rule': '按北京时间当天官方 AC 的题目数排名，包含自主练习、每日任务和对战；按平台及题号去重，重复 AC 只计一题。仅统计已同步且已验证认领的平台身份，公开榜单默认关闭。'}
 
     @app.get('/api/social/users/{other}')
     async def user_profile(other: str, request: Request, day: str = Query(default='', max_length=10)):

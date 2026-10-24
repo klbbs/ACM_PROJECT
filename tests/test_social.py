@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime
 
 from test_multiuser import site
 from ojcrawler.models import Collection, Submission
@@ -105,6 +106,82 @@ def test_daily_board_deduplicated_public_metadata_only(site):
     friends(site)
     assert request(member, 'GET', f"/api/social/users/{admin['user']['id']}").json()['profile']['bio'] == 'PRIVATE_BIO_FOR_FRIENDS'
     assert request(member, 'GET', '/api/social/leaderboard?day=2099-01-01').status_code == 422
+
+
+def test_board_counts_all_today_solutions_not_only_daily_tasks_and_legacy_judges(site):
+    from acmweb.social import TZ
+    request, admin, member, *_ = site
+    runtime = claim(site, admin, 'Owner')
+    now = int(time.time())
+    day = datetime.fromtimestamp(now, TZ).date().isoformat()
+    start = int(datetime.fromisoformat(day).replace(tzinfo=TZ).timestamp())
+    with runtime.state.database.connect() as db:
+        db.execute("INSERT INTO daily_plans VALUES(?, 'ready',1,?,?,?)", (day, day, day, now))
+        db.execute("INSERT INTO daily_plan_tasks(day,ordinal,problem_id,data,created_at) VALUES(?,0,'codeforces:1000-A','{}',?)", (day, now))
+        for sid, pid, timestamp, verdict, account in [
+            ('1', '1000-A', now, 'AC', 'Owner'),  # daily task
+            ('2', '1000-B', now, 'AC', 'Owner'),  # independent practice
+            ('3', 'codeforces:1000-B', now, 'AC', 'OWNER'),  # same problem, raw/canonical IDs
+            ('4', '1000-C', now, 'AC', 'Owner'),  # another independent problem
+            ('5', '1000-D', now, 'WA', 'Owner'),  # official rejudge overrides old workbench AC
+            ('6', '1000-E', start - 1, 'AC', 'Owner'),
+            ('7', '1000-F', now + 120, 'AC', 'Owner'),
+            ('8', '1000-G', now, 'AC', 'Other'),
+        ]:
+            db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',
+                ('codeforces', account, sid, pid, timestamp, verdict, '{}', now))
+        for aid, pid, sid, verdict, judge in [
+            ('legacy', '1000-H', 9, 'AC', {'verdict': 'OK', 'creationTimeSeconds': now}),
+            ('duplicate', '1000-B', 2, 'AC', {'verdict': 'OK', 'creationTimeSeconds': now}),
+            ('rejudged', '1000-D', 5, 'AC', {'verdict': 'OK', 'creationTimeSeconds': now}),
+            ('draft', '1000-I', None, 'AC', {'verdict': 'OK', 'creationTimeSeconds': now}),
+            ('bad-evidence', '1000-J', 10, 'AC', {'verdict': 'WA', 'creationTimeSeconds': now}),
+        ]:
+            db.execute('''INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,
+                handle,submission_id,verdict,judge_data,last_synced) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+                (aid, 'codeforces:' + pid, 'cpp20', 'PRIVATE-SOURCE', 'hash', now,
+                 'Owner', sid, verdict, json.dumps(judge), now))
+    assert request(admin, 'PUT', '/api/social/me', {'leaderboard': True}).status_code == 200
+    board = request(member, 'GET', '/api/social/leaderboard').json()
+    assert board['items'][0]['count'] == 4
+    assert '自主练习、每日任务和对战' in board['rule']
+    detail = request(member, 'GET', f"/api/social/users/{admin['user']['id']}").json()
+    assert {row['id'] for row in detail['items']} == {
+        'codeforces:1000-A', 'codeforces:1000-B', 'codeforces:1000-C', 'codeforces:1000-H',
+    }
+    assert 'PRIVATE-SOURCE' not in json.dumps(detail)
+    assert request(member, 'GET', f"/api/social/users/{member['user']['id']}").json()['items'] == []
+
+
+def test_board_counts_all_supported_platforms_without_a_daily_plan(site):
+    request, admin, member, *_ = site
+    accounts = [{'platform': platform, 'handle': handle, 'cookie': 'session=private-fixture'}
+        for platform, handle in [('codeforces', 'Owner'), ('atcoder', 'owner_at'), ('luogu', '1234'), ('nowcoder', '5678')]]
+    assert request(admin, 'PUT', '/api/accounts', {'items': accounts}).status_code == 200
+    runtime = child(site, admin)
+    now = int(time.time())
+    for account, pid in zip(accounts, ('1000-A', 'abc300_a', 'P1000', '1000')):
+        platform, handle = account['platform'], account['handle']
+        checks = runtime.state.credential_checks
+        _, fingerprint = checks.credential(platform, handle)
+        checks.cache[(platform, handle)] = (fingerprint, {
+            'platform': platform, 'handle': handle, 'checked_at': now, 'login_verified': True,
+        })
+        assert request(admin, 'POST', '/api/social/accounts', {'platform': platform, 'handle': handle}).status_code == 200
+        with runtime.state.database.connect() as db:
+            db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',
+                (platform, handle, '1', pid, now, 'AC', '{}', now))
+    assert request(admin, 'PUT', '/api/social/me', {'leaderboard': True}).status_code == 200
+    assert request(member, 'GET', '/api/social/leaderboard').json()['items'][0]['count'] == 4
+    assert request(admin, 'GET', '/api/daily').json()['plan'] is None
+    with runtime.state.database.connect() as db:
+        for aid, pid, sid, source in [('remote-at', 'abc301_b', 101, 'official_remote_submission'),
+                                      ('selftest-at', 'abc301_c', 102, 'selftest')]:
+            db.execute('''INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,
+                handle,submission_id,verdict,judge_data,last_synced) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+                (aid, 'atcoder:' + pid, 'cpp20', 'PRIVATE-SOURCE', 'hash', now, 'owner_at', sid,
+                 'AC', json.dumps({'platform': 'atcoder', 'source': source, 'verdict': 'AC', 'submitted_at': now}), now))
+    assert request(member, 'GET', '/api/social/leaderboard').json()['items'][0]['count'] == 5
 
 
 def test_duel_official_evidence_winner_daily_exclusion_and_idempotency(site, monkeypatch):

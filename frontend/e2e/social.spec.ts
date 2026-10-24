@@ -186,6 +186,54 @@ test('community leaderboard opens problem details and workbench; public settings
   await expect(page.getByRole('alert').filter({ hasText: '检测此账号' }).first()).toBeVisible()
 })
 
+test('account submission sync refreshes the open leaderboard when its job completes', async ({
+  page,
+}) => {
+  await community(page)
+  let started = false
+  let completed = false
+  let reads = 0
+  let sent = 0
+  await page.route('**/api/social/leaderboard?**', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ id: 'partner', display_name: '练习伙伴', count: completed ? 3 : 2, rank: 1 }],
+        rule: '包含所有练习题的当天官方 AC',
+      },
+    }),
+  )
+  await page.route('**/api/crawl', (route) => {
+    expect(route.request().method()).toBe('POST')
+    started = true
+    sent += 1
+    return route.fulfill({ json: { id: 'social-sync-job', status: 'queued' } })
+  })
+  await page.route('**/api/jobs', (route) => {
+    if (!started) return route.fulfill({ json: { items: [] } })
+    completed = ++reads > 1
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'social-sync-job',
+            kind: 'crawl',
+            status: completed ? 'completed' : 'queued',
+            created_at: 1792830000,
+            updated_at: 1792830000,
+          },
+        ],
+      },
+    })
+  })
+  await page.getByRole('button', { name: '同步我的提交记录', exact: true }).click()
+  await expect(page.getByText('已开始同步平台提交记录，完成后自动更新排行榜。')).toBeVisible()
+  await expect(page.getByRole('button', { name: '正在同步提交记录…' })).toBeDisabled({
+    timeout: 10000,
+  })
+  await expect(page.locator('.social-ranking')).toContainText('3 题', { timeout: 12000 })
+  expect(sent).toBe(1)
+})
+
 test('friend battle requires recipient acceptance and distinct official verification action', async ({
   page,
 }) => {

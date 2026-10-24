@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { api, date, names } from './api'
 import './social.css'
 
-type Props = { onOpenProblem: (id: string) => void; onError?: (message: string) => void }
+type Props = {
+  onOpenProblem: (id: string) => void
+  onError?: (message: string) => void
+  revision?: number
+  syncing?: boolean
+}
 const relations: Record<string, string> = {
   self: '你自己',
   friend: '好友',
@@ -22,7 +27,7 @@ const duelStatuses: Record<string, string> = {
 }
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 
-export function SocialPage({ onOpenProblem, onError }: Props) {
+export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = false }: Props) {
   const [tab, setTab] = useState('leaderboard')
   const [me, setMe] = useState<any>(null)
   const [form, setForm] = useState<any>(null)
@@ -42,23 +47,28 @@ export function SocialPage({ onOpenProblem, onError }: Props) {
   const [minutes, setMinutes] = useState(60)
   const mounted = useRef(true)
   const profileInitialized = useRef(false)
+  const boardRequest = useRef(0)
   function fail(e: any) {
     const message = e?.message || '请求未完成'
     if (mounted.current) setError(message)
     onError?.(message)
   }
+  async function readBoard() {
+    const request = ++boardRequest.current
+    const value = await api(`/social/leaderboard?day=${day}`)
+    if (mounted.current && request === boardRequest.current) setBoard(value)
+  }
   async function refresh() {
-    const [own, fr, ds, lb] = await Promise.all([
+    const [own, fr, ds] = await Promise.all([
       api('/social/me'),
       api('/social/friends'),
       api('/social/duels'),
-      api(`/social/leaderboard?day=${day}`),
+      readBoard(),
     ])
     if (!mounted.current) return
     setMe(own)
     setFriends(fr.items)
     setDuels(ds.items)
-    setBoard(lb)
     setResults((previous) =>
       previous.map((u) => ({
         ...u,
@@ -100,15 +110,14 @@ export function SocialPage({ onOpenProblem, onError }: Props) {
   useEffect(() => {
     if (!available) return
     let alive = true
-    api(`/social/leaderboard?day=${day}`)
-      .then((value) => {
-        if (alive) setBoard(value)
-      })
-      .catch(fail)
+    readBoard().catch((error) => {
+      if (alive) fail(error)
+    })
     return () => {
       alive = false
+      boardRequest.current += 1
     }
-  }, [day, available])
+  }, [day, available, revision])
   useEffect(() => {
     if (!available || tab !== 'duels') return
     const timer = window.setInterval(() => {
@@ -288,7 +297,7 @@ export function SocialPage({ onOpenProblem, onError }: Props) {
           {tab === 'leaderboard' && (
             <section className="card">
               <div className="section-head">
-                <h2>今日每一题，都值得记录</h2>
+                <h2>当天做题量排行榜</h2>
                 <label>
                   查看日期
                   <input
@@ -301,6 +310,25 @@ export function SocialPage({ onOpenProblem, onError }: Props) {
                 </label>
               </div>
               <p className="help">{board?.rule}</p>
+              <div className="actions">
+                <button
+                  className="secondary"
+                  disabled={busy || syncing || !me.bindings.length}
+                  onClick={() =>
+                    act(
+                      () => api('/crawl', 'POST', {}),
+                      '已开始同步平台提交记录，完成后自动更新排行榜。',
+                    )
+                  }
+                >
+                  {syncing ? '正在同步提交记录…' : '同步我的提交记录'}
+                </button>
+              </div>
+              {!me.accounts.length && (
+                <p className="help">
+                  尚未认领已验证的平台身份，记录暂不计入榜单。请到“我的主页”完成身份认领。
+                </p>
+              )}
               {board?.items?.length ? (
                 <ol className="social-ranking">
                   {board.items.map((u: any) => (
@@ -318,7 +346,8 @@ export function SocialPage({ onOpenProblem, onError }: Props) {
                 <p>还没有用户开启公开榜单。成为第一位分享进步的人吧。</p>
               )}
               <p className="help">
-                这里显示已同步的官方通过记录。分数与标签保留原平台口径；没有提供的数据会标为“未标定”。
+                每日任务以外的题目同样计入。同步题库只更新题目资料；更新做题数量请点击“同步我的提交记录”，或在工作台同步本题提交。
+                分数与标签保留原平台口径；没有提供的数据会标为“未标定”。
               </p>
             </section>
           )}
