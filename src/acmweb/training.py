@@ -126,7 +126,7 @@ class Training:
                 db.execute('DELETE FROM web_settings WHERE key=?', (LOCK_KEY,))
 
     async def select_items(self, topic_id, mode, count, provider, model,
-                           excluded_ids=(), template_first=None, forbid_templates=False):
+                           excluded_ids=(), template_first=None, forbid_templates=False, difficulty_bounds=None):
         """Select verified progressive items for standalone or daily training.
 
         This does not persist plans or take a standalone plan lease: the caller
@@ -137,12 +137,42 @@ class Training:
         self._selecting = True
         try:
             return await self._select_items(topic_id, mode, count, provider, model,
-                excluded_ids, template_first, forbid_templates)
+                excluded_ids, template_first, forbid_templates, difficulty_bounds)
         finally:
             self._selecting = False
 
+    @staticmethod
+    def _difficulty_bounds(bounds):
+        if bounds is None:
+            return {}
+        if not isinstance(bounds, dict):
+            raise HTTPException(422, '递进难度范围格式不正确')
+        normalized = {}
+        for platform, limits in bounds.items():
+            if not isinstance(platform, str) or not isinstance(limits, dict) or set(limits) - {'minimum', 'maximum'}:
+                raise HTTPException(422, '递进难度范围格式不正确')
+            minimum, maximum = limits.get('minimum'), limits.get('maximum')
+            if any(value is not None and type(value) is not int for value in (minimum, maximum)):
+                raise HTTPException(422, '递进难度范围必须为整数或空值')
+            normalized[platform] = {'minimum': minimum, 'maximum': maximum}
+        return normalized
+
+    @staticmethod
+    def _within_difficulty_bounds(problem, bounds):
+        platform = problem['platform']
+        limits = bounds.get(platform)
+        if not limits:
+            return True
+        rating = problem.get('difficulty') if platform == 'codeforces' else problem.get('native_difficulty')
+        # Missing/zero ratings remain unknown. Never compare native platform
+        # levels with Codeforces ratings, or invent a converted numeric score.
+        if type(rating) is not int or rating <= 0:
+            return True
+        return ((limits['minimum'] is None or rating >= limits['minimum'])
+                and (limits['maximum'] is None or rating <= limits['maximum']))
+
     async def _select_items(self, topic_id, mode, count, provider, model,
-                            excluded_ids, template_first, forbid_templates):
+                            excluded_ids, template_first, forbid_templates, difficulty_bounds):
         # Validate callers as strictly as the public endpoint, including bool/int.
         request = Generate(topic_id=topic_id, mode=mode, count=count, provider=provider, model=model)
         topic = TOPICS.get(request.topic_id)
@@ -153,7 +183,9 @@ class Training:
             raise HTTPException(422, '模板首题与排除模板不能同时设置')
         await refresh_recommendation_sessions(self.accounts)
         excluded = set(excluded_ids)
-        pool = [p for p in self._pool(topic) if p['id'] not in excluded]
+        bounds = self._difficulty_bounds(difficulty_bounds)
+        pool = [p for p in self._pool(topic) if p['id'] not in excluded
+                and self._within_difficulty_bounds(p, bounds)]
         templates = [p['id'] for p in pool if is_template(p, topic)]
         if template_first and not templates:
             raise AIError('没有符合当前登录、日期及难度条件的未完成模板题；请同步平台题库并验证对应平台登录，或调整训练偏好；不会用普通题替代模板题')
@@ -180,7 +212,8 @@ class Training:
                  'mode': mode, 'mode_title': next(m['title'] for m in MODES if m['id'] == mode),
                  'requested_count': count, 'template_first_required': template_first,
                  'forbid_templates': forbid_templates, 'template_candidate_ids': templates,
-                 'preferences': self.db.get('training', {}), 'candidates': candidates}, schema)
+                 'preferences': self.db.get('training', {}), 'difficulty_bounds': bounds,
+                 'candidates': candidates}, schema)
             try:
                 selected = schema.model_validate(response.data).selected_problems
             except ValidationError:
@@ -203,7 +236,7 @@ class Training:
                     if key in previous and rating < previous[key]:
                         raise AIError('AI 返回的同平台难度顺序倒退，本次未保存')
                     previous[key] = rating
-            current = {p['id'] for p in self._pool(topic, ids)}
+            current = {p['id'] for p in self._pool(topic, ids) if self._within_difficulty_bounds(p, bounds)}
             if not set(ids) <= current or set(ids) & excluded:
                 raise AIError('候选资格已变化（登录、提交、日期或对战），本次未保存，请手动重试')
             items = []
