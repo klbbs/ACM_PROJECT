@@ -499,3 +499,61 @@ def test_conflicting_template_roll_options_fail_before_ai(training):
     assert error.value.status_code == 422
     training.ai.complete.assert_not_called()
     assert training._selecting is False
+
+
+def test_daily_roll_bounds_filter_candidates_before_ai(training):
+    bounds = {'luogu': {'minimum': 4, 'maximum': 5}}
+    items = asyncio.run(training.select_items('dsu', 'consolidate', 1, 'api', 'mock',
+        difficulty_bounds=bounds))
+    assert items[0]['problem_id'] == 'luogu:P9002'
+    payload = training.ai.complete.call_args.args[3]
+    assert {p['native_difficulty'] for p in payload['candidates']} == {4, 5}
+    assert payload['difficulty_bounds'] == bounds
+
+
+def test_daily_roll_bounds_empty_pool_does_not_call_ai(training):
+    with pytest.raises(AIError, match='只有 0 道'):
+        asyncio.run(training.select_items('dsu', 'consolidate', 1, 'api', 'mock',
+            difficulty_bounds={'luogu': {'minimum': 20, 'maximum': 30}}))
+    training.ai.complete.assert_not_called()
+    assert training.active_ai is False
+    assert training._selecting is False
+
+
+def test_daily_roll_bounds_do_not_convert_other_platform_or_unknown_scores(training):
+    training.accounts.credential_checks.statuses = lambda: {'items': [
+        {'platform': p, 'status': 'authenticated', 'login_verified': True} for p in ('luogu', 'codeforces')]}
+    with training.db.connect() as db:
+        for number, rating in enumerate((1000, 1400, 1600), start=1):
+            row = {'id': f'codeforces:10-{number}', 'platform': 'codeforces', 'title': 'DSU',
+                   'contest_id': 10, 'difficulty': rating, 'tags': ['dsu'],
+                   'url': f'https://codeforces.com/problemset/problem/10/{number}'}
+            db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', row['id'], json.dumps(row)))
+        unknown = {'id': 'luogu:P9998', 'platform': 'luogu', 'title': '集合的应用',
+                   'native_difficulty': 0, 'tags': ['dsu'], 'url': 'https://www.luogu.com.cn/problem/P9998'}
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('luogu', unknown['id'], json.dumps(unknown)))
+    bounds = {'codeforces': {'minimum': 1000, 'maximum': 1400},
+              'luogu': {'minimum': 4, 'maximum': 5}}
+    asyncio.run(training.select_items('dsu', 'consolidate', 1, 'api', 'mock', difficulty_bounds=bounds))
+    candidates = training.ai.complete.call_args.args[3]['candidates']
+    cf_ratings = {p['difficulty'] for p in candidates if p['platform'] == 'codeforces'}
+    assert cf_ratings == {1000, 1400}
+    assert any(p['id'] == 'luogu:P9998' for p in candidates)
+    assert {p['native_difficulty'] for p in candidates if p['platform'] == 'luogu'} == {0, 4, 5}
+
+
+def test_roll_bounds_recheck_after_ai_candidate_rating_changes(training):
+    original = training.ai.complete.side_effect
+    async def change_rating(*args):
+        result = await original(*args)
+        pid = result.data['selected_problems'][0]['id']
+        with training.db.connect() as db:
+            row = json.loads(db.execute('SELECT data FROM problem_catalog WHERE id=?', (pid,)).fetchone()[0])
+            row['native_difficulty'] = 9
+            db.execute('UPDATE problem_catalog SET data=? WHERE id=?', (json.dumps(row), pid))
+        return result
+    training.ai.complete.side_effect = change_rating
+    with pytest.raises(AIError, match='资格已变化'):
+        asyncio.run(training.select_items('dsu', 'consolidate', 1, 'api', 'mock',
+            difficulty_bounds={'luogu': {'minimum': 4, 'maximum': 5}}))
+    assert training.plans()['plans'] == []
