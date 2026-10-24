@@ -36,15 +36,15 @@ const render = async (revision = 0, overrides: Record<string, unknown> = {}) =>
       />,
     )
   })
-const goal = () => host.querySelector('select') as HTMLSelectElement
+const goal = () => host.querySelector('input[type="number"]') as HTMLInputElement
 const save = () =>
   Array.from(host.querySelectorAll('button')).find(
     (button) => button.textContent === '保存每日任务',
   )!
 const editGoal = async (next: string) =>
   act(async () => {
-    goal().value = next
-    goal().dispatchEvent(new Event('change', { bubbles: true }))
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(goal(), next)
+    goal().dispatchEvent(new Event('input', { bubbles: true }))
   })
 beforeEach(() => {
   apiMock.mockReset()
@@ -97,6 +97,9 @@ it('does not replace unsaved preferences when a revision refreshes verified prog
   expect(apiMock).toHaveBeenCalledWith('/daily/settings', 'PUT', {
     daily_goal: 2,
     duration_days: 30,
+    selection_type: 'random',
+    topic_id: null,
+    training_mode: 'learn',
   })
 })
 
@@ -251,14 +254,22 @@ it('retains an already loaded daily plan when refreshing progress fails', async 
 })
 
 it('restores the persisted generation reason on entry and keeps old tasks visible', async () => {
-  apiMock.mockResolvedValue(readyDay({
-    locked_goal: 4,
-    settings: { daily_goal: 4, duration_days: 30 },
-    plan: {
-      status: 'failed', tasks: [dailyTask], completed_ids: [],
-      failure: { code: 'invalid_count', message: '每日题单要求 4 道，AI 实际返回 5 道，本次未保存；已保存题单不受影响，请手动重试' },
-    },
-  }))
+  apiMock.mockResolvedValue(
+    readyDay({
+      locked_goal: 4,
+      settings: { daily_goal: 4, duration_days: 30 },
+      plan: {
+        status: 'failed',
+        tasks: [dailyTask],
+        completed_ids: [],
+        failure: {
+          code: 'invalid_count',
+          message:
+            '每日题单要求 4 道，AI 实际返回 5 道，本次未保存；已保存题单不受影响，请手动重试',
+        },
+      },
+    }),
+  )
   await render()
   expect(host.textContent).toContain('上次生成失败：每日题单要求 4 道，AI 实际返回 5 道')
   expect(host.textContent).toContain('不会自动重试或产生新的 AI 费用')
@@ -348,7 +359,17 @@ it('keeps the original task after a failed Roll and offers a retry for that exac
 })
 
 it.each([
-  ['已完成题目不能 Roll', { plan: { status: 'ready', tasks: [{ ...dailyTask, completed: true }], completed_ids: [dailyTask.id] } }, {}],
+  [
+    '已完成题目不能 Roll',
+    {
+      plan: {
+        status: 'ready',
+        tasks: [{ ...dailyTask, completed: true }],
+        completed_ids: [dailyTask.id],
+      },
+    },
+    {},
+  ],
   ['请先配置并选择 AI 模型', {}, { model: '' }],
   ['今日 Roll 机会已用完', { rerolls_remaining: 0 }, {}],
   ['训练周期未开启，请先保存每日任务', { active: false }, {}],
@@ -382,5 +403,116 @@ it('displays the server locked quota instead of changing today’s quota with to
   await act(async () => save().click())
   expect(goal().value).toBe('8')
   expect(host.textContent).toContain('今日 Roll 总额度 3 次，剩余 1 次')
+  expect(apiMock.mock.calls.some(([path]) => path === '/daily/roll')).toBe(false)
+})
+
+const topicsResponse = {
+  groups: [
+    {
+      id: 'basics',
+      title: '算法基础',
+      topics: [
+        { id: 'binary-search', title: '二分查找', description: '单调性' },
+        { id: 'sorting', title: '排序', description: 'sortings' },
+      ],
+    },
+  ],
+}
+const selectLabeled = (text: string) =>
+  [...host.querySelectorAll('label')]
+    .find((label) => label.firstChild?.textContent?.includes(text))!
+    .querySelector('select')!
+async function setSelect(element: HTMLSelectElement, next: string) {
+  await act(async () => {
+    element.value = next
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
+it('saves specialist topic, phase and freely entered count without consent checkboxes', async () => {
+  let state: any = value(4)
+  apiMock.mockImplementation(async (path: string, method?: string, payload?: any) => {
+    if (path === '/training/topics') return topicsResponse
+    if (method === 'PUT') state = { ...state, settings: payload }
+    return state
+  })
+  await render()
+  await setSelect(selectLabeled('每日训练方式'), 'specialist')
+  expect(save().disabled).toBe(true)
+  await setSelect(selectLabeled('训练专题'), 'binary-search')
+  await setSelect(selectLabeled('训练难度'), 'variation')
+  await editGoal('12')
+  expect(save().disabled).toBe(false)
+  await act(async () => save().click())
+  expect(apiMock).toHaveBeenCalledWith('/daily/settings', 'PUT', {
+    daily_goal: 12,
+    duration_days: 30,
+    selection_type: 'specialist',
+    topic_id: 'binary-search',
+    training_mode: 'variation',
+  })
+  expect(host.querySelector('input[type="checkbox"]')).toBeNull()
+  expect(goal().getAttribute('max')).toBe('50')
+  expect(apiMock.mock.calls.some(([path]) => path === '/daily/roll')).toBe(false)
+})
+
+it('keeps unsaved specialist choices across topic loading and background daily refreshes', async () => {
+  apiMock.mockImplementation(async (path: string) =>
+    path === '/training/topics' ? topicsResponse : value(4),
+  )
+  await render()
+  await setSelect(selectLabeled('每日训练方式'), 'specialist')
+  await setSelect(selectLabeled('训练专题'), 'sorting')
+  await setSelect(selectLabeled('训练难度'), 'strengthen')
+  await render(1)
+  expect(selectLabeled('每日训练方式').value).toBe('specialist')
+  expect(selectLabeled('训练专题').value).toBe('sorting')
+  expect(selectLabeled('训练难度').value).toBe('strengthen')
+  await setSelect(selectLabeled('每日训练方式'), 'random')
+  await act(async () => save().click())
+  expect(apiMock).toHaveBeenCalledWith('/daily/settings', 'PUT', {
+    daily_goal: 4,
+    duration_days: 30,
+    selection_type: 'random',
+    topic_id: null,
+    training_mode: 'learn',
+  })
+})
+
+it('shows frozen specialist plan when next-day preferences are random', async () => {
+  apiMock.mockResolvedValue(
+    readyDay({
+      locked_options: {
+        selection_type: 'specialist',
+        topic_id: 'binary-search',
+        training_mode: 'learn',
+      },
+    }),
+  )
+  await render()
+  expect(host.textContent).toContain('今日已锁定：专项训练 · binary-search · 新学')
+  expect(host.textContent).toContain('换题仍遵循今日设置')
+  expect(selectLabeled('每日训练方式').value).toBe('random')
+})
+
+it('rejects invalid counts and retries topic loading without firing AI', async () => {
+  let attempts = 0
+  apiMock.mockImplementation(async (path: string) => {
+    if (path === '/training/topics') {
+      if (++attempts === 1) throw new Error('暂时不可用')
+      return topicsResponse
+    }
+    return value()
+  })
+  await render()
+  await editGoal('51')
+  expect(save().disabled).toBe(true)
+  await setSelect(selectLabeled('每日训练方式'), 'specialist')
+  expect(host.textContent).toContain('专题读取失败：暂时不可用')
+  await act(async () => findButton('重试读取专题').click())
+  expect(host.textContent).not.toContain('专题读取失败')
+  await setSelect(selectLabeled('训练专题'), 'sorting')
+  await editGoal('50')
+  expect(save().disabled).toBe(false)
   expect(apiMock.mock.calls.some(([path]) => path === '/daily/roll')).toBe(false)
 })
