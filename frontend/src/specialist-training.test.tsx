@@ -97,10 +97,6 @@ const click = async (text: string) =>
   act(async () => {
     button(text).click()
   })
-const consent = async (index: number) =>
-  act(async () => {
-    ;(host.querySelectorAll('input[type=checkbox]')[index] as HTMLInputElement).click()
-  })
 function deferred() {
   let resolve!: (value: any) => void
   const promise = new Promise((done) => {
@@ -138,9 +134,8 @@ it('restores saved progression and opens the canonical problem in the workbench 
   expect(props.onOpenProblem).toHaveBeenCalledWith('codeforces:1-0')
   expect(apiMock.mock.calls.every((call) => !call[1])).toBe(true)
 })
-it('requires consent and a configured model, then preserves old plans on failed generation', async () => {
+it('requires a configured model, then preserves old plans on failed generation', async () => {
   await render({ model: '' })
-  await consent(0)
   expect(button('生成专项题单').disabled).toBe(true)
   await render()
   expect(button('生成专项题单').disabled).toBe(false)
@@ -151,15 +146,16 @@ it('requires consent and a configured model, then preserves old plans on failed 
   expect(apiMock).toHaveBeenLastCalledWith('/training/plans', 'POST', {
     topic_id: 'shortest',
     count: 4,
+    mode: 'learn',
     provider: 'api',
     model: 'fixture',
   })
 })
-it('evaluates the selected official attempt only after consent and prevents duplicate clicks', async () => {
+it('evaluates the selected official attempt only on clicking and prevents duplicate clicks', async () => {
   await render()
   await click('提交评估与讨论')
-  expect(button('递交 AI 评估').disabled).toBe(true)
-  await consent(1)
+  expect(button('递交 AI 评估').disabled).toBe(false)
+  expect(apiMock.mock.calls.every((call) => !call[1])).toBe(true)
   const pending = deferred()
   apiMock.mockReturnValueOnce(pending.promise)
   await act(async () => {
@@ -170,7 +166,7 @@ it('evaluates the selected official attempt only after consent and prevents dupl
     [
       '/training/plans/p1/items/0/assessment',
       'POST',
-      { attempt_id: 'a99', provider: 'api', model: 'fixture', consent: true },
+      { attempt_id: 'a99', provider: 'api', model: 'fixture' },
     ],
   ])
   await act(async () => pending.resolve(review({ assessment })))
@@ -186,7 +182,6 @@ it('explains missing source and incomplete AC instead of reading editor drafts',
     }),
   )
   await click('提交评估与讨论')
-  await consent(1)
   expect(button('递交 AI 评估').disabled).toBe(true)
   expect(host.textContent).toContain('本题尚未完成 AC')
   await click('提交评估与讨论')
@@ -196,7 +191,6 @@ it('explains missing source and incomplete AC instead of reading editor drafts',
     }),
   )
   await click('提交评估与讨论')
-  await consent(1)
   expect(host.textContent).toContain('平台无法读取源码')
   expect(button('递交 AI 评估').disabled).toBe(true)
 })
@@ -216,7 +210,6 @@ it('allows verified official-source retrieval without requiring a pasted draft',
     }),
   )
   await click('提交评估与讨论')
-  await consent(1)
   expect(button('递交 AI 评估').disabled).toBe(false)
   apiMock.mockResolvedValueOnce(review({ assessment }))
   await click('递交 AI 评估')
@@ -225,7 +218,6 @@ it('allows verified official-source retrieval without requiring a pasted draft',
     handle: 'alice',
     provider: 'api',
     model: 'fixture',
-    consent: true,
   })
 })
 it('preserves completed assessment and messages on chat failure, and discards late answers after switching items', async () => {
@@ -234,7 +226,6 @@ it('preserves completed assessment and messages on chat failure, and discards la
     review({ assessment, messages: [{ role: 'assistant', content: '原有讨论' }] }),
   )
   await click('提交评估与讨论')
-  await consent(1)
   apiMock.mockRejectedValueOnce(new Error('AI 网络异常'))
   await click('探讨其他思路')
   expect(host.textContent).toContain('原有讨论')
@@ -264,4 +255,93 @@ it('shows initial loading errors and retries recovering saved plans without anot
   await tick()
   expect(host.textContent).toContain('最短路进阶路线')
   expect(apiMock.mock.calls.every((call) => !call[1])).toBe(true)
+})
+
+const change = async (selector: string, value: string) =>
+  act(async () => {
+    const element = host.querySelector(selector) as HTMLInputElement
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value)
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+it('offers four learning stages and a free quantity, without static consent checkboxes', async () => {
+  await render()
+  expect(host.querySelectorAll('input[type=checkbox]')).toHaveLength(0)
+  expect(
+    Array.from(host.querySelectorAll('input[type=radio]')).map(
+      (entry) => (entry as HTMLInputElement).value,
+    ),
+  ).toEqual(['learn', 'consolidate', 'variation', 'strengthen'])
+  await act(async () => (host.querySelector('input[value=variation]') as HTMLInputElement).click())
+  await change('input[aria-label="专项题量"]', '12')
+  apiMock.mockResolvedValueOnce({ ...plan, mode: 'variation', mode_title: '变式' })
+  await click('生成专项题单')
+  expect(apiMock).toHaveBeenLastCalledWith('/training/plans', 'POST', {
+    topic_id: 'shortest',
+    count: 12,
+    mode: 'variation',
+    provider: 'api',
+    model: 'fixture',
+  })
+  expect(host.querySelector('.specialist-route-title')?.textContent).toContain('变式')
+  await change('input[aria-label="专项题量"]', '')
+  expect(button('生成专项题单').disabled).toBe(true)
+  await change('input[aria-label="专项题量"]', '51')
+  expect(button('生成专项题单').disabled).toBe(true)
+})
+it('searches topic names, paths and official English tags across categories while preserving selection', async () => {
+  apiMock.mockResolvedValueOnce({
+    groups: [
+      ...topics.groups,
+      {
+        id: 'cf',
+        title: 'Codeforces 官方标签',
+        topics: [
+          {
+            id: 'cf-binary-search',
+            title: '二分查找',
+            description: 'binary search',
+            path: ['Codeforces', 'binary search'],
+            source_url: 'https://codeforces.com/problemset?tags=binary+search',
+          },
+        ],
+      },
+    ],
+  })
+  await render()
+  await change('input[aria-label="搜索训练专题"]', 'binary search')
+  const select = host.querySelector('select[aria-label="训练专题"]') as HTMLSelectElement
+  expect(Array.from(select.options).map((entry) => entry.value)).toEqual([
+    'shortest',
+    'cf-binary-search',
+  ])
+  expect(select.value).toBe('shortest')
+  await act(async () => {
+    select.value = 'cf-binary-search'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  expect(select.value).toBe('cf-binary-search')
+  expect((host.querySelector('select[aria-label="专题分类"]') as HTMLSelectElement).value).toBe(
+    'cf',
+  )
+  await change('input[aria-label="搜索训练专题"]', 'no match')
+  expect(select.value).toBe('cf-binary-search')
+  expect(host.textContent).toContain('找到 0 个匹配专题')
+})
+it('restores old plans as learn but displays true non-template stages in other modes', async () => {
+  apiMock.mockImplementation((path: string) =>
+    Promise.resolve(
+      path === '/training/topics'
+        ? topics
+        : {
+            plans: [
+              { ...plan, mode: 'strengthen', items: [{ ...plan.items[0], stage: 'strengthen' }] },
+            ],
+          },
+    ),
+  )
+  await render()
+  expect(host.querySelector('.specialist-route-title')?.textContent).toContain('加强')
+  expect(host.querySelector('.specialist-step')?.textContent).toContain('加强练习')
+  expect(host.querySelector('.specialist-step')?.textContent).not.toContain('模板入门')
 })

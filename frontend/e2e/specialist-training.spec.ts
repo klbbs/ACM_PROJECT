@@ -153,8 +153,17 @@ async function install(page: Page, initiallySaved = true) {
             status: 502,
             json: { detail: '隔离模拟 AI 无法生成有效递进题单' },
           })
-        state.plans = [savedPlan]
-        return route.fulfill({ json: savedPlan })
+        const body = request.postDataJSON()
+        const generated = {
+          ...savedPlan,
+          mode: body.mode,
+          items: Array.from({ length: body.count }, (_, position) => ({
+            ...savedPlan.items[Math.min(position, savedPlan.items.length - 1)],
+            position,
+          })),
+        }
+        state.plans = [generated]
+        return route.fulfill({ json: generated })
       }
       return route.fulfill({ json: { plans: state.plans } })
     }
@@ -228,17 +237,25 @@ test('training hub generates an explicit progressive plan, opens its first probl
   await expect(panel.getByText('你的第一条专项训练路线', { exact: true })).toBeVisible()
   await panel.getByLabel('专题分类', { exact: true }).selectOption('graph')
   await panel.getByLabel('训练专题', { exact: true }).selectOption('shortest-path')
-  await panel.getByLabel('专项题量', { exact: true }).selectOption('3')
+  await panel.getByLabel('专项题量', { exact: true }).fill('12')
   await chooseModel(page)
-  await expect(panel.getByRole('button', { name: 'AI 生成专项题单', exact: true })).toBeDisabled()
-  await panel.getByRole('checkbox').first().check()
+  await expect(panel.getByRole('checkbox')).toHaveCount(0)
+  await expect(panel.getByRole('radio')).toHaveCount(4)
+  await panel.getByRole('radio', { name: /巩固/ }).check()
+  await panel.getByRole('radio', { name: /新学/ }).check()
   await panel.getByRole('button', { name: 'AI 生成专项题单', exact: true }).click()
   await expect(panel.getByRole('heading', { name: savedPlan.title, exact: true })).toBeVisible()
   expect(state.generation).toEqual([
-    { topic_id: 'shortest-path', count: 3, provider: 'api', model: 'synthetic-coach' },
+    {
+      topic_id: 'shortest-path',
+      count: 12,
+      mode: 'learn',
+      provider: 'api',
+      model: 'synthetic-coach',
+    },
   ])
   await expect(panel.locator('.specialist-step').first()).toContainText('模板入门')
-  await expect(panel.locator('.specialist-step')).toHaveCount(3)
+  await expect(panel.locator('.specialist-step')).toHaveCount(12)
   await page.screenshot({ path: 'test-results/specialist-training-desktop.png', fullPage: true })
   const resolved = page.waitForResponse((response) => {
     const url = new URL(response.url())
@@ -266,7 +283,7 @@ test('training hub generates an explicit progressive plan, opens its first probl
   expect(state.generation).toHaveLength(1)
 })
 
-test('a selected official AC submission is evaluated with consent and alternatives appear as a Markdown conversation', async ({
+test('a selected official AC submission is evaluated by an explicit click and alternatives appear as a Markdown conversation', async ({
   page,
 }) => {
   const state = await install(page)
@@ -279,8 +296,8 @@ test('a selected official AC submission is evaluated with consent and alternativ
   await review
     .getByLabel('选择本题提交', { exact: true })
     .selectOption({ label: 'Codeforces · fixture_owner · #920002 · AC · Python 3' })
-  await expect(review.getByRole('button', { name: '递交 AI 评估', exact: true })).toBeDisabled()
-  await review.getByRole('checkbox').check()
+  await expect(review.getByRole('checkbox')).toHaveCount(0)
+  expect(state.assessments).toHaveLength(0)
   await review.getByRole('button', { name: '递交 AI 评估', exact: true }).click()
   await expect(review.locator('.specialist-assessment strong').first()).toHaveText(
     '边界处理值得改进',
@@ -292,7 +309,6 @@ test('a selected official AC submission is evaluated with consent and alternativ
       attempt_id: 'synthetic-attempt-2',
       provider: 'api',
       model: 'synthetic-coach',
-      consent: true,
     },
   ])
   expect(state.assessments[0]).not.toHaveProperty('code')
@@ -307,7 +323,7 @@ test('a selected official AC submission is evaluated with consent and alternativ
   await expect(review.locator('.specialist-message.user').last()).toContainText(
     '请说明我该检查哪些最小边界。',
   )
-  expect(state.chats[1]).toMatchObject({ position: 0, consent: true, model: 'synthetic-coach' })
+  expect(state.chats[1]).toMatchObject({ position: 0, model: 'synthetic-coach' })
 })
 
 test('failed generation retains saved training and late item results cannot leak to another item on mobile', async ({
@@ -319,7 +335,6 @@ test('failed generation retains saved training and late item results cannot leak
   await openTraining(page)
   await chooseModel(page)
   const panel = page.locator('.specialist-training')
-  await panel.getByRole('checkbox').first().check()
   state.failGeneration = true
   await panel.getByRole('button', { name: 'AI 生成专项题单', exact: true }).click()
   await expect(panel.getByRole('alert')).toContainText('隔离模拟 AI 无法生成有效递进题单')
@@ -327,7 +342,6 @@ test('failed generation retains saved training and late item results cannot leak
   const first = panel.locator('.specialist-step').nth(0),
     second = panel.locator('.specialist-step').nth(1)
   await first.getByRole('button', { name: '提交评估与讨论', exact: true }).click()
-  await first.locator('.specialist-review').getByRole('checkbox').check()
   let release!: () => void
   state.delayAssessment = new Promise<void>((done) => {
     release = done
