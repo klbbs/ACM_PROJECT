@@ -1,4 +1,4 @@
-"""Selection/report integration cases, written but not run at user request."""
+"""Local synthetic recommendation/report integration regressions."""
 import asyncio
 import time
 from types import SimpleNamespace

@@ -99,6 +99,15 @@ function allowedOfficialUrl(row: RemoteRow): string | undefined {
     /* Unexpected URLs remain plain data, never navigation targets. */
   }
 }
+function accountHistoryUrl(row: RemoteRow): string | undefined {
+  const [platform, raw] = row.problem_id.split(':', 2)
+  if (platform === 'codeforces' && /^[A-Za-z0-9_.-]+$/.test(row.handle))
+    return `https://codeforces.com/submissions/${encodeURIComponent(row.handle)}`
+  if (platform === 'atcoder' && /^[a-z0-9]+(?:_[a-z0-9]+)+$/.test(raw || '')) {
+    const contest = raw === 'practice_1' ? 'abs' : raw.slice(0, raw.lastIndexOf('_'))
+    return `https://atcoder.jp/contests/${contest}/submissions?f.User=${encodeURIComponent(row.handle)}`
+  }
+}
 function rowTitle(row: RemoteRow) {
   if (row.status === 'completed' && row.verdict === 'AC') return 'AC · 通过！'
   if (row.status === 'completed') return `${row.verdict || '判题完成'} · 请查看判题结果`
@@ -176,7 +185,7 @@ export function RemoteSubmissionPanel({
     const generation = ++listGeneration.current
     if (initial) setLoading(true)
     try {
-      const result = await api<{ items: RemoteRow[] }>(
+      const result = await api<{ items: RemoteRow[]; blocking?: RemoteRow[] }>(
         `/remote-submissions?${new URLSearchParams({ problem_id: target })}`,
       )
       if (
@@ -185,7 +194,8 @@ export function RemoteSubmissionPanel({
         generation !== listGeneration.current
       )
         return []
-      const items = result.items || []
+      const items = [...new Map([...(result.items || []), ...(result.blocking || [])]
+        .map((row) => [row.id, row])).values()]
       setRows(items)
       setListError('')
       const signature = JSON.stringify(items)
@@ -372,10 +382,11 @@ export function RemoteSubmissionPanel({
     } catch (error) {
       if (mounted.current && currentProblem.current === target) {
         // An explicit validation/authentication rejection never accepted this request.
-        if (error instanceof ApiError && [400, 401, 403, 404, 422].includes(error.status)) {
+        if (error instanceof ApiError && [400, 401, 403, 404, 409, 422].includes(error.status)) {
           outstanding.current = null
           setIntent(null)
           report(error)
+          if (error.status === 409) await loadRows(target)
         } else
           report(
             outstanding.current
@@ -548,7 +559,7 @@ export function RemoteSubmissionPanel({
           {error}
         </p>
       )}
-      {(!handles.length || error) && (
+      {(!handles.length || currentRows.some((row) => row.status === 'blocked') || /Cookie|登录|凭据|验证/.test(error)) && (
         <p>
           <a href="#settings">前往连接与设置，更新 Cookie 并检测登录</a>
         </p>
@@ -569,7 +580,7 @@ export function RemoteSubmissionPanel({
               (row.status === 'completed' && !ac) ||
               row.status === 'failed' ||
               row.status === 'blocked'
-            const url = allowedOfficialUrl(row)
+            const url = allowedOfficialUrl(row) || (!row.official_url ? accountHistoryUrl(row) : undefined)
             return (
               <article
                 key={row.id}
@@ -586,11 +597,16 @@ export function RemoteSubmissionPanel({
                   {rowTitle(row)}
                 </strong>
                 <p className="muted">
-                  {row.handle} · {row.revision ? `已保存版本 #${row.revision} · ` : ''}
+                  {row.problem_id} · {row.handle} · {row.revision ? `已保存版本 #${row.revision} · ` : ''}
                   {row.compiler_name ? `${row.compiler_name} · ` : ''}
                   {row.submission_id ? `官方提交 #${row.submission_id} · ` : ''}
                   {date(row.created_at)}
                 </p>
+                {row.problem_id !== problemId && (
+                  <p className="remote-submit-warning">
+                    这是此账号另一道题的旧提交。请先核对下方官方记录并刷新结果；它会阻止该账号的新提交，不是当前代码已发送。
+                  </p>
+                )}
                 {row.message && <p>{row.message}</p>}
                 <div className="remote-submit-controls">
                   <button type="button" disabled={!!refreshingId} onClick={() => void refresh(row)}>
@@ -598,7 +614,7 @@ export function RemoteSubmissionPanel({
                   </button>
                   {url && (
                     <a href={url} target="_blank" rel="noopener noreferrer">
-                      官方提交记录 <ExternalLink size={14} />
+                      {row.submission_id ? '官方提交记录' : '打开本人官方提交记录'} <ExternalLink size={14} />
                     </a>
                   )}
                 </div>

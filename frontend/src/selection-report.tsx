@@ -65,9 +65,7 @@ function readReport(value: unknown, reportId: string, problemId: string): Select
 }
 
 function Text({ value }: { value: string }) {
-  return (
-    <Markdown remarkPlugins={[remarkGfm]}>{value}</Markdown>
-  )
+  return <Markdown remarkPlugins={[remarkGfm]}>{value}</Markdown>
 }
 
 function ReportBody({ report }: { report: SelectionReport }) {
@@ -199,70 +197,78 @@ export function SelectionReportButton({ reportId, problemId, title }: Props) {
         <FileText size={15} /> 查看 AI 报告
       </button>
       {!reportId && (
-        <p className="help" id={`${id}-legacy`}>{legacyReason}</p>
+        <p className="help" id={`${id}-legacy`}>
+          {legacyReason}
+        </p>
       )}
-      {opened && createPortal(
-        <dialog
-          className="selection-report-dialog"
-          ref={dialog}
-          aria-labelledby={`${id}-title`}
-          aria-describedby={`${id}-notice`}
-          onCancel={(event) => {
-            event.preventDefault()
-            close()
-          }}
-          onClose={(event) => {
-            if (dialog.current === event.currentTarget) close()
-          }}
-        >
-          <div className="selection-report-header">
-            <h2 id={`${id}-title`} ref={heading} tabIndex={-1}>
-              {phase === 'confirm' ? '查看前确认' : 'AI 选题报告'}
-            </h2>
-            <button
-              type="button"
-              className="text-button"
-              aria-label="关闭 AI 报告"
-              onClick={close}
-            >
-              <X size={18} />
-            </button>
-          </div>
-          <p className="selection-report-problem">{title || problemId}</p>
-          <p id={`${id}-notice`} className="selection-report-notice">
-            报告可能包含解题思路和实现要点。内容是 AI 阅读题面的推测，并非官方解释；未运行代码，也未验证解法正确性。
-          </p>
-          {phase === 'confirm' && (
-            <>
-              <p className="selection-report-confirmation">{confirmation}</p>
-              <div className="selection-report-actions">
-                <button type="button" className="button secondary" onClick={close}>
-                  取消
-                </button>
-                <button type="button" className="button primary" onClick={() => void read()}>
-                  确定查看
-                </button>
-              </div>
-            </>
-          )}
-          {phase === 'loading' && (
-            <p role="status" className="selection-report-loading">
-              <LoaderCircle size={19} /> 正在读取已保存报告…
-            </p>
-          )}
-          {phase === 'error' && (
-            <div>
-              <p role="alert" className="selection-report-error">{state.error}</p>
-              <button type="button" className="button secondary" onClick={() => void read()}>
-                <RefreshCw size={15} /> 重试读取
+      {opened &&
+        createPortal(
+          <dialog
+            className="selection-report-dialog"
+            ref={dialog}
+            aria-labelledby={`${id}-title`}
+            aria-describedby={`${id}-notice`}
+            onCancel={(event) => {
+              event.preventDefault()
+              close()
+            }}
+            onClose={(event) => {
+              if (dialog.current === event.currentTarget) close()
+            }}
+          >
+            <div className="selection-report-header">
+              <h2 id={`${id}-title`} ref={heading} tabIndex={-1}>
+                {phase === 'confirm' ? '查看前确认' : 'AI 选题报告'}
+              </h2>
+              <button
+                type="button"
+                className="text-button"
+                aria-label="关闭 AI 报告"
+                onClick={close}
+              >
+                <X size={18} />
               </button>
             </div>
-          )}
-          {phase === 'ready' && state.report && <ReportBody report={state.report} />}
-          {phase !== 'confirm' && <p className="help">这里只读取已保存报告，不会调用 AI 重新生成。</p>}
-        </dialog>,
-        document.body,
-      )}
+            <p className="selection-report-problem">{title || problemId}</p>
+            <p id={`${id}-notice`} className="selection-report-notice">
+              报告可能包含解题思路和实现要点。内容是 AI
+              阅读题面的推测，并非官方解释；未运行代码，也未验证解法正确性。
+            </p>
+            {phase === 'confirm' && (
+              <>
+                <p className="selection-report-confirmation">{confirmation}</p>
+                <div className="selection-report-actions">
+                  <button type="button" className="button secondary" onClick={close}>
+                    取消
+                  </button>
+                  <button type="button" className="button primary" onClick={() => void read()}>
+                    确定查看
+                  </button>
+                </div>
+              </>
+            )}
+            {phase === 'loading' && (
+              <p role="status" className="selection-report-loading">
+                <LoaderCircle size={19} /> 正在读取已保存报告…
+              </p>
+            )}
+            {phase === 'error' && (
+              <div>
+                <p role="alert" className="selection-report-error">
+                  {state.error}
+                </p>
+                <button type="button" className="button secondary" onClick={() => void read()}>
+                  <RefreshCw size={15} /> 重试读取
+                </button>
+              </div>
+            )}
+            {phase === 'ready' && state.report && <ReportBody report={state.report} />}
+            {phase !== 'confirm' && (
+              <p className="help">这里只读取已保存报告，不会调用 AI 重新生成。</p>
+            )}
+          </dialog>,
+          document.body,
+        )}
     </div>
   )
 }

@@ -36,6 +36,7 @@ def main():
         remote_receipts = {}
         remote_sources = {}
         submission_reviews = []
+        selection_readings = []
         class FixtureRemoteJudge:
             before_send = None
 
@@ -81,9 +82,28 @@ def main():
         def remote_count():
             return {'sent':len(remote_receipts), 'submission_reviews':submission_reviews}
 
+        @app.post('/_fixture/selection-report-count')
+        def selection_report_count():
+            return {'count': len(selection_readings), 'problem_ids': list(selection_readings)}
+
         # Test-process-only substitutes: never post code or call paid AI APIs.
         from acmweb import workbench
         async def fixture_ai(model, prompt, schema):
+            if schema.get('title') == 'SelectionReadReport':
+                payload = json.loads(prompt.rsplit('\n', 1)[-1])
+                pid = payload['problem_id']
+                assert payload['statement']['id'] == pid
+                assert payload['statement']['source'] == 'official'
+                assert payload['statement']['sections'] and payload['statement']['samples']
+                selection_readings.append(pid)
+                return json.dumps({'problem_id': pid, 'suitable': True,
+                    'selection_fit': '符合隔离测试的训练目标。',
+                    'problem_summary': '**合成题面阅读报告**，仅用于本地流程检查。',
+                    'constraints': ['只引用合成题面，不推断真实隐藏测试。'],
+                    'approach': ['先阅读题面中的输入输出要求。'],
+                    'implementation_notes': ['注意合成样例中的换行。'],
+                    'complexity': '合成材料不足，无法确定真实题目的复杂度。',
+                    'limitations': ['这是模拟模型响应，未运行代码，不是官方题解。']}, ensure_ascii=False)
             if schema.get('title') == 'DailySelection':
                 payload = json.loads(prompt.rsplit('\n', 1)[-1])
                 return json.dumps({'selected_problems': [{'id': item['id'], 'reason': '根据合成候选的难度与每日训练时间选择。'}
@@ -131,7 +151,8 @@ def main():
                            'url': f'https://codeforces.com/problemset/problem/{contest}/A'}
                 statement = {**problem, 'samples': [{'input': '1\n2', 'output': '3'}],
                              'time_limit': '1 second', 'memory_limit': '256 MB',
-                             'render_version': 2, 'sections': ['此题仅用于编辑器自动化测试，不是真实题面。'], 'has_images': False}
+                             'render_version': 2, 'source': 'official',
+                             'sections': ['此题仅用于编辑器自动化测试，不是真实题面。'], 'has_images': False}
                 db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('codeforces', pid, json.dumps(problem)))
                 seeded_statements.append((pid, json.dumps(statement), 1))
                 db.execute('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements[-1])

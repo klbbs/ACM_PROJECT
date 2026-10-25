@@ -35,13 +35,19 @@ const button = (text: string) =>
   Array.from(document.querySelectorAll('button')).find(
     (element) => element.textContent?.includes(text) || element.getAttribute('aria-label') === text,
   )!
-const click = async (text: string) => act(async () => { button(text).click() })
-const render = async (extra = {}) => act(async () => {
-  root.render(<SelectionReportButton {...props} {...extra} />)
-})
+const click = async (text: string) =>
+  act(async () => {
+    button(text).click()
+  })
+const render = async (extra = {}) =>
+  act(async () => {
+    root.render(<SelectionReportButton {...props} {...extra} />)
+  })
 function deferred() {
   let resolve!: (value: unknown) => void
-  const promise = new Promise((done) => { resolve = done })
+  const promise = new Promise((done) => {
+    resolve = done
+  })
   return { resolve, promise }
 }
 
@@ -52,11 +58,15 @@ beforeEach(() => {
   previousClose = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'close')
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
     configurable: true,
-    value: vi.fn(function (this: HTMLDialogElement) { this.open = true }),
+    value: vi.fn(function (this: HTMLDialogElement) {
+      this.open = true
+    }),
   })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', {
     configurable: true,
-    value: vi.fn(function (this: HTMLDialogElement) { this.open = false }),
+    value: vi.fn(function (this: HTMLDialogElement) {
+      this.open = false
+    }),
   })
   host = document.createElement('div')
   document.body.append(host)
@@ -65,7 +75,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
-  if (previousShowModal) Object.defineProperty(HTMLDialogElement.prototype, 'showModal', previousShowModal)
+  if (previousShowModal)
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', previousShowModal)
   else delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal
   if (previousClose) Object.defineProperty(HTMLDialogElement.prototype, 'close', previousClose)
   else delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).close
@@ -114,6 +125,32 @@ it.each([
   expect(dialog()?.querySelector('[role=alert]')?.textContent).toContain('报告与当前题目不匹配')
   expect(dialog()?.textContent).not.toContain('题意摘要')
 })
+it.each([
+  { ...report, result: { ...report.result, constraints: '不是列表' } },
+  { ...report, result: { ...report.result, suitable: 'true' } },
+  { ...report, created_at: Number.NaN },
+])(
+  'rejects incomplete structured content rather than rendering a partial report',
+  async (response) => {
+    apiMock.mockResolvedValueOnce(response)
+    await render()
+    await click('查看 AI 报告')
+    await click('确定查看')
+    expect(dialog()?.querySelector('[role=alert]')?.textContent).toContain('报告内容不完整')
+    expect(dialog()?.textContent).not.toContain('题意摘要')
+  },
+)
+it('cancels with Escape and restores focus without requesting a report', async () => {
+  await render()
+  const trigger = button('查看 AI 报告')
+  await click('查看 AI 报告')
+  await act(async () => {
+    dialog()!.dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true }))
+  })
+  expect(dialog()).toBeNull()
+  expect(document.activeElement).toBe(trigger)
+  expect(apiMock).not.toHaveBeenCalled()
+})
 it('preserves the confirmed report identity on a failed GET and explicit retry', async () => {
   apiMock.mockRejectedValueOnce(new Error('网络暂时不可用'))
   await render()
@@ -123,7 +160,8 @@ it('preserves the confirmed report identity on a failed GET and explicit retry',
   expect(apiMock).toHaveBeenCalledTimes(1)
   await click('重试读取')
   expect(apiMock.mock.calls).toEqual([
-    ['/selection-reports/report-1'], ['/selection-reports/report-1'],
+    ['/selection-reports/report-1'],
+    ['/selection-reports/report-1'],
   ])
   expect(dialog()?.querySelector('[role=alert]')).toBeNull()
   expect(dialog()?.textContent).toContain('题意摘要')
@@ -134,7 +172,10 @@ it('prevents duplicate reads while showing loading, and ignores a cancelled resp
   await render()
   await click('查看 AI 报告')
   const confirm = button('确定查看')
-  await act(async () => { confirm.click(); confirm.click() })
+  await act(async () => {
+    confirm.click()
+    confirm.click()
+  })
   expect(apiMock).toHaveBeenCalledTimes(1)
   expect(dialog()?.querySelector('[role=status]')?.textContent).toContain('正在读取已保存报告')
   await click('关闭 AI 报告')

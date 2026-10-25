@@ -1,4 +1,4 @@
-"""Selection/report transaction regressions, written but not run for this task.
+"""Local selection/report transaction regressions.
 
 Every report here is an explicit local stub; none represents live OJ/model use.
 """

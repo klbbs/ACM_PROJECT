@@ -105,7 +105,13 @@ class RemoteSubmissions:
             rows = conn.execute('SELECT * FROM wb_remote_submissions '+
                                 ('WHERE problem_id=? ' if pid else '')+
                                 'ORDER BY created_at DESC,rowid DESC LIMIT 30', (pid,) if pid else ()).fetchall()
-        return {'items': [self.public(row) for row in rows]}
+            blocking = conn.execute("""SELECT * FROM wb_remote_submissions
+                WHERE status IN ('queued','submitting','judging','uncertain')
+                AND problem_id<>? AND substr(problem_id,1,instr(problem_id,':')-1)=?
+                ORDER BY created_at DESC,rowid DESC LIMIT 30""",
+                (pid, pid.split(':', 1)[0])).fetchall() if pid else []
+        return {'items': [self.public(row) for row in rows],
+                'blocking': [self.public(row) for row in blocking]}
 
     def update(self, rid, **values):
         allowed = {'status', 'reason', 'message', 'sent_at', 'submission_id', 'official_url',

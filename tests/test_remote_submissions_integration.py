@@ -222,6 +222,27 @@ def test_uncertain_send_never_retries_when_replaying_or_refreshing(remote_site, 
         assert conn.execute('SELECT COUNT(*) FROM submissions').fetchone()[0] == 0
 
 
+def test_other_problem_unconfirmed_send_is_visible_and_never_resubmitted(remote_site):
+    request, owner, member, child, plan = remote_site
+    plan['mode'] = 'uncertain'
+    created = request(owner, 'POST', '/api/remote-submissions', payload()).json()
+    wait_intent(request, owner, created['id'], 'uncertain')
+    visible = request(owner, 'GET', '/api/remote-submissions?problem_id=codeforces:5-A')
+    assert visible.status_code == 200
+    assert visible.json()['items'] == []
+    assert [row['id'] for row in visible.json()['blocking']] == [created['id']]
+    assert visible.json()['blocking'][0]['problem_id'] == 'codeforces:4-A'
+    assert_public(visible)
+    assert request(member, 'GET', '/api/remote-submissions?problem_id=codeforces:5-A').json()['blocking'] == []
+    assert request(owner, 'GET', '/api/remote-submissions?problem_id=atcoder:abc100_a').json()['blocking'] == []
+    rejected = request(owner, 'POST', '/api/remote-submissions',
+                       {**payload('c'*32), 'problem_id': 'codeforces:5-A'})
+    assert rejected.status_code == 409
+    assert len(plan['sent']) == 1
+    with child.state.database.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM wb_remote_submissions').fetchone()[0] == 1
+
+
 @pytest.mark.parametrize('changes', [
     {'account': 'not_the_owner'}, {'problem_id': '4-B'}, {'id': '54321'},
     {'submitted_at': 1}, {'submitted_at': 0}, {'submitted_at': 10**12},

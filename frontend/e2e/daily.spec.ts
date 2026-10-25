@@ -4,9 +4,12 @@ test('daily plan locks k Roll chances, replaces only the selected problem, and c
   page,
 }) => {
   const rollRequests: unknown[] = []
+  const reportRequests: string[] = []
   page.on('request', (request) => {
     if (request.method() === 'POST' && request.url().endsWith('/api/daily/roll'))
       rollRequests.push(request.postDataJSON())
+    if (request.method() === 'GET' && request.url().includes('/api/selection-reports/'))
+      reportRequests.push(request.url())
   })
   await page.route('**/api/ai/models?provider=api', (route) =>
     route.fulfill({
@@ -39,6 +42,25 @@ test('daily plan locks k Roll chances, replaces only the selected problem, and c
   expect(rollRequests).toEqual([{ provider: 'api', model: 'fixture-daily' }])
   await expect(daily).toContainText('今日 Roll 总额度 2 次，剩余 2 次')
   const selectedTask = (await (await page.request.get('/api/daily')).json()).plan.tasks[0]
+  expect(selectedTask.ai_report_id).toMatch(/^[a-f0-9]{32}$/)
+  const reportAction = daily.locator('.daily-problem').first().getByRole('button', { name: '查看 AI 报告' })
+  await expect(reportAction).toBeEnabled()
+  await reportAction.click()
+  const reportDialog = page.getByRole('dialog')
+  await expect(reportDialog).toContainText('此报告为ai生成的代码解析报告，你确定要现在看吗？')
+  expect(reportRequests).toHaveLength(0)
+  await reportDialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(reportDialog).toHaveCount(0)
+  expect(reportRequests).toHaveLength(0)
+  const readingsBeforeView = (await (await page.request.post('/_fixture/selection-report-count')).json()).count
+  await reportAction.click()
+  await reportDialog.getByRole('button', { name: '确定查看', exact: true }).click()
+  await expect(reportDialog.locator('strong')).toContainText('合成题面阅读报告')
+  await expect(reportDialog).toContainText(selectedTask.id)
+  expect(reportRequests).toHaveLength(1)
+  expect((await (await page.request.post('/_fixture/selection-report-count')).json()).count).toBe(readingsBeforeView)
+  await reportDialog.getByRole('button', { name: '关闭 AI 报告' }).click()
+  await expect(reportDialog).toHaveCount(0)
   const original = await daily.locator('.daily-problem').first().locator('strong').innerText()
   const unchanged = await daily.locator('.daily-problem').nth(1).locator('strong').innerText()
   const rollSelected = daily

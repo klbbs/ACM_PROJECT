@@ -96,7 +96,9 @@
   max-width: 100%;
 }
 @keyframes selection-report-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 @media (max-width: 600px) {
   .selection-report-dialog {
@@ -106,5 +108,7 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .selection-report-loading svg { animation: none; }
+  .selection-report-loading svg {
+    animation: none;
+  }
 }

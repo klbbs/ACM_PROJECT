@@ -215,7 +215,7 @@ it('does not reopen another users pending problem list after leaving the leaderb
   const root = createRoot(host)
   let resolveProfile!: (value: unknown) => void
   vi.mocked(api).mockImplementation(async (path: string) => {
-    if (path.startsWith('/social/users/')) return await new Promise((resolve) => { resolveProfile = resolve }) as never
+    if (path.startsWith('/social/users/')) return await new Promise<unknown>((resolve) => { resolveProfile = resolve }) as never
     return defaults(path) as never
   })
   try {

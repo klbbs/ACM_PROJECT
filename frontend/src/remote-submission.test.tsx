@@ -425,3 +425,31 @@ it('releases an explicitly rejected create intent so login settings remain acces
     expect(window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))).toBe(true)
   })
 })
+
+it('shows the actual other-problem blocker and does not claim a rejected request was sent', async () => {
+  let rejected = false
+  const old = { ...queued, id: 'old-task', problem_id: 'codeforces:5-A', status: 'uncertain' }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?')) return { items: [], blocking: rejected ? [old] : [] }
+    if (path === '/remote-submissions/options') return compilers
+    if (path === '/remote-submissions' && method === 'POST') {
+      rejected = true
+      throw new ApiError('此平台账号已有提交正在处理或发送结果未确认', 409)
+    }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  const values = props()
+  await render(values, async (host) => {
+    await click(host, '读取平台编译器')
+    await click(host, '提交到平台')
+    expect(host.textContent).toContain('codeforces:5-A')
+    expect(host.textContent).toContain('另一道题的旧提交')
+    expect(host.textContent).not.toContain('正在确认账号')
+    expect(host.textContent).not.toContain('查询本次提交')
+    expect(host.querySelector('a[href="#settings"]')).toBeNull()
+    expect(host.querySelector('a[href="https://codeforces.com/submissions/demo"]')).not.toBeNull()
+    expect(button(host, '提交到平台').disabled).toBe(true)
+    expect(values.save).toHaveBeenCalledOnce()
+    expect(window.dispatchEvent(new Event('acm:before-navigate', { cancelable: true }))).toBe(true)
+  })
+})

@@ -193,7 +193,8 @@ class SelectionReports:
             statement, fingerprint = await self._read(pid)
             training = {key: copy.deepcopy(item[key]) for key in (
                 'reason', 'topic_id', 'topic_title', 'mode', 'mode_title', 'training_mode',
-                'stage', 'learning_level', 'difficulty', 'tags', 'template_evidence') if key in item}
+                'stage', 'learning_level', 'difficulty', 'tags', 'template_evidence',
+                'cf_rating_estimate', 'rating_request', 'learner_evidence') if key in item}
             try:
                 response = await self.ai.complete('selection_read_report', provider, model.strip(),
                     {'problem_id': pid, 'selection_context': training, 'statement': statement,

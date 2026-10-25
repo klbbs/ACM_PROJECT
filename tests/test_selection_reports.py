@@ -1,4 +1,4 @@
-"""Pending developer regressions: intentionally not executed for this change.
+"""Developer regressions for private read-before-selection reports.
 
 All fixtures are synthetic local statements and AI outputs. They do not prove
 real platform retrieval, a real model response, submission, or code execution.
@@ -244,3 +244,56 @@ def test_full_statement_is_never_silently_truncated_to_fit_context(setup, monkey
     with pytest.raises(AIError, match='超出单题阅读上限'):
         prepare(service)
     assert ai.complete.await_count == 0 and count(db) == 0
+
+
+# Exercise the real authentication/proxy stack, not only service.get isolation.
+from test_multiuser import site
+
+
+def _seed_report(service, report_id, pid=PID):
+    with service.db.connect() as conn:
+        conn.execute('INSERT INTO ai_selection_reports VALUES(?,?,?,?,?,?,?,?)',
+            (report_id, pid, int(time.time()), 'api', 'synthetic-model', 'a' * 64,
+             json.dumps(report(pid)), json.dumps({'task': 'selection_read_report'})))
+
+
+def test_actual_multiuser_report_http_auth_and_workspace_isolation(site):
+    request, admin, member, app, *_ = site
+    for who in (admin, member):
+        assert request(who, 'GET', '/api/accounts').status_code == 200
+    own_service = app.state.workspaces.apps[admin['user']['id']][0].state.selection_reports
+    other_service = app.state.workspaces.apps[member['user']['id']][0].state.selection_reports
+    own_service.ai = SimpleNamespace(complete=AsyncMock())
+    other_service.ai = SimpleNamespace(complete=AsyncMock())
+    own_id, other_id = 'a' * 32, 'b' * 32
+    _seed_report(own_service, own_id)
+    _seed_report(other_service, other_id, SECOND)
+    assert request(None, 'GET', f'/api/selection-reports/{own_id}').status_code == 401
+    assert request(member, 'GET', f'/api/selection-reports/{own_id}').status_code == 404
+    assert request(admin, 'GET', f'/api/selection-reports/{other_id}').status_code == 404
+    own = request(admin, 'GET', f'/api/selection-reports/{own_id}')
+    assert own.status_code == 200 and own.json()['problem_id'] == PID
+    assert own.json()['result']['problem_id'] == PID
+    other = request(member, 'GET', f'/api/selection-reports/{other_id}')
+    assert other.status_code == 200 and other.json()['problem_id'] == SECOND
+    assert own_service.ai.complete.await_count == other_service.ai.complete.await_count == 0
+    assert request(admin, 'GET', '/api/selection-reports/not-a-report-id').status_code == 404
+    assert request(admin, 'GET', '/api/selection-reports/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaZ').status_code == 404
+
+
+def test_actual_singleuser_report_http_requires_existing_access_token(tmp_path):
+    from fastapi.testclient import TestClient
+    from acmweb.app import create_app
+    from acmweb.settings import Settings
+    token = 'synthetic-private-access-token'
+    app = create_app(Settings(data_dir=tmp_path, enable_codex=False, access_token=token))
+    service = app.state.selection_reports
+    service.ai = SimpleNamespace(complete=AsyncMock())
+    rid = 'c' * 32
+    _seed_report(service, rid)
+    with TestClient(app) as client:
+        assert client.get(f'/api/selection-reports/{rid}').status_code == 401
+        assert client.get(f'/api/selection-reports/{rid}', headers={'Authorization': 'Bearer wrong'}).status_code == 401
+        response = client.get(f'/api/selection-reports/{rid}', headers={'Authorization': 'Bearer ' + token})
+        assert response.status_code == 200 and response.json()['id'] == rid
+        assert service.ai.complete.await_count == 0
