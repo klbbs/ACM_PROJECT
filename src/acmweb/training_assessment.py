@@ -52,7 +52,8 @@ class SpecialistChat(Strict):
 class AssessmentRequest(Strict):
     provider: Literal['api', 'codex']
     model: str = Field(min_length=1, max_length=150)
-    consent: Literal[True]
+    # A deliberate POST is the user's request; keep old clients compatible.
+    consent: Literal[True] = True
     attempt_id: str | None = Field(default=None, min_length=1, max_length=100)
     submission_id: str | None = Field(default=None, pattern=r'^[1-9]\d{0,11}$')
     handle: str | None = Field(default=None, min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_.-]+$')
@@ -61,7 +62,7 @@ class AssessmentRequest(Strict):
 class ChatRequest(Strict):
     provider: Literal['api', 'codex']
     model: str = Field(min_length=1, max_length=150)
-    consent: Literal[True]
+    consent: Literal[True] = True
     message: str = Field(min_length=1, max_length=2000)
 
 

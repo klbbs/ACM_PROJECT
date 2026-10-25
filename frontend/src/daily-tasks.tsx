@@ -45,7 +45,8 @@ export function DailyTasksPage({
     strengthen: '加强',
   }
   useEffect(() => {
-    if (selectionType !== 'specialist') return
+    if (selectionType !== 'specialist' && data?.locked_options?.selection_type !== 'specialist')
+      return
     let alive = true
     api('/training/topics')
       .then((value) => {
@@ -60,11 +61,11 @@ export function DailyTasksPage({
     return () => {
       alive = false
     }
-  }, [selectionType, topicsRevision])
+  }, [selectionType, data?.locked_options?.selection_type, topicsRevision])
   const topics = groups.flatMap((group) => group.topics || [])
   const visibleGroups = groups.filter((group) => !groupId || group.id === groupId)
   const matchesSearch = (topic: Row) =>
-    `${topic.title} ${topic.description || ''} ${Array.isArray(topic.path) ? topic.path.join(' ') : topic.path || ''} ${topic.id}`
+    `${topic.title} ${topic.description || ''} ${Array.isArray(topic.path) ? topic.path.join(' ') : topic.path || ''} ${(topic.keywords || []).join(' ')} ${topic.id}`
       .toLowerCase()
       .includes(topicSearch.toLowerCase()) || topic.id === topicId
   const validPreferences =
@@ -309,6 +310,7 @@ export function DailyTasksPage({
           <label>
             训练分类
             <select
+              aria-label="训练分类"
               value={groupId}
               disabled={busy || !formReady}
               onChange={(e) => setGroupId(e.target.value)}
@@ -324,6 +326,7 @@ export function DailyTasksPage({
           <label>
             搜索专题
             <input
+              aria-label="搜索专题"
               type="search"
               value={topicSearch}
               placeholder="输入名称或算法标签"
@@ -333,6 +336,7 @@ export function DailyTasksPage({
           <label>
             训练专题
             <select
+              aria-label="训练专题"
               value={topicId}
               disabled={busy || !formReady}
               onChange={(e) => {
@@ -345,6 +349,7 @@ export function DailyTasksPage({
                 <optgroup label={group.title} key={group.id}>
                   {(group.topics || []).filter(matchesSearch).map((topic: Row) => (
                     <option key={topic.id} value={topic.id}>
+                      {'　'.repeat(Math.min(6, topic.depth || 0))}
                       {topic.title}
                     </option>
                   ))}
@@ -363,6 +368,7 @@ export function DailyTasksPage({
           <label>
             训练难度
             <select
+              aria-label="训练难度"
               value={trainingMode}
               disabled={busy || !formReady}
               onChange={(e) => {

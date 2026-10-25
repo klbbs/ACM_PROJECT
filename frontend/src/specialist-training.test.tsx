@@ -300,8 +300,9 @@ it('searches topic names, paths and official English tags across categories whil
           {
             id: 'cf-binary-search',
             title: '二分查找',
-            description: 'binary search',
-            path: ['Codeforces', 'binary search'],
+            description: '根据官方分类练习二分',
+            path: ['算法基础', '二分'],
+            keywords: ['binary search'],
             source_url: 'https://codeforces.com/problemset?tags=binary+search',
           },
         ],

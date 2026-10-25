@@ -22,7 +22,8 @@ def test_training_routes_preserve_preferences_and_isolate_plans_and_assessments(
     prefs = request(admin, 'GET', '/api/training').json()
     assert 'minimum' in prefs and 'plans' not in prefs
     topics = request(admin, 'GET', '/api/training/topics').json()['groups']
-    assert len(topics) == 8 and sum(len(group['topics']) for group in topics) >= 20
+    assert len(topics) >= 20 and sum(len(group['topics']) for group in topics) >= 262
+    assert 'dsu' in next(t for g in topics for t in g['topics'] if t['id'] == 'luogu-47')['keywords']
     plan = {'id': 'private-plan', 'topic_id': 'dsu', 'topic_title': '并查集',
             'title': 'PRIVATE-TITLE', 'created_at': int(time.time()),
             'items': [{'position': 0, 'problem_id': 'luogu:P3367', 'completed': False}]}
@@ -53,6 +54,20 @@ def test_training_writes_require_csrf_and_reject_owner_or_source_injection(site)
     assert request(admin, 'POST', '/api/training/plans/private/items/0/assessment', {
         'provider': 'api', 'model': 'synthetic', 'consent': False,
     }).status_code == 422
+
+
+def test_explicit_assessment_and_chat_posts_do_not_require_a_checkbox_field(site):
+    request, admin, *_ = site
+    own = workspace(site, admin)
+    own.state.training_assessment.assess = AsyncMock(return_value={'assessment': {'synthetic': True}})
+    own.state.training_assessment.chat = AsyncMock(return_value={'messages': []})
+    payload = {'provider': 'api', 'model': 'synthetic'}
+    assert request(admin, 'POST', '/api/training/plans/p/items/0/assessment', payload).status_code == 200
+    assert request(admin, 'POST', '/api/training/plans/p/items/0/chat', {
+        **payload, 'message': '还有哪些边界需要考虑？',
+    }).status_code == 200
+    assert own.state.training_assessment.assess.await_count == 1
+    assert own.state.training_assessment.chat.await_count == 1
 
 
 def test_training_paid_requests_share_existing_per_user_rate_limit(site):

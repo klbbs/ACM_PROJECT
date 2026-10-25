@@ -11,6 +11,8 @@ type Topic = {
   description: string
   source_url: string
   path?: string | string[]
+  keywords?: string[]
+  depth?: number
 }
 type Mode = { id: string; title: string; description: string }
 const defaultModes: Mode[] = [
@@ -215,6 +217,7 @@ export function SpecialistTrainingPage({
           topicPath(candidate),
           candidate.group.title,
           candidate.description,
+          ...(candidate.keywords || []),
         ]
           .join(' ')
           .toLocaleLowerCase()
@@ -331,6 +334,7 @@ export function SpecialistTrainingPage({
             {visibleTopics.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {query && topicPath(candidate) ? `${topicPath(candidate)} · ` : ''}
+                {'　'.repeat(Math.min(6, candidate.depth || 0))}
                 {candidate.title}
               </option>
             ))}

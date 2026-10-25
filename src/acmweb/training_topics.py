@@ -131,7 +131,8 @@ for root_id in _CHILDREN[None]:
         topic = {'id': f'luogu-{tag_id}', 'title': path[-1],
                  'description': ' / '.join(path), 'path': path, 'depth': depth,
                  'parent_id': f"luogu-{row['parent']}" if row['parent'] is not None else None,
-                 'keywords': [path[-1]], 'source_url': _CATALOG['source_url'],
+                 'keywords': [path[-1]] + sorted(tag for tag, target in _CF_TAG_TO_LUOGU.items() if target in inherited),
+                 'source_url': _CATALOG['source_url'],
                  'source_version': _CATALOG['source_version']}
         TOPICS[topic['id']] = {**topic, 'template_ids': templates,
             'luogu_tags': inherited, 'official_exact': True,

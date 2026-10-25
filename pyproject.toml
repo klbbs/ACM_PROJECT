@@ -22,7 +22,7 @@ acm-update = "acmweb.updater:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-acmweb = ["browser_extension/*.json", "browser_extension/*.js", "browser_extension/*.html", "browser_extension/*.css", "userscripts/*.js"]
+acmweb = ["training_topic_catalog.json", "browser_extension/*.json", "browser_extension/*.js", "browser_extension/*.html", "browser_extension/*.css", "userscripts/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

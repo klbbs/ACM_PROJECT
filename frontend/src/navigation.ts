@@ -43,7 +43,7 @@ export const nav = [
     name: '训练',
     icon: Target,
     group: 'training',
-    description: '每日训练与专项训练，模板起步、逐级进阶和 AI 评估。',
+    description: '每日随机或专题选题，选择学习阶段、自定题量与 AI 评估。',
     keywords: '每日 专项 专题 模板 评估 对话 任务 推荐 题单 K签',
   },
   {

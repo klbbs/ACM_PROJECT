@@ -27,7 +27,7 @@ export function TrainingHub({ account, daily, specialist }: Props) {
           <div>
             <p className="eyebrow">KEEP LEARNING</p>
             <h2>选择训练方式</h2>
-            <p>每天保持节奏，或从一道模板题开始，逐步掌握一个专题。</p>
+            <p>每日随机练习或选择一个专题，按新学、巩固、变式与加强安排训练。</p>
           </div>
         </div>
         <div className="actions" role="tablist" aria-label="训练方式">

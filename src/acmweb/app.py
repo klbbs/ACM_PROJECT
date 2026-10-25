@@ -316,6 +316,7 @@ def create_app(settings=None):
     from .training import Training as SpecialistTraining, register as register_specialist_training
     from .training_assessment import TrainingAssessment, register as register_training_assessment
     app.state.specialist_training = SpecialistTraining(database, ai, account_config, event_log=event_log)
+    app.state.daily.specialist_training = app.state.specialist_training
     register_specialist_training(app, app.state.specialist_training)
     app.state.training_assessment = TrainingAssessment(
         database, ai, app.state.workbench, app.state.problem_submissions, app.state.specialist_training)
