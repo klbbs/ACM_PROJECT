@@ -6,8 +6,9 @@ import re
 from urllib.parse import quote, urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString
+from .statement_math import preserve_math_markup
 
-RENDER_VERSION = 4
+RENDER_VERSION = 5
 MATH = re.compile(r'\$\$\$([\s\S]*?)\$\$\$|\\\(([\s\S]*?)\\\)|\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$|(?<!\\)\$([^$\n]+?)(?<!\\)\$')
 
 
@@ -30,6 +31,7 @@ def _url(raw):
 
 def html_markdown(html):
     soup = BeautifulSoup(html, 'html.parser')
+    preserve_math_markup(soup)
 
     def text(value):
         formulas = []

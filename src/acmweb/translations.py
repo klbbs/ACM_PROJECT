@@ -22,6 +22,7 @@ from typing import Literal
 from .codex_bridge import AIError
 from .workbench import normalize, source_url
 from .statement_markdown import upgrade_statement
+from .statement_math import preserve_math_markup
 
 
 class Strict(BaseModel):
@@ -70,7 +71,7 @@ def fingerprint(statement):
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-PROTECTED = re.compile(r'```[^\n]*\n.*?```|~~~[^\n]*\n.*?~~~|\$\$\$.*?\$\$\$|\$\$.*?\$\$|\$(?:\\.|[^$\n])+\$|\\\(.*?\\\)|\\\[.*?\\\]|https?://[^\s<>]+|`[^`]*`', re.S)
+PROTECTED = re.compile(r'```[^\n]*\n.*?```|~~~[^\n]*\n.*?~~~|\$\$\$.*?\$\$\$|\$\$.*?\$\$|\$(?:\\.|[^$\n])+\$|\\\(.*?\\\)|\\\[.*?\\\]|https?://[^\s<>]+|`[^`]*`|\\(?:neq|ne)(?![a-zA-Z])|\\not\s*=|=\s*\u0338|\u0338\s*=|≠|!=', re.S)
 TOKEN = re.compile(r'ACMPROTECT_[a-f0-9]{16}_\d+_END')
 AI_BATCH_CHAR_LIMIT = 4000
 AI_BATCH_BLOCK_LIMIT = 48
@@ -110,6 +111,7 @@ class Document:
     def __init__(self, statement):
         self.original = statement
         self.soup = BeautifulSoup(statement.get('body_html', ''), 'html.parser')
+        preserve_math_markup(self.soup)
         self.blocks, self.locations, self.protected = [], [], {}
         self.prefix = uuid.uuid4().hex[:16]
         self.add(statement.get('title', ''), ('title', None))

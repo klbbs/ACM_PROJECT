@@ -58,6 +58,8 @@ def source_url(pid):
     return f'https://ac.nowcoder.com/acm/problem/{key}'
 
 def _result(pid,title,body,samples,**extra):
+    from .statement_math import preserve_math_markup
+    preserve_math_markup(body)
     if not title or not body.get_text(strip=True): raise AIError('题面为空或平台要求登录/验证，请打开原题检查访问权限')
     for tag in list(body.select('script,style,iframe,object,form,button,svg,textarea')): tag.decompose()
     images=[]

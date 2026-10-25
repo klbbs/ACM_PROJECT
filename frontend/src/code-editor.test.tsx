@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { undo, redo } from '@codemirror/commands'
+import { indentUnit, language } from '@codemirror/language'
 import { CompletionContext, completionStatus, startCompletion } from '@codemirror/autocomplete'
 import { Vim } from '@replit/codemirror-vim'
 import CodeEditor from './code-editor'
 import { EditorBoundary } from './editor-shell'
 import { localCompletion } from './editor-completions'
+import { indentTab } from './editor-indentation'
 import { codeBytes, defaultEditorSettings, type CodeEditorProps } from './editor-settings'
 import type { CodeTemplate } from './template-types'
 
@@ -250,4 +252,151 @@ it('C++20 completion includes signatures, headers and constrained function snipp
   expect(options.some((c) => c.label === 'include-concepts')).toBe(true)
   expect(options.some((c) => c.label === 'concept-function')).toBe(true)
   expect(options.find((c) => c.label === 'contains')?.detail).toContain('非类型推断')
+})
+
+const waitForLanguage = async (view: EditorView, name = 'cpp') => {
+  await act(async () => {
+    await vi.waitFor(() => expect(view.state.facet(language)?.name).toBe(name))
+  })
+}
+const press = async (view: EditorView, key: string, init: KeyboardEventInit = {}) => {
+  await act(async () => {
+    view.focus()
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }),
+    )
+  })
+}
+const setDoc = async (view: EditorView, text: string, head = text.length) => {
+  await act(async () => {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
+      selection: { anchor: Math.min(head, text.length) },
+    })
+  })
+}
+const openCompletion = async (view: EditorView) => {
+  await act(async () => {
+    view.focus()
+    expect(startCompletion(view)).toBe(true)
+    await vi.waitFor(() => expect(completionStatus(view.state)).toBe('active'))
+  })
+}
+
+describe('indentation', () => {
+  it('inherits the previous indentation and adds a level inside scopes', async () => {
+    const view = await render({ value: '' })
+    await waitForLanguage(view)
+    expect(view.state.facet(indentUnit)).toBe('    ')
+    expect(view.state.tabSize).toBe(4)
+    await setDoc(view, 'int main() {')
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('int main() {\n    ')
+    await setDoc(view, 'int main() {\n    if (x) {')
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('int main() {\n    if (x) {\n        ')
+    await setDoc(view, 'int main() {\n    int x;')
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('int main() {\n    int x;\n    ')
+  })
+
+  it('indents a split brace pair and a Python block', async () => {
+    const view = await render({ value: '' })
+    await waitForLanguage(view)
+    await setDoc(view, 'int main() {}', 12)
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('int main() {\n    \n}')
+    expect(view.state.selection.main.head).toBe(17)
+    const python = await render({ documentId: 'py', value: 'def f():', language: 'python3' })
+    await waitForLanguage(python, 'python')
+    await setDoc(python, 'def f():')
+    await press(python, 'Enter')
+    expect(python.state.doc.toString()).toBe('def f():\n    ')
+  })
+
+  it('keeps the inherited indentation when Enter closes an open completion', async () => {
+    const view = await render({ value: '' })
+    await waitForLanguage(view)
+    await setDoc(view, 'int main() {\n    int mai')
+    await openCompletion(view)
+    expect(host.querySelector('.cm-tooltip-autocomplete')).not.toBeNull()
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('int main() {\n    int mai\n    ')
+    expect(host.querySelector('.cm-tooltip-autocomplete')).toBeNull()
+  })
+
+  it('tabs to the next level, keeps mid-line text in place and shifts back', async () => {
+    const view = await render({ value: '' })
+    await waitForLanguage(view)
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('    ')
+    expect(view.state.selection.main.head).toBe(4)
+    await setDoc(view, '    int x;', 2)
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('        int x;')
+    expect(view.state.selection.main.head).toBe(8)
+    await press(view, 'Tab', { shiftKey: true })
+    expect(view.state.doc.toString()).toBe('    int x;')
+    await setDoc(view, 'int x;', 3)
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('int  x;')
+    expect(view.state.selection.main.head).toBe(4)
+    await setDoc(view, 'a\nb')
+    await act(async () => view.dispatch({ selection: { anchor: 0, head: 3 } }))
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('    a\n    b')
+    await press(view, 'Tab', { shiftKey: true })
+    expect(view.state.doc.toString()).toBe('a\nb')
+  })
+
+  it('keeps Vim normal-mode keys and indents in insert mode', async () => {
+    const view = await render({
+      value: 'int x;',
+      settings: { ...defaultEditorSettings, keymap: 'vim' },
+    })
+    await waitForLanguage(view)
+    await act(async () => {
+      await vi.waitFor(() => expect(host.textContent).toContain('NORMAL'))
+    })
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('int x;')
+    await press(view, 'Tab', { shiftKey: true })
+    expect(view.state.doc.toString()).toBe('int x;')
+    await press(view, 'i')
+    await act(async () => {
+      await vi.waitFor(() => expect(host.textContent).toContain('INSERT'))
+    })
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('    int x;')
+    expect(view.state.selection.main.head).toBe(4)
+    await setDoc(view, 'vec', 3)
+    await openCompletion(view)
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe('vector')
+  })
+
+  it('follows the configured indentation unit and tab size', () => {
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: '',
+        extensions: [indentUnit.of('  '), EditorState.tabSize.of(2)],
+      }),
+    })
+    expect(indentTab(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe('  ')
+    act(() => {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: 'ab' },
+        selection: { anchor: 1 },
+      })
+    })
+    expect(indentTab(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe('a b')
+    expect(view.state.selection.main.head).toBe(2)
+    view.destroy()
+    parent.remove()
+  })
 })

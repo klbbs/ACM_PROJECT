@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import TurndownService from 'turndown'
+import { renderedMathSource, remarkStatementRelations } from './statement-math'
 import 'katex/dist/katex.min.css'
 
 const safeUrl = (url?: string) => {
@@ -23,7 +24,9 @@ export function statementMarkdown(statement: Record<string, any>) {
       node.nodeName === 'SPAN' && (node as HTMLElement).classList.contains('tex-font-style-tt'),
     replacement: (_content, node) => {
       const value = node.textContent || ''
-      const fence = '`'.repeat(Math.max(1, ...Array.from(value.matchAll(/`+/g), (m) => m[0].length + 1)))
+      const fence = '`'.repeat(
+        Math.max(1, ...Array.from(value.matchAll(/`+/g), (m) => m[0].length + 1)),
+      )
       return value.includes('`') ? `${fence} ${value} ${fence}` : `${fence}${value}${fence}`
     },
   })
@@ -58,7 +61,7 @@ export function statementMarkdown(statement: Record<string, any>) {
     replacement: (_c, node) => {
       const rows = Array.from((node as HTMLElement).querySelectorAll('tr')).map((row) =>
         Array.from(row.querySelectorAll('td,th')).map((cell) =>
-          (cell.textContent || '').replace(/\|/g, '\\|').replace(/\n/g, ' '),
+          converter.turndown(cell.innerHTML).replace(/\|/g, '\\|').replace(/\n/g, ' '),
         ),
       )
       if (!rows.length) return ''
@@ -69,6 +72,13 @@ export function statementMarkdown(statement: Record<string, any>) {
           .join('\n') +
         '\n\n'
       )
+    },
+  })
+  converter.addRule('renderedMathSource', {
+    filter: (node) => renderedMathSource(node as Element) !== null,
+    replacement: (_content, node) => {
+      const source = renderedMathSource(node as Element)!
+      return source.block ? `\n\n$$\n${source.tex}\n$$\n\n` : `$${source.tex}$`
     },
   })
   const formulas: string[] = []
@@ -141,7 +151,7 @@ export function StatementView({ statement }: { statement: Record<string, any> })
       )}
       <div className="statement-body">
         <Markdown
-          remarkPlugins={[remarkGfm, remarkMath]}
+          remarkPlugins={[remarkGfm, remarkMath, remarkStatementRelations]}
           rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false, trust: false }]]}
           skipHtml
           components={{
