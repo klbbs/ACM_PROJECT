@@ -45,8 +45,8 @@ def prepare_duel(site, monkeypatch):
     request, admin, member, *_ = site
     claim(site, admin, 'FirstOwner'); claim(site, member, 'SecondOwner'); friends(site)
     monkeypatch.setattr('acmweb.social.official_history', lambda handle, since=None: [])
-    monkeypatch.setattr('acmweb.social.official_problemset', lambda: [{'id': 'codeforces:1000-A', 'title': 'Official test problem', 'difficulty': 1200, 'tags': ['dp'], 'url': 'https://codeforces.com/problemset/problem/1000/A'}])
-    invitation = request(admin, 'POST', '/api/social/duels', {'user_id': member['user']['id'], 'difficulty': 1200, 'duration_minutes': 60})
+    monkeypatch.setattr('acmweb.social.official_problemset', lambda: [{'id': 'codeforces:1000-A', 'title': 'Official test problem', 'difficulty': 1200, 'published_at': 1609459200, 'published_at_source': 'codeforces.contest.startTimeSeconds', 'tags': ['dp'], 'url': 'https://codeforces.com/problemset/problem/1000/A'}])
+    invitation = request(admin, 'POST', '/api/social/duels', {'user_id': member['user']['id'], 'difficulty': 1200, 'duration_minutes': 60, 'published_after': '2020-01-01'})
     assert invitation.status_code == 200, invitation.text
     did = invitation.json()['id']
     accepted = request(member, 'POST', f'/api/social/duels/{did}/action', {'action': 'accept'})
@@ -192,7 +192,7 @@ def test_duel_official_evidence_winner_daily_exclusion_and_idempotency(site, mon
     duel = prepare_duel(site, monkeypatch); did = duel['id']; start = duel['starts_at']
     for who in (admin, member):
         assert child(site, who).state.database.get('battle_problem_ids') == ['codeforces:1000-A']
-    assert request(admin, 'POST', '/api/social/duels', {'user_id': member['user']['id'], 'difficulty': 1200}).status_code == 409
+    assert request(admin, 'POST', '/api/social/duels', {'user_id': member['user']['id'], 'difficulty': 1200, 'published_after': '2020-01-01'}).status_code == 409
     assert request(admin, 'DELETE', '/api/social/accounts/codeforces/FirstOwner', {}).status_code == 409
     monkeypatch.setattr('acmweb.social.time.time', lambda: start+60)
     histories = {'FirstOwner': [official('FirstOwner', start+10)], 'SecondOwner': [official('SecondOwner', start+20, sid=456)]}
@@ -241,8 +241,8 @@ def test_duel_selection_excludes_old_attempts_and_daily_tasks_fails_closed(site,
     request, admin, member, app, *_ = site
     first = claim(site, admin, 'FirstOwner'); claim(site, member, 'SecondOwner'); friends(site)
     monkeypatch.setattr('acmweb.social.official_history', lambda handle, since=None: [official(handle, 1, 'WRONG_ANSWER')])
-    monkeypatch.setattr('acmweb.social.official_problemset', lambda: [{'id': 'codeforces:1000-A', 'difficulty': 1200}])
-    did = request(admin, 'POST', '/api/social/duels', {'user_id': member['user']['id'], 'difficulty': 1200}).json()['id']
+    monkeypatch.setattr('acmweb.social.official_problemset', lambda: [{'id': 'codeforces:1000-A', 'difficulty': 1200, 'published_at': 1609459200, 'published_at_source': 'codeforces.contest.startTimeSeconds'}])
+    did = request(admin, 'POST', '/api/social/duels', {'user_id': member['user']['id'], 'difficulty': 1200, 'published_after': '2020-01-01'}).json()['id']
     assert request(member, 'POST', f'/api/social/duels/{did}/action', {'action': 'accept'}).status_code == 409
     assert request(admin, 'GET', '/api/social/duels').json()['items'][0]['status'] == 'pending'
     monkeypatch.setattr('acmweb.social.official_history', lambda handle, since=None: [])

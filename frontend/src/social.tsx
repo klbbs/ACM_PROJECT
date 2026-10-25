@@ -45,6 +45,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
   const [opponent, setOpponent] = useState('')
   const [difficulty, setDifficulty] = useState(1200)
   const [minutes, setMinutes] = useState(60)
+  const [publishedAfter, setPublishedAfter] = useState('')
   const mounted = useRef(true)
   const profileInitialized = useRef(false)
   const boardRequest = useRef(0)
@@ -314,7 +315,11 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                     type="date"
                     max={today()}
                     value={day}
-                    onChange={(e) => { profileRequest.current += 1; setProfile(null); setDay(e.target.value || today()) }}
+                    onChange={(e) => {
+                      profileRequest.current += 1
+                      setProfile(null)
+                      setDay(e.target.value || today())
+                    }}
                   />
                 </label>
               </div>
@@ -358,7 +363,8 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                 <p>还没有用户开启公开榜单。成为第一位分享进步的人吧。</p>
               )}
               <p className="help">
-                每日任务以外的题目同样计入，按官方提交时间统计；今天同步的历史 AC 不会计入今天。同步题库也会获取已配置账号的今日提交；更新做题数量还可点击“同步我的提交记录”，或在工作台同步本题提交。点击“查看当日题目”查看其他用户完成的题目、链接、分数和标签。
+                每日任务以外的题目同样计入，按官方提交时间统计；今天同步的历史 AC
+                不会计入今天。同步题库也会获取已配置账号的今日提交；更新做题数量还可点击“同步我的提交记录”，或在工作台同步本题提交。点击“查看当日题目”查看其他用户完成的题目、链接、分数和标签。
                 分数与标签保留原平台口径；没有提供的数据会标为“未标定”。
               </p>
             </section>
@@ -484,7 +490,8 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
               <section className="card">
                 <h2>用于榜单与对战的平台身份</h2>
                 <p>
-                  在“连接与设置”完成扫码或 Cookie 绑定并通过“检测登录状态”后，平台身份会自动关联榜单与对战。
+                  在“连接与设置”完成扫码或 Cookie
+                  绑定并通过“检测登录状态”后，平台身份会自动关联榜单与对战。
                   每个平台账号仅能关联一个站内用户；主动解除后可在这里重新认领。修改凭据后需重新检测，实际登录状态以设置页检测为准。
                 </p>
                 <div className="social-user-list">
@@ -535,8 +542,9 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
               <section className="card">
                 <h2>向好友发起一场挑战</h2>
                 <p>
-                  双方同意精确 CF 难度和时长；接受后从官方题库随机抽取双方从未尝试的题目。按官方 AC
-                  提交时间竞速，同秒 AC 为平局。结束前保留至少 30 秒判题确认时间。
+                  双方同意精确 CF
+                  难度、题目最早发布日期和时长；接受后从官方题库随机抽取双方从未尝试的题目。按官方
+                  AC 提交时间竞速，同秒 AC 为平局。结束前保留至少 30 秒判题确认时间。
                 </p>
                 <form
                   className="actions"
@@ -548,6 +556,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                           user_id: opponent,
                           difficulty,
                           duration_minutes: minutes,
+                          published_after: publishedAfter,
                         }),
                       '邀请已发送，对方接受后才会抽题并开始',
                     )
@@ -583,6 +592,19 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                     />
                   </label>
                   <label>
+                    题目最早发布日期（含当天，北京时间）
+                    <input
+                      aria-label="对战题目最早发布日期"
+                      type="date"
+                      min="2000-01-01"
+                      max={today()}
+                      value={publishedAfter}
+                      required
+                      disabled={busy}
+                      onChange={(e) => setPublishedAfter(e.target.value)}
+                    />
+                  </label>
+                  <label>
                     对战时长（分钟）
                     <input
                       type="number"
@@ -592,7 +614,11 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                       onChange={(e) => setMinutes(Number(e.target.value))}
                     />
                   </label>
-                  <button disabled={busy || !opponent}>发出邀请</button>
+                  <button
+                    disabled={busy || !opponent || !publishedAfter || publishedAfter > today()}
+                  >
+                    发出邀请
+                  </button>
                 </form>
                 <p className="help">
                   对战 AC 计入每日榜单与普通签到，不抵扣每日任务，不升级 K 签。邀请 24
@@ -610,6 +636,10 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                     </div>
                     <p>
                       CF {d.difficulty} · {d.duration_minutes} 分钟
+                      {' · '}
+                      {d.published_after
+                        ? `${d.published_after} 起（北京时间，含当天）`
+                        : '旧邀请未约定日期，请重新邀请'}
                       {d.starts_at ? ` · 开始 ${date(d.starts_at)} · 截止 ${date(d.ends_at)}` : ''}
                     </p>
                     {d.problem && (
@@ -631,7 +661,12 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                       <div className="actions">
                         {!d.self_is_sender && (
                           <button
-                            disabled={busy}
+                            disabled={busy || !d.published_after}
+                            title={
+                              !d.published_after
+                                ? '旧邀请未约定题目日期，请对方撤回并重新邀请'
+                                : undefined
+                            }
                             onClick={() =>
                               act(
                                 () =>
@@ -707,7 +742,13 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
         <section className="card social-profile-detail" aria-label="用户主页" tabIndex={-1}>
           <div className="section-head">
             <h2>{profile.profile.display_name} 的主页</h2>
-            <button className="secondary" onClick={() => { profileRequest.current += 1; setProfile(null) }}>
+            <button
+              className="secondary"
+              onClick={() => {
+                profileRequest.current += 1
+                setProfile(null)
+              }}
+            >
               关闭主页
             </button>
           </div>

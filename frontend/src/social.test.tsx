@@ -29,6 +29,46 @@ function button(host: HTMLElement, text: string) {
   return [...host.querySelectorAll('button')].find((b) => b.textContent === text)!
 }
 
+it('requires an explicit publication floor in a duel invitation and sends it unchanged', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  vi.mocked(api).mockImplementation(async (path: string, method?: string) => {
+    if (path === '/social/friends')
+      return { items: [{ id: 'other', display_name: '伙伴', relationship: 'friend' }] } as never
+    if (path === '/social/duels' && method === 'POST') return {} as never
+    return defaults(path) as never
+  })
+  try {
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} />))
+    await act(async () => button(host, '好友对战').click())
+    const select = host.querySelector<HTMLSelectElement>('[aria-label="对战好友"]')!
+    await act(async () => {
+      select.value = 'other'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(button(host, '发出邀请').disabled).toBe(true)
+    const input = host.querySelector<HTMLInputElement>('[aria-label="对战题目最早发布日期"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        '2024-01-01',
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(button(host, '发出邀请').disabled).toBe(false)
+    await act(async () => button(host, '发出邀请').click())
+    expect(api).toHaveBeenCalledWith(
+      '/social/duels',
+      'POST',
+      expect.objectContaining({ published_after: '2024-01-01', difficulty: 1200 }),
+    )
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
 it('shows opt-in onboarding and opens a public solved problem in the workbench without exposing markup', async () => {
   const host = document.createElement('div')
   document.body.append(host)
@@ -94,6 +134,7 @@ it('recipient explicitly accepts agreed difficulty and duration; opening a duel 
     status: 'pending',
     difficulty: 1200,
     duration_minutes: 60,
+    published_after: '2020-01-01',
   }
   vi.mocked(api).mockImplementation(async (path: string) => {
     if (path === '/social/duels/duel/action') {
@@ -215,14 +256,24 @@ it('does not reopen another users pending problem list after leaving the leaderb
   const root = createRoot(host)
   let resolveProfile!: (value: unknown) => void
   vi.mocked(api).mockImplementation(async (path: string) => {
-    if (path.startsWith('/social/users/')) return await new Promise((resolve) => { resolveProfile = resolve }) as never
+    if (path.startsWith('/social/users/'))
+      return (await new Promise<unknown>((resolve) => {
+        resolveProfile = resolve
+      })) as never
     return defaults(path) as never
   })
   try {
     await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} />))
     await act(async () => button(host, '查看当日题目').click())
     await act(async () => button(host, '找朋友').click())
-    await act(async () => resolveProfile({ profile: { id: 'other', display_name: '伙伴' }, relationship: 'none', day: '2026-10-25', items: [] }))
+    await act(async () =>
+      resolveProfile({
+        profile: { id: 'other', display_name: '伙伴' },
+        relationship: 'none',
+        day: '2026-10-25',
+        items: [],
+      }),
+    )
     expect(host.querySelector('[aria-label="用户主页"]')).toBeNull()
   } finally {
     await act(async () => root.unmount())
