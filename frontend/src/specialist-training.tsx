@@ -1,7 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useId, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { BookOpen, Check, ChevronDown, ExternalLink, RefreshCw, Send, Sparkles } from 'lucide-react'
+import {
+  BookOpen,
+  Check,
+  ChevronDown,
+  ExternalLink,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react'
 import { api, names } from './api'
 import './specialist-training.css'
 
@@ -154,6 +163,9 @@ export function SpecialistTrainingPage({
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [failed, setFailed] = useState<'load' | 'generate' | ''>('')
+  const disclosureId = useId()
+  const stateId = useId()
   const generation = useRef(0)
   const writing = useRef(false)
   const alive = useRef(true)
@@ -188,9 +200,11 @@ export function SpecialistTrainingPage({
         saved.plans.some((plan) => plan.id === old) ? old : saved.plans[0]?.id || '',
       )
       setError('')
+      setFailed('')
     } catch (caught) {
       if (alive.current && token === generation.current) {
         setError(message(caught))
+        setFailed('load')
         onError(message(caught))
       }
     } finally {
@@ -241,6 +255,7 @@ export function SpecialistTrainingPage({
     const token = ++generation.current
     setBusy(true)
     setError('')
+    setFailed('')
     setLoading(false)
     try {
       const generated = await api<Plan>('/training/plans', 'POST', {
@@ -262,6 +277,7 @@ export function SpecialistTrainingPage({
     } catch (caught) {
       if (alive.current && token === generation.current) {
         setError(message(caught))
+        setFailed('generate')
         onError(message(caught))
       }
     } finally {
@@ -270,6 +286,24 @@ export function SpecialistTrainingPage({
     }
   }
   const modelReason = !model || !aiReady ? '请先在连接与设置中配置 AI，并选择可用模型' : ''
+  const countReason = countValid ? '' : `题目数量需为 1–${maxCount} 的整数`
+  const topicTitle = topic?.title || '专项训练'
+  const generateReason = loading
+    ? '正在读取训练专题与已保存题单，读取完成后才能生成。'
+    : busy
+      ? '正在生成题单，请等待本次生成结束；重复点击不会再次请求。'
+      : failed === 'load' && !groups.length
+        ? '训练专题读取失败，请点击“刷新训练”后重试。'
+        : !topicId
+          ? '请先选择训练专题，生成按钮才可用。'
+          : modelReason || countReason
+  const generateLabel = busy
+    ? 'AI 正在安排训练路线…'
+    : loading
+      ? '正在读取训练专题…'
+      : countValid
+        ? `AI 生成「${topicTitle}」${amount} 道题单`
+        : `AI 生成「${topicTitle}」题单`
   return (
     <section className="card specialist-training">
       <div className="card-heading">
@@ -385,25 +419,38 @@ export function SpecialistTrainingPage({
           </SafeLink>
         </p>
       )}
-      {aiPicker}
-      <p className="help specialist-ai-note">
-        点击生成会将训练偏好和候选题资料发送至当前 AI，可能产生模型费用。
+      <p className="help specialist-scope">
+        <ShieldCheck size={14} />
+        选题范围：从你已验证登录的所有平台中一起筛选。请先在“连接与设置”保存账号并检测登录状态，生成时会检查平台连接。
       </p>
-      <div className="specialist-actions">
+      <p className="help">CF 难度偏好仅用于 Codeforces；其他平台保留自己的难度标准。</p>
+      <div className="ai-controls specialist-generate">
+        {aiPicker}
         <button
-          className="button"
-          disabled={busy || loading || !topicId || !!modelReason || !countValid}
-          title={modelReason || (!countValid ? `题目数量需为 1–${maxCount} 的整数` : '')}
+          className="button primary specialist-generate-action"
+          aria-busy={busy}
+          aria-describedby={`${stateId} ${disclosureId}`}
+          disabled={!!generateReason}
           onClick={() => void generate()}
         >
-          <Sparkles size={17} />
-          {busy ? 'AI 正在安排训练路线…' : 'AI 生成专项题单'}
+          <Sparkles size={16} />
+          {generateLabel}
         </button>
-        {modelReason && <span className="help">{modelReason}</span>}
       </div>
+      <p className="help specialist-generate-state" id={stateId} role="status">
+        {generateReason ||
+          `按「${modeTitle(mode)}」生成${countValid ? ` ${amount} 道` : ''}题；生成时检查平台连接并筛选符合条件的候选题。`}
+      </p>
+      <p className="help specialist-ai-note" id={disclosureId}>
+        点击生成会将训练偏好、专题及公开候选题信息发送给所选
+        AI，可能产生模型费用。选题失败时保留已有题单。
+      </p>
       {error && (
         <div role="alert" className="help specialist-error">
-          {error}。已有题单保留，可刷新或重试。
+          {error}。
+          {failed === 'generate'
+            ? '本次没有保存新题单，已有题单保留；调整选项后可再次点击生成，失败请求不会自动重试。'
+            : '已显示的题单保留；可点击“刷新训练”重试读取，读取不会消耗 AI 额度。'}
         </div>
       )}
       {loading && <p role="status">正在恢复已保存的专项训练…</p>}

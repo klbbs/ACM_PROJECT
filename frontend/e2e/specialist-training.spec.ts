@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 
 // All specialist plans, official-source evidence and AI answers below are synthetic
 // browser fixtures. These checks do not establish real OJ submission or AI success.
@@ -217,6 +217,7 @@ async function chooseModel(page: Page) {
   await panel.getByRole('button', { name: '读取可用模型', exact: true }).click()
   await panel.getByLabel('选择模型', { exact: true }).selectOption('synthetic-coach')
 }
+const generateAction = (panel: Locator) => panel.locator('.specialist-generate-action')
 
 test.beforeEach(async ({ page }) => {
   expect((await page.request.post('/_fixture/reset-workbench')).ok()).toBe(true)
@@ -238,12 +239,26 @@ test('training hub generates an explicit progressive plan, opens its first probl
   await panel.getByLabel('专题分类', { exact: true }).selectOption('graph')
   await panel.getByLabel('训练专题', { exact: true }).selectOption('shortest-path')
   await panel.getByLabel('专项题量', { exact: true }).fill('12')
-  await chooseModel(page)
   await expect(panel.getByRole('checkbox')).toHaveCount(0)
+  await expect(panel.locator('.specialist-scope')).toContainText('你已验证登录的所有平台')
+  await expect(panel.locator('.specialist-scope')).toContainText('检测登录状态')
+  await expect(generateAction(panel)).toBeDisabled()
+  await expect(panel.locator('.specialist-generate-state')).toContainText(
+    '请先在连接与设置中配置 AI',
+  )
+  await chooseModel(page)
   await expect(panel.getByRole('radio')).toHaveCount(4)
   await panel.getByRole('radio', { name: /巩固/ }).check()
   await panel.getByRole('radio', { name: /新学/ }).check()
-  await panel.getByRole('button', { name: 'AI 生成专项题单', exact: true }).click()
+  await expect(panel.locator('button.primary')).toHaveCount(1)
+  await expect(generateAction(panel)).toHaveClass(/button primary/)
+  await expect(generateAction(panel)).toBeEnabled()
+  await expect(generateAction(panel)).toHaveText('AI 生成「最短路」12 道题单')
+  await expect(panel.locator('.specialist-generate-state')).toContainText('按「新学」生成 12 道题')
+  expect(
+    ((await generateAction(panel).getAttribute('aria-describedby')) || '').split(' '),
+  ).toHaveLength(2)
+  await generateAction(panel).click()
   await expect(panel.getByRole('heading', { name: savedPlan.title, exact: true })).toBeVisible()
   expect(state.generation).toEqual([
     {
@@ -335,9 +350,19 @@ test('failed generation retains saved training and late item results cannot leak
   await openTraining(page)
   await chooseModel(page)
   const panel = page.locator('.specialist-training')
+  const action = generateAction(panel)
+  await expect(action).toBeVisible()
+  expect(
+    await action.evaluate(
+      (element) =>
+        Math.round(element.getBoundingClientRect().width) ===
+        Math.round((element.parentElement as HTMLElement).getBoundingClientRect().width),
+    ),
+  ).toBe(true)
   state.failGeneration = true
-  await panel.getByRole('button', { name: 'AI 生成专项题单', exact: true }).click()
+  await action.click()
   await expect(panel.getByRole('alert')).toContainText('隔离模拟 AI 无法生成有效递进题单')
+  await expect(panel.getByRole('alert')).toContainText('失败请求不会自动重试')
   await expect(panel.getByRole('heading', { name: savedPlan.title, exact: true })).toBeVisible()
   const first = panel.locator('.specialist-step').nth(0),
     second = panel.locator('.specialist-step').nth(1)
