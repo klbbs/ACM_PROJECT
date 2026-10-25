@@ -75,6 +75,28 @@
 .specialist-ai-note {
   margin: 1rem 0;
 }
+/* Generation is the panel's main action, matching daily training's primary call to action. */
+.specialist-scope {
+  margin: 1rem 0 0;
+  align-items: flex-start;
+}
+.specialist-scope svg {
+  margin-top: 0.2rem;
+}
+.specialist-generate {
+  margin-top: 1rem;
+}
+.specialist-generate .specialist-generate-action {
+  flex: 1 1 240px;
+  justify-content: center;
+  min-height: 2.9rem;
+  white-space: normal;
+  text-align: center;
+}
+.specialist-training .specialist-generate-state {
+  margin-top: 0.6rem;
+  align-items: flex-start;
+}
 .specialist-actions {
   display: flex;
   align-items: center;
@@ -243,6 +265,14 @@
   }
   .specialist-setup {
     grid-template-columns: 1fr;
+  }
+  .specialist-generate {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .specialist-generate .specialist-generate-action {
+    width: 100%;
+    flex: 1 1 auto;
   }
   .specialist-step {
     gap: 0.55rem;

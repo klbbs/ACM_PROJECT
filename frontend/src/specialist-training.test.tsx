@@ -85,6 +85,13 @@ const review = (extra = {}) => ({
 })
 const button = (text: string) =>
   Array.from(host.querySelectorAll('button')).find((value) => value.textContent?.includes(text))!
+const generateAction = () => host.querySelector('.specialist-generate-action') as HTMLButtonElement
+const generateState = () => host.querySelector('.specialist-generate-state') as HTMLParagraphElement
+const describedText = (element: Element) =>
+  (element.getAttribute('aria-describedby') || '')
+    .split(' ')
+    .filter(Boolean)
+    .map((id) => host.querySelector(`#${id}`)?.textContent?.trim() || '')
 const tick = async () =>
   act(async () => {
     await Promise.resolve()
@@ -96,6 +103,10 @@ const render = async (extra = {}) =>
 const click = async (text: string) =>
   act(async () => {
     button(text).click()
+  })
+const clickGenerate = async () =>
+  act(async () => {
+    generateAction().click()
   })
 function deferred() {
   let resolve!: (value: any) => void
@@ -136,13 +147,14 @@ it('restores saved progression and opens the canonical problem in the workbench 
 })
 it('requires a configured model, then preserves old plans on failed generation', async () => {
   await render({ model: '' })
-  expect(button('生成专项题单').disabled).toBe(true)
+  expect(generateAction().disabled).toBe(true)
   await render()
-  expect(button('生成专项题单').disabled).toBe(false)
+  expect(generateAction().disabled).toBe(false)
   apiMock.mockRejectedValueOnce(new Error('模型输出不符合递进约束'))
-  await click('生成专项题单')
+  await clickGenerate()
   expect(host.textContent).toContain('最短路进阶路线')
   expect(host.querySelector('[role=alert]')?.textContent).toContain('已有题单保留')
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('失败请求不会自动重试')
   expect(apiMock).toHaveBeenLastCalledWith('/training/plans', 'POST', {
     topic_id: 'shortest',
     count: 4,
@@ -251,9 +263,13 @@ it('shows initial loading errors and retries recovering saved plans without anot
   apiMock.mockRejectedValueOnce(new Error('暂时无法读取'))
   await render()
   expect(host.querySelector('[role=alert]')?.textContent).toContain('暂时无法读取')
+  expect(generateAction().disabled).toBe(true)
+  expect(generateState().textContent).toContain('训练专题读取失败')
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('刷新训练')
   await click('刷新训练')
   await tick()
   expect(host.textContent).toContain('最短路进阶路线')
+  expect(host.querySelector('[role=alert]')).toBeNull()
   expect(apiMock.mock.calls.every((call) => !call[1])).toBe(true)
 })
 
@@ -275,7 +291,7 @@ it('offers four learning stages and a free quantity, without static consent chec
   await act(async () => (host.querySelector('input[value=variation]') as HTMLInputElement).click())
   await change('input[aria-label="专项题量"]', '12')
   apiMock.mockResolvedValueOnce({ ...plan, mode: 'variation', mode_title: '变式' })
-  await click('生成专项题单')
+  await clickGenerate()
   expect(apiMock).toHaveBeenLastCalledWith('/training/plans', 'POST', {
     topic_id: 'shortest',
     count: 12,
@@ -285,9 +301,9 @@ it('offers four learning stages and a free quantity, without static consent chec
   })
   expect(host.querySelector('.specialist-route-title')?.textContent).toContain('变式')
   await change('input[aria-label="专项题量"]', '')
-  expect(button('生成专项题单').disabled).toBe(true)
+  expect(generateAction().disabled).toBe(true)
   await change('input[aria-label="专项题量"]', '51')
-  expect(button('生成专项题单').disabled).toBe(true)
+  expect(generateAction().disabled).toBe(true)
 })
 it('searches topic names, paths and official English tags across categories while preserving selection', async () => {
   apiMock.mockResolvedValueOnce({
@@ -345,4 +361,72 @@ it('restores old plans as learn but displays true non-template stages in other m
   expect(host.querySelector('.specialist-route-title')?.textContent).toContain('加强')
   expect(host.querySelector('.specialist-step')?.textContent).toContain('加强练习')
   expect(host.querySelector('.specialist-step')?.textContent).not.toContain('模板入门')
+})
+it('presents generation as the panel primary action with topic, count and linked explanations', async () => {
+  await render()
+  const action = generateAction()
+  expect(action.className).toContain('primary')
+  expect(action.className).toContain('specialist-generate-action')
+  expect(host.querySelector('.ai-controls.specialist-generate')?.contains(action)).toBe(true)
+  expect(action.textContent).toContain('AI 生成「最短路」4 道题单')
+  expect(action.getAttribute('aria-busy')).toBe('false')
+  const described = (action.getAttribute('aria-describedby') || '').split(' ').filter(Boolean)
+  expect(described).toHaveLength(2)
+  described.forEach((id) => expect(host.querySelector(`#${id}`)?.textContent).toBeTruthy())
+  expect(describedText(action)[0]).toBe(
+    '按「新学」生成 4 道题；生成时检查平台连接并筛选符合条件的候选题。',
+  )
+  expect(describedText(action)[1]).toContain('可能产生模型费用')
+})
+it('explains the current-account all-verified-platform scope without a platform switch or consent checkbox', async () => {
+  await render()
+  const scope = host.querySelector('.specialist-scope')?.textContent || ''
+  expect(scope).toContain('你已验证登录的所有平台')
+  expect(scope).toContain('检测登录状态')
+  expect(scope).toContain('生成时会检查平台连接')
+  expect(host.querySelectorAll('input[type=checkbox]')).toHaveLength(0)
+  expect(host.querySelector('select[aria-label*="平台"]')).toBeNull()
+  apiMock.mockResolvedValueOnce({ ...plan, id: 'p3' })
+  await clickGenerate()
+  expect(apiMock).toHaveBeenLastCalledWith('/training/plans', 'POST', {
+    topic_id: 'shortest',
+    count: 4,
+    mode: 'learn',
+    provider: 'api',
+    model: 'fixture',
+  })
+})
+it('states loading, generating, missing-model, ai-unready and invalid-count reasons in visible text', async () => {
+  const catalog = deferred()
+  apiMock.mockImplementationOnce(() => catalog.promise)
+  await render()
+  expect(generateAction().disabled).toBe(true)
+  expect(generateAction().textContent).toContain('正在读取训练专题…')
+  expect(generateState().textContent).toContain('正在读取训练专题与已保存题单')
+  await act(async () => catalog.resolve(topics))
+  await tick()
+  expect(generateAction().disabled).toBe(false)
+  await change('input[aria-label="专项题量"]', '0')
+  expect(generateAction().disabled).toBe(true)
+  expect(generateState().textContent).toContain('题目数量需为 1–50 的整数')
+  await change('input[aria-label="专项题量"]', '4')
+  const generating = deferred()
+  apiMock.mockReturnValueOnce(generating.promise)
+  await act(async () => {
+    generateAction().click()
+    generateAction().click()
+  })
+  expect(generateAction().getAttribute('aria-busy')).toBe('true')
+  expect(generateAction().textContent).toContain('AI 正在安排训练路线…')
+  expect(generateState().textContent).toContain('正在生成题单，请等待本次生成结束')
+  expect(generateAction().disabled).toBe(true)
+  expect(apiMock.mock.calls.filter((call) => call[1] === 'POST')).toHaveLength(1)
+  await act(async () => generating.resolve({ ...plan, id: 'p2', title: '新的专项路线' }))
+  await tick()
+  expect(generateAction().getAttribute('aria-busy')).toBe('false')
+  expect(generateAction().disabled).toBe(false)
+  expect(host.textContent).toContain('新的专项路线')
+  await render({ model: '', aiReady: false })
+  expect(generateAction().disabled).toBe(true)
+  expect(generateState().textContent).toContain('请先在连接与设置中配置 AI')
 })
