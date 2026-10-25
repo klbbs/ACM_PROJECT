@@ -53,6 +53,7 @@ import { SettingsSection, revealSettingsSection } from './settings-section'
 import { RetainedPage, usePageMotion } from './page-motion'
 import { useSettingsDraft } from './settings-draft'
 import { useRecommendationReport } from './recommendation-report'
+import { version as appVersion } from '../package.json'
 import { TrainingHub } from './training-hub'
 import { SpecialistTrainingPage } from './specialist-training'
 
@@ -1176,7 +1177,7 @@ function App() {
               ACM Lab <i>/</i> 为持续进步而构建
             </span>
             <span>
-              数据有边界，进步有方向。 <span className="version">v0.19.1</span>
+              数据有边界，进步有方向。 <span className="version">v{appVersion}</span>
             </span>
           </footer>
         </div>
