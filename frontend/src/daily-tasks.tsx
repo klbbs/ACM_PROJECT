@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { RefreshCw, Sparkles, ExternalLink, Code2 } from 'lucide-react'
+import { SelectionReportButton } from './selection-report'
 
 type Row = Record<string, any>
 type Props = {
@@ -534,6 +535,12 @@ export function DailyTasksPage({
                 打开原题
                 <ExternalLink size={14} />
               </a>
+              <SelectionReportButton
+                key={`${task.id}:${task.ai_report_id || 'legacy'}`}
+                reportId={task.ai_report_id}
+                problemId={task.id}
+                title={task.title}
+              />
               <div>
                 <button
                   className="button primary"
