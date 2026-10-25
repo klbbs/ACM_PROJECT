@@ -9,6 +9,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from selection_report_fixtures import with_selection_reports
+
 from acmweb.ai import AIResult
 from acmweb.codex_bridge import AIError
 from acmweb.database import Database
@@ -22,7 +24,7 @@ def training(tmp_path):
     accounts = SimpleNamespace(credential_checks=SimpleNamespace(statuses=lambda: {'items': [
         {'platform': 'luogu', 'status': 'authenticated', 'login_verified': True}]}))
     ai = AsyncMock()
-    service = Training(db, ai, accounts)
+    service = with_selection_reports(Training(db, ai, accounts))
     rows = [('luogu', 'luogu:P3367', json.dumps({'id': 'luogu:P3367', 'title': '【模板】并查集',
         'platform': 'luogu', 'problem_id': 'P3367', 'url': 'https://www.luogu.com.cn/problem/P3367',
         'tags': [], 'native_difficulty': 2}))]
@@ -71,7 +73,7 @@ def test_generate_exact_progressive_persisted_plan_and_no_daily_rows(training):
     assert plan['items'][0]['problem_id'] == 'luogu:P3367'
     assert all(not p['completed'] for p in plan['items'])
     assert training.get_plan(plan['id']) == plan
-    restored = Training(training.db, training.ai, training.accounts)
+    restored = with_selection_reports(Training(training.db, training.ai, training.accounts))
     assert restored.plans()['plans'] == [plan]
     with training.db.connect() as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='daily_plan_tasks'").fetchone()
@@ -80,7 +82,7 @@ def test_generate_exact_progressive_persisted_plan_and_no_daily_rows(training):
 def test_multiple_plans_persist_and_user_database_isolation(training, tmp_path):
     first, second = generate(training), generate(training)
     assert first['id'] != second['id'] and len(training.plans()['plans']) == 2
-    other = Training(Database(tmp_path / 'other.sqlite3'), training.ai, training.accounts)
+    other = with_selection_reports(Training(Database(tmp_path / 'other.sqlite3'), training.ai, training.accounts))
     assert other.plans() == {'plans': []}
     with pytest.raises(HTTPException) as error:
         other.get_plan(first['id'])
