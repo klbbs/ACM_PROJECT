@@ -73,6 +73,10 @@ class ProviderConfig(BaseModel):
     base_url: str = Field(default="https://api.openai.com/v1",max_length=2048)
     protocol: Literal["responses","chat","anthropic"] = "responses"
     model: str = Field(default="",max_length=150)
+    # The single active configuration every feature uses. It is chosen once in
+    # settings, so no feature screen may override the channel or the model.
+    channel: Literal['api','codex'] = 'api'
+    codex_model: str = Field(default="",max_length=150)
     vendor: Literal['custom','openai','deepseek','anthropic','gemini','qwen','qwen_global','moonshot','siliconflow','glm'] = 'custom'
     output_mode: Literal['auto','schema','json','prompt'] = 'auto'
     thinking: Literal['auto','enabled','disabled'] = 'auto'
@@ -124,9 +128,31 @@ class AIProvider:
     def presets(self):
         return {'items':[{**p,'allowed':not self.settings.isolated or urlsplit(p['base_url']).hostname in self.settings.ai_allowed_hosts} for p in PRESETS]}
 
+    def active_model(self, config=None):
+        """The saved model for the active channel; features never pick one."""
+        config = config or self.config()
+        field = 'codex_model' if config.get('channel') == 'codex' else 'model'
+        return str(config.get(field) or '').strip()
+
+    def selection(self, config=None):
+        """Resolve the one AI configuration chosen in settings for every feature."""
+        config = config or self.config()
+        channel = 'codex' if config.get('channel') == 'codex' else 'api'
+        model = self.active_model(config)
+        codex_enabled = bool(self.settings.enable_codex)
+        has_key = bool(self.key(config))
+        return {'channel': channel, 'model': model,
+                'api_model': str(config.get('model') or '').strip(),
+                'codex_model': str(config.get('codex_model') or '').strip(),
+                'has_key': has_key, 'codex_enabled': codex_enabled,
+                'ready': bool(model) and (codex_enabled if channel == 'codex' else has_key)}
+
     def public_config(self):
-        return {**self.config(),"has_key":bool(self.key()),"codex_enabled":self.settings.enable_codex,
-                "codex_device_only":self.settings.production or self.settings.isolated}
+        config = self.config()
+        state = self.selection(config)
+        return {**config, 'has_key': state['has_key'], 'codex_enabled': state['codex_enabled'],
+                'codex_device_only': self.settings.production or self.settings.isolated,
+                'active_model': state['model'], 'ready': state['ready']}
 
     @staticmethod
     def validate_url(url):
@@ -157,6 +183,8 @@ class AIProvider:
             raise AIError('当前提供方/协议尚未适配推理强度，请选择 auto')
         if data['protocol']=='anthropic' and data['output_mode']=='json':
             raise AIError('Claude 原生接口请选择提示约束或 JSON Schema 模式')
+        if data['channel']=='codex' and not self.settings.enable_codex:
+            raise AIError('官方 Codex 通道未启用，请在设置中改用 API 通道')
         previous = ProviderConfig.model_validate(self.db.get('ai',{})).model_dump(exclude={'api_key'})
         saved = json.loads(self.secret_file.read_text()) if self.secret_file.exists() else {}
         if 'api_key' in saved:
