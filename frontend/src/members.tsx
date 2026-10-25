@@ -6,8 +6,9 @@ type Row = Record<string, any>
 
 export function UserLogin({ status }: { status: Row }) {
   const [mode, setMode] = useState(status.setup_required ? 'setup' : 'login')
-  const [username, setUsername] = useState(status.setup_required ? 'kendas' : ''),
+  const [username, setUsername] = useState(''),
     [password, setPassword] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [code, setCode] = useState(''),
     [confirm, setConfirm] = useState('')
   const [error, setError] = useState(''),
@@ -28,7 +29,7 @@ export function UserLogin({ status }: { status: Row }) {
               username,
               password,
               ...(mode === 'setup'
-                ? { setup_token: code }
+                ? { setup_token: code, display_name: displayName.trim() }
                 : mode === 'register'
                   ? { invitation: code }
                   : {}),
@@ -55,7 +56,6 @@ export function UserLogin({ status }: { status: Row }) {
           用户名
           <input
             value={username}
-            readOnly={mode === 'setup'}
             autoComplete="username"
             minLength={3}
             maxLength={32}
@@ -65,6 +65,18 @@ export function UserLogin({ status }: { status: Row }) {
             placeholder="3–32 位字母、数字或下划线"
           />
         </label>
+        {mode === 'setup' && (
+          <label>
+            管理员昵称（可选）
+            <input
+              value={displayName}
+              maxLength={40}
+              autoComplete="nickname"
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="站内显示的名字，可用中文；留空时使用用户名"
+            />
+          </label>
+        )}
         <label>
           密码
           <input
@@ -104,7 +116,7 @@ export function UserLogin({ status }: { status: Row }) {
         {mode === 'setup' && (
           <p className="help">
             使用服务器 .env 中的
-            ACM_ACCESS_TOKEN，仅用于创建首位管理员。旧个人数据不会向其他用户开放。
+            ACM_ACCESS_TOKEN，仅用于创建首位管理员。用户名、昵称和密码均由部署人自行设置，没有默认账号或密码。旧个人数据不会向其他用户开放。
           </p>
         )}
         {error && (

@@ -7,7 +7,7 @@ from acmweb.app import create_app
 with TestClient(create_app(),base_url='https://localhost') as client:
     assert client.get('/api/health').json() == {'status':'ok'}
     response = client.post('/api/auth/setup',headers={'X-ACM-Request':'1'},json={
-        'username':'kendas','password':'Container-only-test-password',
+        'username':'smoke_owner','password':'Container-only-test-password',
         'setup_token':os.environ['ACM_ACCESS_TOKEN'],
     })
     assert response.status_code == 200,response.text

@@ -36,6 +36,7 @@ class PasswordChange(BaseModel):
 
 class InitialAdminCredentials(Credentials):
     password: str = Field(min_length=10,max_length=128,repr=False)
+    display_name: str = Field(default='', max_length=40)
 
 
 class LoginCredentials(BaseModel):
@@ -270,11 +271,10 @@ def create_multi_app(settings, factory):
     def setup(payload:InitialAdminCredentials,response:Response):
         if not settings.access_token or not hmac.compare_digest(digest(payload.setup_token),digest(settings.access_token)):
             raise HTTPException(403,'初始化令牌不正确')
-        if payload.username.lower() != 'kendas':
-            raise HTTPException(422, '管理员账号固定为 kendas')
         if identities.count():
             raise HTTPException(409,'管理员已初始化')
-        uid = identities.create(payload.username.lower(),payload.password,setup=True,max_users=settings.max_users)
+        uid = identities.create(payload.username.lower(),payload.password,setup=True,max_users=settings.max_users,
+                                display_name=payload.display_name.strip())
         set_session(response,uid)
         return {'ok':True}
 

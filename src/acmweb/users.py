@@ -5,7 +5,6 @@ import os
 import secrets
 import sqlite3
 import threading
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -82,6 +81,10 @@ class Users:
               id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
               role TEXT NOT NULL CHECK(role IN ('admin','member')), active INTEGER NOT NULL DEFAULT 1,
               created_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS social_profiles (
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              display_name TEXT NOT NULL DEFAULT '', bio TEXT NOT NULL DEFAULT '',
+              public_profile INTEGER NOT NULL DEFAULT 0, leaderboard INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS sessions (
               hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
               created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, seen_at INTEGER NOT NULL);
@@ -120,63 +123,14 @@ class Users:
         self.dummy_hash = password_hash(secrets.token_urlsafe(32))
 
     def normalize_administrator(self):
-        """Run under instance_lock; retain the original admin, never the demo.
+        """Compatibility entrypoint: existing identities are never rewritten.
 
-        Workspace directories are keyed by ID, so renaming the original row
-        preserves its password and all private data. Removed demo workspaces
-        stay on disk for offline recovery and can no longer authenticate.
+        Old releases applied a deployment-specific rename/cleanup migration.
+        Startup and offline recovery must now preserve every username, role,
+        password, session and workspace, regardless of migration markers.
+        Account changes require an explicit authenticated administration action.
         """
-        with self.connect() as db:
-            # Legacy cleanup must not demote newly approved administrators on restart.
-            if db.execute("SELECT 1 FROM identity_migrations WHERE name='canonical-admin-v1'").fetchone():
-                return
-            original = db.execute("SELECT id FROM users WHERE lower(username)='admin' AND role='admin'").fetchone()
-            canonical = db.execute("SELECT id FROM users WHERE lower(username)='kendas' AND role='admin'").fetchone()
-            owner = original or canonical
-            if not owner:
-                if db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
-                    raise RuntimeError('未找到原 admin 或管理员 kendas；请停止服务，核实备份后由运维恢复原管理员身份，不能使用 kds 演示账号替代')
-                return
-            uid = owner['id']
-            duplicates = db.execute("SELECT id FROM users WHERE id<>? AND lower(username) IN ('kds','kendas')", (uid,)).fetchall()
-            extra_admins = db.execute("SELECT id FROM users WHERE role='admin' AND id<>?", (uid,)).fetchall()
-            if not original and not duplicates and not extra_admins:
-                db.execute("INSERT INTO identity_migrations VALUES('canonical-admin-v1',?)", (int(time.time()),))
-                return
-        # A one-time private SQLite snapshot precedes the identity changes.
-        backup = self.path.with_name('users.before-canonical-admin.sqlite3')
-        if not backup.exists():
-            fd, temporary = tempfile.mkstemp(prefix='.users-migration-', suffix='.sqlite3', dir=self.path.parent)
-            os.close(fd)
-            try:
-                with sqlite3.connect(self.path) as source, sqlite3.connect(temporary) as target:
-                    source.backup(target)
-                os.replace(temporary, backup)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-        with sqlite3.connect(f'file:{backup}?mode=ro', uri=True) as saved:
-            if not saved.execute("SELECT 1 FROM sqlite_master WHERE name='users'").fetchone() or saved.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-                raise RuntimeError('管理员迁移备份不完整，请先由运维检查；未修改账号')
-        with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            # Remove demo identities before renaming to satisfy username uniqueness.
-            for row in duplicates:
-                removed = row['id']
-                db.execute('DELETE FROM sessions WHERE user_id=?', (removed,))
-                db.execute('DELETE FROM invitations WHERE created_by=?', (removed,))
-                db.execute('UPDATE invitations SET used_by=NULL WHERE used_by=?', (removed,))
-                db.execute('UPDATE shared_entries SET owner_id=? WHERE owner_id=?', (uid, removed))
-                db.execute('DELETE FROM users WHERE id=?', (removed,))
-                self.audit('demo_user.removed', uid, removed, db)
-            for row in extra_admins:
-                db.execute("UPDATE users SET role='member' WHERE id=?", (row['id'],))
-                db.execute('DELETE FROM sessions WHERE user_id=?', (row['id'],))
-                self.audit('admin.extra_demoted', uid, row['id'], db)
-            db.execute("UPDATE users SET username='kendas',role='admin' WHERE id=?", (uid,))
-            db.execute('DELETE FROM sessions WHERE user_id=?', (uid,))
-            self.audit('admin.original_renamed', uid, uid, db)
-            db.execute("INSERT INTO identity_migrations VALUES('canonical-admin-v1',?)", (int(time.time()),))
+        return None
 
     @contextmanager
     def connect(self):
@@ -212,7 +166,7 @@ class Users:
         with self.connect() as db:
             return db.execute('SELECT COUNT(*) FROM users').fetchone()[0]
 
-    def create(self, username, password, *, setup=False, invitation='', max_users=100):
+    def create(self, username, password, *, setup=False, invitation='', max_users=100, display_name=''):
         uid, now = uuid.uuid4().hex, int(time.time())
         invitation_digest = digest(invitation)
 
@@ -224,7 +178,7 @@ class Users:
                 row = db.execute('SELECT * FROM invitations WHERE hash=? AND used_by IS NULL AND expires_at>?',(invitation_digest,int(time.time()))).fetchone()
                 if not row:
                     raise HTTPException(400, '邀请码无效或已过期')
-                if username.lower() in {'admin', 'kendas', 'kds'}:
+                if username.lower() == 'admin':
                     raise HTTPException(409, '用户名不可用')
             if count >= max_users:
                 raise HTTPException(409, '已达到本站用户上限')
@@ -247,8 +201,11 @@ class Users:
                 raise HTTPException(409, '用户名不可用') from None
             if not setup:
                 db.execute('UPDATE invitations SET used_by=? WHERE hash=?',(uid,invitation_digest))
-            if setup and username == 'kendas':
-                db.execute("INSERT OR IGNORE INTO identity_migrations VALUES('canonical-admin-v1',?)", (now,))
+            if setup and display_name:
+                # Save the optional initial nickname in the same transaction
+                # as the first identity; public sharing remains disabled.
+                db.execute('INSERT INTO social_profiles(user_id,display_name) VALUES(?,?)',
+                           (uid, display_name.strip()))
             self.audit('user.created',uid,uid,db)
         return uid
 

@@ -69,8 +69,8 @@ Google Cloud Translation Basic v2 使用官方 `translation.googleapis.com/langu
 从开发目录升级已有桌面采集项目时，先停止目标网页服务和采集任务，完成前端构建与打包，然后在开发目录执行：
 
 ```bash
-.venv/bin/python scripts/upgrade_workspace.py /home/kendas/桌面/acm
-cd /home/kendas/桌面/acm
+.venv/bin/python scripts/upgrade_workspace.py "$HOME/桌面/acm"
+cd "$HOME/桌面/acm"
 .venv/bin/python -m pip install -c requirements.lock -e '.[dev]'
 .venv/bin/acm-web
 ```
