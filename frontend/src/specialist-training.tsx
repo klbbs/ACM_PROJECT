@@ -46,6 +46,13 @@ type Item = {
   reason: string
   completed: boolean
   ai_report_id?: string
+  cf_rating_estimate?: {
+    kind: 'official' | 'estimate' | 'unknown'
+    minimum: number | null
+    maximum: number | null
+    notice: string
+    source_urls: string[]
+  }
 }
 type Plan = {
   id: string
@@ -55,6 +62,7 @@ type Plan = {
   created_at: number
   mode?: string
   mode_title?: string
+  rating_request?: { minimum: number; maximum: number }
   items: Item[]
 }
 type Source = {
@@ -155,6 +163,10 @@ export function SpecialistTrainingPage({
   const [groupId, setGroupId] = useState('')
   const [topicId, setTopicId] = useState('')
   const [count, setCount] = useState('4')
+  const [ratingMinimum, setRatingMinimum] = useState('')
+  const [ratingMaximum, setRatingMaximum] = useState('')
+  const [ratingDefaults, setRatingDefaults] = useState({ minimum: 800, maximum: 3500 })
+  const [learnerRatings, setLearnerRatings] = useState<number[]>([])
   const [mode, setMode] = useState('learn')
   const [modes, setModes] = useState<Mode[]>(defaultModes)
   const [maxCount, setMaxCount] = useState(50)
@@ -184,7 +196,14 @@ export function SpecialistTrainingPage({
     setLoading(true)
     try {
       const [catalog, saved] = await Promise.all([
-        api<{ groups: Group[]; modes?: Mode[]; max_count?: number }>('/training/topics'),
+        api<{
+          groups: Group[]
+          modes?: Mode[]
+          max_count?: number
+          default_cf_minimum?: number
+          default_cf_maximum?: number
+          learner_evidence?: { cf_ratings: { rating: number }[] }
+        }>('/training/topics'),
         api<{ plans: Plan[] }>('/training/plans'),
       ])
       if (!alive.current || token !== generation.current) return
@@ -194,6 +213,11 @@ export function SpecialistTrainingPage({
       )
       setModes(supported?.length === 4 ? supported : defaultModes)
       setMaxCount(Math.max(1, Math.min(50, catalog.max_count || 50)))
+      setRatingDefaults({
+        minimum: catalog.default_cf_minimum || 800,
+        maximum: catalog.default_cf_maximum || 3500,
+      })
+      setLearnerRatings((catalog.learner_evidence?.cf_ratings || []).map((entry) => entry.rating))
       setGroupId((old) =>
         catalog.groups.some((group) => group.id === old) ? old : catalog.groups[0]?.id || '',
       )
@@ -246,13 +270,25 @@ export function SpecialistTrainingPage({
   const amount = Number(count)
   const countValid =
     count.trim() !== '' && Number.isInteger(amount) && amount >= 1 && amount <= maxCount
+  const minimum = Number(ratingMinimum),
+    maximum = Number(ratingMaximum)
+  const ratingSpecified = ratingMinimum.trim() !== '' || ratingMaximum.trim() !== ''
+  const ratingValid =
+    !ratingSpecified ||
+    (ratingMinimum.trim() !== '' &&
+      ratingMaximum.trim() !== '' &&
+      Number.isInteger(minimum) &&
+      Number.isInteger(maximum) &&
+      minimum >= 800 &&
+      maximum <= 3500 &&
+      minimum <= maximum)
   const modeTitle = (value = 'learn') =>
     modes.find((entry) => entry.id === value)?.title ||
     defaultModes.find((entry) => entry.id === value)?.title ||
     value
   const plan = plans.find((candidate) => candidate.id === selected)
   const generate = async () => {
-    if (writing.current || !topicId || !model || !aiReady || !countValid) return
+    if (writing.current || !topicId || !model || !aiReady || !countValid || !ratingValid) return
     writing.current = true
     const token = ++generation.current
     setBusy(true)
@@ -266,6 +302,7 @@ export function SpecialistTrainingPage({
         mode,
         provider,
         model,
+        ...(ratingSpecified ? { cf_minimum: minimum, cf_maximum: maximum } : {}),
       })
       if (!alive.current || token !== generation.current) return
       setPlans((old) => [generated, ...old.filter((candidate) => candidate.id !== generated.id)])
@@ -289,6 +326,9 @@ export function SpecialistTrainingPage({
   }
   const modelReason = !model || !aiReady ? '请先在连接与设置中配置 AI，并选择可用模型' : ''
   const countReason = countValid ? '' : `题目数量需为 1–${maxCount} 的整数`
+  const ratingReason = ratingValid
+    ? ''
+    : '请同时填写 CF rating 上下限，范围需为 800–3500 的整数，且下限不能大于上限'
   const topicTitle = topic?.title || '专项训练'
   const generateReason = loading
     ? '正在读取训练专题与已保存题单，读取完成后才能生成。'
@@ -298,7 +338,7 @@ export function SpecialistTrainingPage({
         ? '训练专题读取失败，请点击“刷新训练”后重试。'
         : !topicId
           ? '请先选择训练专题，生成按钮才可用。'
-          : modelReason || countReason
+          : modelReason || countReason || ratingReason
   const generateLabel = busy
     ? 'AI 正在安排训练路线…'
     : loading
@@ -390,7 +430,42 @@ export function SpecialistTrainingPage({
           />
           <span className="help">1–{maxCount} 道，自由设置</span>
         </label>
+        <label>
+          本次 CF rating 下限（选填）
+          <input
+            type="number"
+            aria-label="专项 CF rating 下限"
+            min={800}
+            max={3500}
+            step={100}
+            value={ratingMinimum}
+            placeholder={String(ratingDefaults.minimum)}
+            disabled={busy}
+            onChange={(event) => setRatingMinimum(event.target.value)}
+          />
+        </label>
+        <label>
+          本次 CF rating 上限（选填）
+          <input
+            type="number"
+            aria-label="专项 CF rating 上限"
+            min={800}
+            max={3500}
+            step={100}
+            value={ratingMaximum}
+            placeholder={String(ratingDefaults.maximum)}
+            disabled={busy}
+            onChange={(event) => setRatingMaximum(event.target.value)}
+          />
+        </label>
       </div>
+      <p className="help">
+        {learnerRatings.length
+          ? `本人最近同步的 CF rating：${learnerRatings.join(' / ')}。`
+          : '尚无本人已绑定 CF 账号的有效 rating 快照，请同步账号数据；AI 不会猜测个人 rating。'}
+        上下限均留空时沿用全局 CF {ratingDefaults.minimum}–{ratingDefaults.maximum}
+        ，其他平台仍按原生难度。 填入两项后，本次范围独立生效，不修改全局训练偏好或每日任务。
+      </p>
       <fieldset className="specialist-modes" disabled={busy}>
         <legend>训练阶段</legend>
         <p className="help">按学习目标选择阶段；这不是平台的题目评分。仅“新学”要求首题为模板题。</p>
@@ -425,7 +500,11 @@ export function SpecialistTrainingPage({
         <ShieldCheck size={14} />
         选题范围：从你已验证登录的所有平台中一起筛选。请先在“连接与设置”保存账号并检测登录状态，生成时会检查平台连接。
       </p>
-      <p className="help">CF 难度偏好仅用于 Codeforces；其他平台保留自己的难度标准。</p>
+      <p className="help">
+        CF 使用官方 rating；洛谷按官方等级作启发式宽区间，AtCoder 参考公开难度统计或 ABC 分值估计。
+        非 CF
+        题按估计区间与目标范围重叠筛选，可能存在偏差，并非官方等价；牛客等缺少可信映射的题会排除并说明。
+      </p>
       <div className="ai-controls specialist-generate">
         {aiPicker}
         <button
@@ -487,6 +566,11 @@ export function SpecialistTrainingPage({
             <span className="badge neutral">
               {plan.items.filter((item) => item.completed).length}/{plan.items.length} 已完成
             </span>
+            {plan.rating_request && (
+              <span className="badge neutral">
+                目标 CF {plan.rating_request.minimum}–{plan.rating_request.maximum}
+              </span>
+            )}
           </div>
           <ol>
             {plan.items.map((item) => (
@@ -514,6 +598,24 @@ export function SpecialistTrainingPage({
                       : ''}{' '}
                     · {item.problem_id}
                   </p>
+                  {item.cf_rating_estimate && (
+                    <details className="help">
+                      <summary>
+                        {item.cf_rating_estimate.kind === 'official'
+                          ? 'CF 官方 rating'
+                          : item.cf_rating_estimate.kind === 'estimate'
+                            ? `估计 CF ${item.cf_rating_estimate.minimum}–${item.cf_rating_estimate.maximum}（低可信）`
+                            : 'CF 对照难度未知'}{' '}
+                        · 查看依据
+                      </summary>
+                      <p>{item.cf_rating_estimate.notice}</p>
+                      {item.cf_rating_estimate.source_urls.map((url) => (
+                        <p key={url}>
+                          <SafeLink href={url}>查看难度来源</SafeLink>
+                        </p>
+                      ))}
+                    </details>
+                  )}
                   <p>{item.reason}</p>
                   <div className="specialist-actions">
                     <button className="button" onClick={() => onOpenProblem(item.problem_id)}>

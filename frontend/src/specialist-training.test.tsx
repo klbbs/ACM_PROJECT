@@ -145,6 +145,40 @@ it('restores saved progression and opens the canonical problem in the workbench 
   expect(props.onOpenProblem).toHaveBeenCalledWith('codeforces:1-0')
   expect(apiMock.mock.calls.every((call) => !call[1])).toBe(true)
 })
+it('shows collected personal rating and submits an independent difficulty range', async () => {
+  apiMock.mockImplementation((path: string) =>
+    path === '/training/topics'
+      ? Promise.resolve({
+          ...topics,
+          default_cf_minimum: 1000,
+          default_cf_maximum: 1800,
+          learner_evidence: { cf_ratings: [{ rating: 1450 }] },
+        })
+      : Promise.resolve({ plans: [plan] }),
+  )
+  await render()
+  expect(host.textContent).toContain('本人最近同步的 CF rating：1450')
+  await change('input[aria-label="专项 CF rating 下限"]', '1200')
+  await change('input[aria-label="专项 CF rating 上限"]', '1600')
+  apiMock.mockResolvedValueOnce({
+    ...plan,
+    id: 'bounded',
+    rating_request: { minimum: 1200, maximum: 1600 },
+  })
+  await clickGenerate()
+  expect(apiMock).toHaveBeenLastCalledWith(
+    '/training/plans',
+    'POST',
+    expect.objectContaining({ cf_minimum: 1200, cf_maximum: 1600 }),
+  )
+  expect(apiMock.mock.calls.some((call) => call[0] === '/training' && call[1] === 'PUT')).toBe(
+    false,
+  )
+  expect(host.textContent).toContain('目标 CF 1200–1600')
+  await change('input[aria-label="专项 CF rating 下限"]', '2000')
+  expect(generateAction().disabled).toBe(true)
+  expect(generateState().textContent).toContain('下限不能大于上限')
+})
 it('requires a configured model, then preserves old plans on failed generation', async () => {
   await render({ model: '' })
   expect(generateAction().disabled).toBe(true)

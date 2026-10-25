@@ -1,5 +1,6 @@
 """Official catalog discovery and one constrained pool for all AI selection paths."""
 import asyncio
+from bisect import bisect_left, bisect_right
 import json
 import re
 import secrets
@@ -14,6 +15,7 @@ from ojcrawler.models import CrawlError
 from ojcrawler.adapters.luogu import page_data
 from .codex_bridge import AIError
 from .problem_sources import normalize, source_url
+from .difficulty_estimates import ATCODER_MODELS, ATCODER_POINTS
 
 PLATFORMS = ('codeforces', 'atcoder', 'luogu', 'nowcoder')
 PUBLISHED_SOURCES = {'codeforces.contest.startTimeSeconds', 'atcoder.archive.time',
@@ -104,6 +106,42 @@ def _atcoder(client):
         rows.extend(_atcoder_practice(client))
     except (CrawlError, AIError, ValueError, TypeError):
         pass  # A supplemental collection must not discard recent official tasks.
+    return _enrich_atcoder_difficulties(client, rows)
+
+
+def _enrich_atcoder_difficulties(client, rows):
+    # Fixed public datasets, fetched without any platform cookie. Only bounded
+    # numerical metadata is retained; aggregate dataset user names are dropped.
+    if not callable(getattr(client, 'json', None)):
+        return rows
+    models, points = {}, {}
+    try:
+        data = client.json(ATCODER_MODELS)
+        if isinstance(data, dict) and len(data) <= 50000:
+            models = {pid: row['difficulty'] for pid, row in data.items()
+                      if isinstance(row, dict) and type(row.get('difficulty')) is int
+                      and -10000 <= row['difficulty'] <= 10000 and not row.get('is_experimental')}
+    except (CrawlError, ValueError, TypeError, KeyError):
+        pass
+    try:
+        data = client.json(ATCODER_POINTS)
+        if isinstance(data, list) and len(data) <= 50000:
+            points = {row['id']: row['point'] for row in data if isinstance(row, dict)
+                      and isinstance(row.get('id'), str) and type(row.get('point')) in (int, float)
+                      and 0 < row['point'] <= 10000}
+    except (CrawlError, ValueError, TypeError, KeyError):
+        pass
+    population = sorted(models.values())
+    for row in rows:
+        pid = row['problem_id']
+        if pid in models and population:
+            difficulty = models[pid]
+            row.update(atcoder_problem_difficulty=difficulty,
+                atcoder_difficulty_percentile=(bisect_left(population, difficulty) + bisect_right(population, difficulty)) / (2 * len(population)),
+                atcoder_statistics_population=len(population), atcoder_statistics_source=ATCODER_MODELS,
+                atcoder_statistics_fetched_at=int(time.time()))
+        if pid in points:
+            row.update(atcoder_points=points[pid], atcoder_points_source=ATCODER_POINTS)
     return rows
 
 
@@ -198,6 +236,9 @@ def refresh_specialist_candidates(database, accounts, topic):
                     rows.extend(_luogu_pages(client, {'keyword': topic['title']}, max_pages=3))
             else:
                 rows = _atcoder_practice(client)
+                with database.connect() as db:
+                    cached = [json.loads(row[0]) for row in db.execute("SELECT data FROM problem_catalog WHERE platform='atcoder'")]
+                rows = _enrich_atcoder_difficulties(client, list({row['id']: row for row in cached + rows}.values()))
             unique = {row['id']: row for row in rows}
             with database.connect() as db:
                 db.executemany('INSERT OR REPLACE INTO problem_catalog VALUES(?,?,?)',

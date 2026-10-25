@@ -6,7 +6,7 @@ import uuid
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
 from .catalog import (PLATFORMS, PUBLISHED_SOURCES, _date_floor, _pool,
                       publication_time, recommendation_candidates,
@@ -16,6 +16,7 @@ from .codex_bridge import AIError
 from .runtime_logs import emit_event
 from .selection_report_links import prepare_selection_reports
 from .training_topics import MODES, TOPICS, is_template, matches_topic, topic_groups
+from .difficulty_estimates import cf_reference, estimate, overlaps
 
 DDL = '''
 CREATE TABLE IF NOT EXISTS training_plans (
@@ -53,6 +54,14 @@ class Generate(Strict):
     count: int = Field(default=4, ge=1, le=50, strict=True)
     provider: Literal['api', 'codex']
     model: str = Field(min_length=1, max_length=150)
+    cf_minimum: int | None = Field(default=None, ge=800, le=3500, strict=True)
+    cf_maximum: int | None = Field(default=None, ge=800, le=3500, strict=True)
+
+    @model_validator(mode='after')
+    def rating_range(self):
+        if self.cf_minimum is not None and self.cf_maximum is not None and self.cf_minimum > self.cf_maximum:
+            raise ValueError('CF rating 下限不能大于上限')
+        return self
 
 
 class Choice(Strict):
@@ -117,20 +126,60 @@ class Training:
             raise HTTPException(404, '找不到本人的专项训练计划')
         return self._decorate(row['data'])
 
-    def _pool(self, topic, preferred_ids=None):
+    def _pool(self, topic, preferred_ids=None, cf_minimum=None, cf_maximum=None):
         prefs = self.db.get('training', {})
+        minimum = cf_minimum if cf_minimum is not None else prefs.get('minimum', 800)
+        maximum = cf_maximum if cf_maximum is not None else prefs.get('maximum', 3500)
+        if minimum > maximum:
+            raise HTTPException(422, 'CF rating 下限不能大于上限，请同时设置有效范围')
+        constrained = cf_minimum is not None or cf_maximum is not None
+        reference = cf_reference(self.db)
+        def eligible(problem):
+            return matches_topic(problem, topic) and (not constrained or overlaps(estimate(problem, reference), minimum, maximum))
         pool = recommendation_candidates(self.db, self.accounts,
-            minimum=prefs.get('minimum', 800), maximum=prefs.get('maximum', 3500),
+            minimum=minimum, maximum=maximum,
             published_after=prefs.get('published_after'), limit=3000,
             preferred_ids=preferred_ids or topic['template_ids'],
-            predicate=lambda p: matches_topic(p, topic), allow_attempted=True,
+            predicate=eligible, allow_attempted=True,
             prioritize=lambda p: is_template(p, topic))
         completed = self._ac_ids()
-        return [p for p in pool if p['id'] not in completed]
+        return [{**p, 'cf_rating_estimate': estimate(p, reference)} for p in pool if p['id'] not in completed]
 
-    def _pool_diagnostics(self, topic, excluded, bounds):
+    def _learner_evidence(self):
+        """Only this workspace's currently bound CF snapshots, no identities."""
+        document = self.accounts.document() if callable(getattr(self.accounts, 'document', None)) else {}
+        handles = {str(a.get('handle', '')).casefold() for a in document.get('accounts', []) if a.get('platform') == 'codeforces'}
+        now, ratings, seen = int(time.time()), [], set()
+        with self.db.connect() as db:
+            rows = db.execute("SELECT account,profile,rating_history,collected_at FROM snapshots WHERE platform='codeforces' AND complete=1 AND collected_at<=? ORDER BY collected_at DESC", (now,)).fetchall()
+        for row in rows:
+            key = row['account'].casefold()
+            if key not in handles or key in seen:
+                continue
+            seen.add(key)
+            try:
+                profile, history = json.loads(row['profile']), json.loads(row['rating_history'])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(profile, dict) or not isinstance(history, list):
+                continue
+            value = profile.get('rating')
+            if type(value) is not int and history and isinstance(history[-1], dict):
+                value = history[-1].get('new_rating')
+            if type(value) is int and 0 <= value <= 5000:
+                ratings.append({'rating': value, 'collected_at': row['collected_at'], 'source': '本人绑定 CF 账号的官方同步快照'})
+        return {'cf_ratings': ratings, 'available': bool(ratings),
+                'notice': '真实个人 rating 仅作训练背景，不能代替专题能力判断；没有记录时不得推测个人 rating。'}
+
+    def _pool_diagnostics(self, topic, excluded, bounds, cf_minimum=None, cf_maximum=None):
         """Application-owned counts/reasons only; never expose credentials."""
-        prefs = self.db.get('training', {})
+        prefs = dict(self.db.get('training', {}))
+        constrained = cf_minimum is not None or cf_maximum is not None
+        if cf_minimum is not None:
+            prefs['minimum'] = cf_minimum
+        if cf_maximum is not None:
+            prefs['maximum'] = cf_maximum
+        reference = cf_reference(self.db)
         floor = _date_floor(prefs.get('published_after'))
         active = set(verified_platforms(self.accounts))
         configured = ({row.get('platform') for row in self.accounts.document().get('accounts', [])}
@@ -164,6 +213,14 @@ class Training:
                     or not prefs.get('minimum', 800) <= p['difficulty'] <= prefs.get('maximum', 3500) for p in templates)
                 if outside:
                     reasons.append(f'{outside} 道模板不满足 CF {prefs.get("minimum", 800)}–{prefs.get("maximum", 3500)} 难度')
+            elif constrained:
+                evidence = [estimate(p, reference) for p in raw]
+                unknown = sum(row['kind'] == 'unknown' for row in evidence)
+                outside = sum(row['kind'] != 'unknown' and not overlaps(row, prefs.get('minimum', 800), prefs.get('maximum', 3500)) for row in evidence)
+                if unknown:
+                    reasons.append(f'{unknown} 道专题题目缺少可核查的难度映射，无法确认满足本次 CF rating 范围')
+                if outside:
+                    reasons.append(f'{outside} 道题的估计难度区间与本次范围不重叠')
             done = sum(p['id'] in complete for p in templates)
             reserved = sum(p['id'] in excluded or not self._within_difficulty_bounds(p, bounds) for p in templates)
             if done:
@@ -201,7 +258,8 @@ class Training:
                 db.execute('DELETE FROM web_settings WHERE key=?', (LOCK_KEY,))
 
     async def select_items(self, topic_id, mode, count, provider, model,
-                           excluded_ids=(), template_first=None, forbid_templates=False, difficulty_bounds=None):
+                           excluded_ids=(), template_first=None, forbid_templates=False, difficulty_bounds=None,
+                           cf_minimum=None, cf_maximum=None):
         """Select verified progressive items for standalone or daily training.
 
         This does not persist plans or take a standalone plan lease: the caller
@@ -212,7 +270,7 @@ class Training:
         self._selecting = True
         try:
             return await asyncio.wait_for(self._select_items(topic_id, mode, count, provider, model,
-                excluded_ids, template_first, forbid_templates, difficulty_bounds), timeout=540)
+                excluded_ids, template_first, forbid_templates, difficulty_bounds, cf_minimum, cf_maximum), timeout=540)
         except asyncio.TimeoutError:
             raise AIError('专项选题与阅读报告超时，本次未保存；请稍后手动重试') from None
         finally:
@@ -249,9 +307,10 @@ class Training:
                 and (limits['maximum'] is None or rating <= limits['maximum']))
 
     async def _select_items(self, topic_id, mode, count, provider, model,
-                            excluded_ids, template_first, forbid_templates, difficulty_bounds):
+                            excluded_ids, template_first, forbid_templates, difficulty_bounds, cf_minimum, cf_maximum):
         # Validate callers as strictly as the public endpoint, including bool/int.
-        request = Generate(topic_id=topic_id, mode=mode, count=count, provider=provider, model=model)
+        request = Generate(topic_id=topic_id, mode=mode, count=count, provider=provider, model=model,
+                           cf_minimum=cf_minimum, cf_maximum=cf_maximum)
         topic = TOPICS.get(request.topic_id)
         if topic is None:
             raise HTTPException(422, '请选择支持的训练专题')
@@ -261,7 +320,7 @@ class Training:
         await refresh_recommendation_sessions(self.accounts)
         excluded = set(excluded_ids)
         bounds = self._difficulty_bounds(difficulty_bounds)
-        pool = [p for p in self._pool(topic) if p['id'] not in excluded
+        pool = [p for p in self._pool(topic, cf_minimum=cf_minimum, cf_maximum=cf_maximum) if p['id'] not in excluded
                 and self._within_difficulty_bounds(p, bounds)]
         templates = [p['id'] for p in pool if is_template(p, topic)]
         usable_count = 1 + sum(p['id'] not in templates for p in pool) if template_first and templates else len(pool)
@@ -274,14 +333,14 @@ class Training:
             refresh_result = await asyncio.to_thread(refresh_specialist_candidates, self.db, self.accounts, topic)
             refresh_notice = '。'.join(row['platform'] + ' 补充题库失败：' + row['message']
                                       for row in refresh_result if row['status'] == 'failed')
-            pool = [p for p in self._pool(topic) if p['id'] not in excluded
+            pool = [p for p in self._pool(topic, cf_minimum=cf_minimum, cf_maximum=cf_maximum) if p['id'] not in excluded
                     and self._within_difficulty_bounds(p, bounds)]
             templates = [p['id'] for p in pool if is_template(p, topic)]
         if template_first and not templates:
             emit_event(self.event_log, 'training.selection_failed', 'WARNING',
                 reason='training_template_unavailable', train_mode=mode,
                 candidate_count=len(pool), template_count=0, requested_count=count)
-            raise AIError('没有符合条件的未完成模板题。' + self._pool_diagnostics(topic, excluded, bounds)
+            raise AIError('没有符合条件的未完成模板题。' + self._pool_diagnostics(topic, excluded, bounds, cf_minimum, cf_maximum)
                 + ('。' + refresh_notice if refresh_notice else '')
                 + '。仅从你本人已验证登录的全部平台共同筛选，不会用普通题替代模板题')
         if forbid_templates:
@@ -293,7 +352,7 @@ class Training:
                 reason='training_candidates_unavailable', train_mode=mode,
                 candidate_count=usable_count, template_count=len(templates), requested_count=count)
             raise AIError(f'该专题只有 {usable_count} 道符合要求的候选题，不足 {count} 道。'
-                + self._pool_diagnostics(topic, excluded, bounds)
+                + self._pool_diagnostics(topic, excluded, bounds, cf_minimum, cf_maximum)
                 + ('。' + refresh_notice if refresh_notice else ''))
         # Bound payload size while preserving enough ordinary candidates even for
         # a user-selected 50-item course; template evidence remains explicit.
@@ -303,6 +362,14 @@ class Training:
         templates = [p['id'] for p in candidates if p['id'] in templates]
         schema = create_model('SpecialistSelection', __base__=Strict,
             selected_problems=(list[Choice], Field(min_length=count, max_length=count)))
+        prefs = self.db.get('training', {})
+        rating_request = {'minimum': cf_minimum if cf_minimum is not None else prefs.get('minimum', 800),
+                          'maximum': cf_maximum if cf_maximum is not None else prefs.get('maximum', 3500),
+                          'scope': 'this_selection' if cf_minimum is not None or cf_maximum is not None else 'legacy_global_cf_only',
+                          'non_cf_rule': ('有依据的估计区间与目标范围重叠；未知不能假称符合；非官方等价'
+                              if cf_minimum is not None or cf_maximum is not None else
+                              '旧每日调用仅对 CF 应用全局 rating 范围；其他平台沿原生难度规则，不要求有跨平台换算')}
+        learner_evidence = self._learner_evidence()
         if self.guard:
             self.guard()
         self.active_ai = True
@@ -313,6 +380,7 @@ class Training:
                  'requested_count': count, 'template_first_required': template_first,
                  'forbid_templates': forbid_templates, 'template_candidate_ids': templates,
                  'preferences': self.db.get('training', {}), 'difficulty_bounds': bounds,
+                 'rating_request': rating_request, 'learner_evidence': learner_evidence,
                  'candidates': candidates}, schema)
             try:
                 selected = schema.model_validate(response.data).selected_problems
@@ -337,7 +405,7 @@ class Training:
                         raise AIError('AI 返回的同平台难度顺序倒退，本次未保存')
                     previous[key] = rating
             await refresh_recommendation_sessions(self.accounts)
-            current = {p['id'] for p in self._pool(topic, ids) if self._within_difficulty_bounds(p, bounds)}
+            current = {p['id'] for p in self._pool(topic, ids, cf_minimum, cf_maximum) if self._within_difficulty_bounds(p, bounds)}
             if not set(ids) <= current or set(ids) & excluded:
                 raise AIError('候选资格已变化（登录、提交、日期或对战），本次未保存，请手动重试')
             items = []
@@ -349,16 +417,18 @@ class Training:
                     'platform': problem['platform'], 'url': problem['url'],
                     'difficulty': problem.get('difficulty') if problem.get('difficulty') is not None else problem.get('native_difficulty'),
                     'difficulty_label': problem.get('difficulty_label') or problem.get('difficulty_source') or '平台未标定难度',
+                    'cf_rating_estimate': problem['cf_rating_estimate'],
                     'stage': stage, 'learning_level': choice.learning_level,
                     'reason': choice.reason, 'completed': False})
             items = await prepare_selection_reports(self.selection_reports, items, provider, model,
                 context={'topic_id': topic['id'], 'topic_title': topic['title'], 'mode': mode,
-                         'mode_title': next(m['title'] for m in MODES if m['id'] == mode)})
+                         'mode_title': next(m['title'] for m in MODES if m['id'] == mode),
+                         'rating_request': rating_request, 'learner_evidence': learner_evidence})
             # Reading all statements may outlive the five-minute login evidence.
             # Recheck the current account set and all constraints before a caller
             # is allowed to persist this exact set of reported problems.
             await refresh_recommendation_sessions(self.accounts)
-            current = {p['id']: p for p in self._pool(topic, ids) if self._within_difficulty_bounds(p, bounds)}
+            current = {p['id']: p for p in self._pool(topic, ids, cf_minimum, cf_maximum) if self._within_difficulty_bounds(p, bounds)}
             if not set(ids) <= current.keys() or set(ids) & excluded:
                 raise AIError('候选资格在阅读报告期间已变化（登录、提交、日期或对战），本次未保存，请手动重试')
             if (template_first and (not is_template(current[ids[0]], topic)
@@ -387,13 +457,17 @@ class Training:
         token = self._lock()
         try:
             items = await self.select_items(payload.topic_id, payload.mode, payload.count,
-                payload.provider, payload.model)
+                payload.provider, payload.model, cf_minimum=payload.cf_minimum, cf_maximum=payload.cf_maximum)
             ids = {item['problem_id'] for item in items}
             now = int(time.time())
             mode_title = next(m['title'] for m in MODES if m['id'] == payload.mode)
             plan = {'id': uuid.uuid4().hex, 'topic_id': topic['id'], 'topic_title': topic['title'],
                     'mode': payload.mode, 'mode_title': mode_title,
                     'title': topic['title'] + ' · ' + mode_title, 'created_at': now, 'items': items}
+            if payload.cf_minimum is not None or payload.cf_maximum is not None:
+                prefs = self.db.get('training', {})
+                plan['rating_request'] = {'minimum': payload.cf_minimum if payload.cf_minimum is not None else prefs.get('minimum', 800),
+                    'maximum': payload.cf_maximum if payload.cf_maximum is not None else prefs.get('maximum', 3500)}
             with self.db.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 lease = db.execute('SELECT value FROM web_settings WHERE key=?', (LOCK_KEY,)).fetchone()
@@ -411,7 +485,10 @@ class Training:
 def register(app, training):
     @app.get('/api/training/topics')
     def topics():
-        return {'groups': topic_groups(), 'modes': MODES, 'max_count': 50}
+        prefs = training.db.get('training', {})
+        return {'groups': topic_groups(), 'modes': MODES, 'max_count': 50,
+                'default_cf_minimum': prefs.get('minimum', 800), 'default_cf_maximum': prefs.get('maximum', 3500),
+                'learner_evidence': training._learner_evidence()}
 
     @app.get('/api/training/plans')
     def plans():

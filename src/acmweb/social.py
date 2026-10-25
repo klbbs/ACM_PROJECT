@@ -9,13 +9,14 @@ import re
 import secrets
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from contextlib import ExitStack
 from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from .catalog import publication_time
 
 TZ = ZoneInfo('Asia/Shanghai')
 PLATFORMS = ('codeforces', 'atcoder', 'luogu', 'nowcoder')
@@ -78,6 +79,18 @@ class FriendRequest(Strict):
 class DuelRequest(FriendRequest):
     difficulty: int = Field(ge=800, le=3500, strict=True)
     duration_minutes: int = Field(default=60, ge=5, le=180, strict=True)
+    published_after: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+    @field_validator('published_after')
+    @classmethod
+    def publication_floor(cls, value):
+        try:
+            chosen = date.fromisoformat(value)
+        except ValueError:
+            raise ValueError('请选择有效的题目最早发布日期') from None
+        if chosen < date(2000, 1, 1) or chosen > datetime.now(TZ).date():
+            raise ValueError('题目最早发布日期应在 2000-01-01 至今天之间')
+        return value
 
 class Action(Strict):
     action: str = Field(pattern='^(accept|decline|cancel)$')
@@ -124,25 +137,34 @@ def official_problemset():
     session = requests.Session()
     try:
         session.headers['User-Agent'] = requests.utils.default_user_agent()
-        pace_official_api()
-        with session.get('https://codeforces.com/api/problemset.problems', timeout=(5, 20), allow_redirects=False, stream=True) as response:
-            if response.status_code != 200:
-                raise HTTPException(502, '官方 CF 题库不可用，本次对战未开始')
-            chunks, size = [], 0
-            for chunk in response.iter_content(65536):
-                size += len(chunk)
-                if size > 12 * 1024 * 1024:
-                    raise HTTPException(502, '官方 CF 题库超出安全上限')
-                chunks.append(chunk)
-            payload = json.loads(b''.join(chunks))
+        def read_api(path):
+            pace_official_api()
+            with session.get('https://codeforces.com/api/' + path, timeout=(5, 20), allow_redirects=False, stream=True) as response:
+                if response.status_code != 200:
+                    raise HTTPException(502, '官方 CF 题库或比赛日期不可用，本次对战未开始')
+                chunks, size = [], 0
+                for chunk in response.iter_content(65536):
+                    size += len(chunk)
+                    if size > 12 * 1024 * 1024:
+                        raise HTTPException(502, '官方 CF 题库或比赛日期超出安全上限')
+                    chunks.append(chunk)
+            return json.loads(b''.join(chunks))
+
+        payload = read_api('problemset.problems')
         if payload.get('status') != 'OK' or not isinstance(payload.get('result'), dict):
             raise HTTPException(502, '官方 CF 题库返回无效内容')
+        contests = read_api('contest.list?gym=false')
+        if contests.get('status') != 'OK' or not isinstance(contests.get('result'), list):
+            raise HTTPException(502, '官方 CF 比赛日期返回无效内容，本次对战未开始')
+        starts = {row['id']: publication_time(row.get('startTimeSeconds')) for row in contests['result']
+                  if type(row.get('id')) is int and row.get('phase') == 'FINISHED'}
         result = []
         for p in payload['result'].get('problems', []):
             cid, index = p.get('contestId'), p.get('index')
             if isinstance(p.get('rating'), int) and isinstance(cid, int) and 0 < cid < 100000 and isinstance(index, str) and re.fullmatch(r'[A-Za-z]\d?', index):
                 result.append({'id': f'codeforces:{cid}-{index}', 'platform': 'codeforces', 'problem_id': f'{cid}-{index}',
                     'title': str(p.get('name', index))[:200], 'difficulty': p['rating'], 'tags': p.get('tags') or [],
+                    'published_at': starts.get(cid), 'published_at_source': 'codeforces.contest.startTimeSeconds',
                     'url': f'https://codeforces.com/problemset/problem/{cid}/{index}'})
         if not result:
             raise HTTPException(502, '官方 CF 题库未返回可用难度题目')
@@ -173,6 +195,8 @@ class Social:
         self.external_slots = asyncio.Semaphore(2)
         with self.users.connect() as db:
             db.executescript(DDL)
+            if 'published_after' not in {r['name'] for r in db.execute('PRAGMA table_info(social_duels)')}:
+                db.execute('ALTER TABLE social_duels ADD COLUMN published_after TEXT')
             # Starting is a short local transaction + external fetch; interrupted
             # starts never silently become a running duel after service restart.
             db.execute("UPDATE social_duels SET status='cancelled',error='服务重启，请重新约战' WHERE status='starting'")
@@ -361,7 +385,7 @@ class Social:
                 raise HTTPException(403, '仅能邀请已互相确认的好友对战')
             if db.execute('SELECT 1 FROM social_duel_locks WHERE user_id=?', (uid,)).fetchone():
                 raise HTTPException(409, '你已有待处理或进行中的对战')
-            db.execute('INSERT INTO social_duels(id,sender_id,target_id,difficulty,duration_minutes,status,created_at,expires_at) VALUES(?,?,?,?,?,\'pending\',?,?)', (did, uid, value.user_id, value.difficulty, value.duration_minutes, now, now+86400))
+            db.execute('INSERT INTO social_duels(id,sender_id,target_id,difficulty,duration_minutes,status,created_at,expires_at,published_after) VALUES(?,?,?,?,?,\'pending\',?,?,?)', (did, uid, value.user_id, value.difficulty, value.duration_minutes, now, now+86400, value.published_after))
             db.execute('INSERT INTO social_duel_locks VALUES(?,?)', (uid, did))
             return self.public_duel(db, db.execute('SELECT * FROM social_duels WHERE id=?', (did,)).fetchone(), uid)
 
@@ -373,6 +397,8 @@ class Social:
                 raise HTTPException(404, '邀请不存在')
             if row['status'] != 'pending':
                 raise HTTPException(409, '邀请已处理或过期')
+            if not row['published_after']:
+                raise HTTPException(409, '旧邀请未约定题目发布日期，请撤回后选择日期重新邀请')
             sender, target = row['sender_id'], row['target_id']
             self.profile(db, sender); self.profile(db, target)
             if self.relationship(db, sender, target) != 'friend':
@@ -399,7 +425,10 @@ class Social:
                     histories.append(await asyncio.to_thread(official_history, handle))
                 official = await asyncio.to_thread(official_problemset)
             attempted = {problem_id(r) for history in histories for r in history}
-            candidates = {p['id']: p for p in official if p['difficulty'] == row['difficulty']}
+            floor = datetime.combine(date.fromisoformat(row['published_after']), datetime.min.time(), TZ).timestamp()
+            candidates = {p['id']: p for p in official if p['difficulty'] == row['difficulty']
+                and p.get('published_at_source') == 'codeforces.contest.startTimeSeconds'
+                and publication_time(p.get('published_at')) is not None and p['published_at'] >= floor}
             children = [await self.workspaces.get(sender), await self.workspaces.get(target)]
             for child in children:
                 database = child.state.database
@@ -408,7 +437,7 @@ class Social:
                 attempted.update(database.get('battle_problem_ids', []))
             pool = [p for pid, p in candidates.items() if pid not in attempted]
             if not pool:
-                raise HTTPException(409, '官方题库没有此精确难度且双方未尝试、未分配为每日任务的 CF 题目，请调整难度')
+                raise HTTPException(409, f'没有同时满足 CF {row["difficulty"]}、{row["published_after"]} 起（北京时间）、双方未尝试且未分配为每日任务的题目；缺少可靠比赛日期的题也会排除，请重新约定条件')
             chosen = secrets.choice(pool)
             # Hold both private DB writer locks until exclusions are validated.
             # AI daily planning can finish while the official API is awaited.
