@@ -20,6 +20,7 @@ export type CatalogSyncJob = {
     completed_platforms?: number
     total_platforms?: number
     platforms?: PlatformResult[]
+    submission_sync?: { status: string; message?: string }
   } | null
 }
 type PlatformEligibility = {
@@ -162,6 +163,12 @@ export function CatalogSyncPanel({
             </li>
           ))}
         </ul>
+      )}
+      {!starting && job?.result?.submission_sync && (
+        <p role="status">
+          今日提交同步：{({ running: '正在读取官方提交…', completed: '已完成', partial: '部分完成', failed: '未完成', skipped: '未启动' } as Record<string, string>)[job.result.submission_sync.status] || '状态未知'}
+          {job.result.submission_sync.message ? `。${job.result.submission_sync.message}` : ''}
+        </p>
       )}
       {loadingCandidates ? (
         <p role="status">正在读取候选条件…</p>

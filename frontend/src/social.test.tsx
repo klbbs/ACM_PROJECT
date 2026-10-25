@@ -64,7 +64,7 @@ it('shows opt-in onboarding and opens a public solved problem in the workbench w
     await act(async () => root.render(<SocialPage onOpenProblem={onOpenProblem} />))
     expect(host.textContent).toContain('你的榜单目前仅自己掌握')
     expect(host.textContent).toContain('2 题')
-    await act(async () => button(host, '伙伴').click())
+    await act(async () => button(host, '查看当日题目').click())
     expect(host.textContent).toContain('1200')
     expect(host.textContent).toContain('dp')
     expect(host.querySelector('script')).toBeNull()
@@ -162,7 +162,7 @@ it('syncs account submissions and refreshes the daily board after the background
     if (path === '/social/me')
       return {
         profile: { ...own, leaderboard: true },
-        accounts: [{ platform: 'codeforces', handle: 'Owner' }],
+        accounts: completed ? [{ platform: 'codeforces', handle: 'Owner' }] : [],
         bindings: [{ platform: 'codeforces', handle: 'Owner' }],
       } as never
     if (path === '/crawl') return { id: 'sync-job', status: 'queued' } as never
@@ -177,8 +177,9 @@ it('syncs account submissions and refreshes the daily board after the background
     await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} revision={0} />))
     expect(host.textContent).toContain('当天做题量排行榜')
     expect(host.textContent).toContain('2 题')
+    expect(host.textContent).toContain('尚无可计数的平台身份')
     expect(host.textContent).toContain('每日任务以外的题目同样计入')
-    expect(host.textContent).toContain('同步题库只更新题目资料')
+    expect(host.textContent).toContain('同步题库也会获取已配置账号的今日提交')
     await act(async () => button(host, '同步我的提交记录').click())
     expect(api).toHaveBeenCalledWith('/crawl', 'POST', {})
     expect(host.textContent).toContain('完成后自动更新排行榜')
@@ -187,6 +188,7 @@ it('syncs account submissions and refreshes the daily board after the background
     completed = true
     await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} revision={1} />))
     expect(host.textContent).toContain('3 题')
+    expect(host.textContent).not.toContain('尚无可计数的平台身份')
     expect(button(host, '同步我的提交记录').disabled).toBe(false)
     expect(vi.mocked(api).mock.calls.filter(([path]) => path === '/crawl')).toHaveLength(1)
   } finally {
@@ -201,8 +203,27 @@ it('explains why an unclaimed platform identity is not counted and disables sync
   vi.mocked(api).mockImplementation(async (path: string) => defaults(path) as never)
   try {
     await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} />))
-    expect(host.textContent).toContain('尚未认领已验证的平台身份，记录暂不计入榜单')
+    expect(host.textContent).toContain('验证通过后将自动关联榜单')
     expect(button(host, '同步我的提交记录').disabled).toBe(true)
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
+
+it('does not reopen another users pending problem list after leaving the leaderboard', async () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  let resolveProfile!: (value: unknown) => void
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path.startsWith('/social/users/')) return await new Promise((resolve) => { resolveProfile = resolve }) as never
+    return defaults(path) as never
+  })
+  try {
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} />))
+    await act(async () => button(host, '查看当日题目').click())
+    await act(async () => button(host, '找朋友').click())
+    await act(async () => resolveProfile({ profile: { id: 'other', display_name: '伙伴' }, relationship: 'none', day: '2026-10-25', items: [] }))
+    expect(host.querySelector('[aria-label="用户主页"]')).toBeNull()
   } finally {
     await act(async () => root.unmount())
   }

@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS social_accounts (
  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  credential_hash TEXT NOT NULL, verified_at INTEGER NOT NULL,
  PRIMARY KEY(platform,account_key));
+CREATE TABLE IF NOT EXISTS social_account_optouts (
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ platform TEXT NOT NULL, account_key TEXT NOT NULL, PRIMARY KEY(user_id,platform,account_key));
 CREATE TABLE IF NOT EXISTS social_friends (
  low_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  high_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -192,6 +195,16 @@ class Social:
 
     async def claims(self, uid):
         child = await self.workspaces.get(uid)
+        # Reuse only a fresh check of the exact current credential. Stored
+        # claims remain durable after the short check cache expires.
+        checks = child.state.credential_checks
+        for result in checks.statuses()['items']:
+            if result.get('login_verified') and result.get('platform') in PLATFORMS and result.get('handle'):
+                try:
+                    await self.claim(uid, AccountClaim(platform=result['platform'], handle=result['handle']), automatic=True)
+                except HTTPException as error:
+                    if error.status_code != 409:
+                        raise
         with self.users.connect() as db:
             rows = db.execute('SELECT * FROM social_accounts WHERE user_id=?', (uid,)).fetchall()
         valid = []
@@ -204,7 +217,7 @@ class Social:
                 valid.append(dict(row))
         return valid
 
-    async def claim(self, uid, value):
+    async def claim(self, uid, value, *, automatic=False):
         child = await self.workspaces.get(uid)
         checks = child.state.credential_checks
         result = next((r for r in checks.statuses()['items'] if r['platform'] == value.platform and r['handle'] == value.handle and r.get('login_verified')), None)
@@ -214,10 +227,16 @@ class Social:
         key = value.handle.casefold() if value.platform == 'codeforces' else value.handle
         with self.users.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            old = db.execute('SELECT user_id FROM social_accounts WHERE platform=? AND account_key=?', (value.platform, key)).fetchone()
+            if automatic and db.execute('SELECT 1 FROM social_account_optouts WHERE user_id=? AND platform=? AND account_key=?', (uid, value.platform, key)).fetchone():
+                return {'ok': False}
+            old = db.execute('SELECT user_id,credential_hash,handle FROM social_accounts WHERE platform=? AND account_key=?', (value.platform, key)).fetchone()
             if old and old['user_id'] != uid:
                 raise HTTPException(409, '此平台身份已被其他站内用户认领，请联系管理员核实；不能重复参加榜单或对战')
+            if automatic and old and secrets.compare_digest(old['credential_hash'], fingerprint) and old['handle'] == value.handle:
+                return {'ok': True}
             db.execute('INSERT INTO social_accounts VALUES(?,?,?,?,?,?) ON CONFLICT(platform,account_key) DO UPDATE SET handle=excluded.handle,credential_hash=excluded.credential_hash,verified_at=excluded.verified_at', (value.platform, key, value.handle, uid, fingerprint, int(time.time())))
+            if not automatic:
+                db.execute('DELETE FROM social_account_optouts WHERE user_id=? AND platform=? AND account_key=?', (uid, value.platform, key))
         return {'ok': True}
 
     async def solved(self, uid, day):
@@ -533,7 +552,9 @@ def register(app, identities, workspaces, require):
             social.expire(db)
             if db.execute("SELECT 1 FROM social_duel_locks WHERE user_id=?", (uid,)).fetchone():
                 raise HTTPException(409, '请先结束或取消当前对战，再解除身份认领')
-            db.execute('DELETE FROM social_accounts WHERE user_id=? AND platform=? AND handle=?', (uid, platform, handle))
+            key = handle.casefold() if platform == 'codeforces' else handle
+            db.execute('DELETE FROM social_accounts WHERE user_id=? AND platform=? AND account_key=?', (uid, platform, key))
+            db.execute('INSERT OR IGNORE INTO social_account_optouts VALUES(?,?,?)', (uid, platform, key))
         return {'ok': True}
 
     @app.get('/api/social/users')
