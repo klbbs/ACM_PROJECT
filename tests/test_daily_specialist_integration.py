@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from selection_report_fixtures import with_selection_reports
+
 from acmweb.ai import AIResult
 from acmweb.daily import Daily, Roll, Settings
 from acmweb.database import Database
@@ -19,8 +21,8 @@ def services(tmp_path):
         {'platform': 'luogu', 'status': 'authenticated', 'login_verified': True},
     ]}))
     ai = SimpleNamespace(complete=AsyncMock())
-    specialist = Training(db, ai, accounts)
-    daily = Daily(db, ai, accounts)
+    specialist = with_selection_reports(Training(db, ai, accounts))
+    daily = with_selection_reports(Daily(db, ai, accounts))
     daily.specialist_training = specialist
     records = [('P3367', '【模板】并查集', 2), ('P99990', '【模板】集合管理', 2)]
     records += [(f'P{10000+i}', f'合成应用 {i}', 3) for i in range(1, 15)]

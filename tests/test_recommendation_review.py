@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from acmweb import catalog
+from selection_report_fixtures import with_selection_reports
+
 from acmweb.ai import AIResult
 from acmweb.codex_bridge import AIError
 from acmweb.daily import Daily, Roll, Settings
@@ -66,7 +68,7 @@ def test_daily_delayed_ai_cannot_save_a_candidate_that_lost_eligibility(db, chan
                 conn.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',
                     ('codeforces', 'fixture', '1', '1000-A', int(time.time()), 'AC', '{}', int(time.time())))
         return AIResult({'selected_problems': [{'id': row['id'], 'reason': 'synthetic'}]}, {})
-    daily = Daily(db, SimpleNamespace(complete=AsyncMock(side_effect=select)), accounts)
+    daily = with_selection_reports(Daily(db, SimpleNamespace(complete=AsyncMock(side_effect=select)), accounts))
     daily.configure(Settings())
     with pytest.raises(AIError):
         asyncio.run(daily.roll(Roll(provider='api', model='offline-fixture')))

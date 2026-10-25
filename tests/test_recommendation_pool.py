@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from acmweb import catalog
+from selection_report_fixtures import with_selection_reports
+
 from acmweb.ai import AIResult
 from acmweb.codex_bridge import AIError
 from acmweb.daily import Daily, Roll, Settings, TaskTime
@@ -130,7 +132,7 @@ def test_daily_and_reroll_share_saved_date_and_login_constraints(db):
         assert all(p['platform'] == 'atcoder' and p['published_at'] for p in payload['candidates'])
         return AIResult({'selected_problems': [{'id': payload['candidates'][0]['id'], 'reason': '适合'}]}, {})
     ai.complete.side_effect = choose
-    service = Daily(db, ai, accounts('codeforces', 'atcoder'))
+    service = with_selection_reports(Daily(db, ai, accounts('codeforces', 'atcoder')))
     service.configure(Settings())
     first = asyncio.run(service.roll(Roll(provider='api', model='test')))['plan']['tasks'][0]
     next_task = asyncio.run(service.roll(Roll(provider='api', model='test', task_id=first['task_id'])))['plan']['tasks'][0]
@@ -138,7 +140,7 @@ def test_daily_and_reroll_share_saved_date_and_login_constraints(db):
 
 
 def test_battle_ac_counts_ordinary_but_never_daily_task_or_k_or_time(db):
-    ai = AsyncMock(); service = Daily(db, ai, accounts('codeforces'))
+    ai = AsyncMock(); service = with_selection_reports(Daily(db, ai, accounts('codeforces')))
     day = service.today().isoformat(); now = int(time.time())
     p = add(db, 'codeforces', '2000-A')
     service.configure(Settings())
@@ -195,7 +197,7 @@ def test_battle_allocated_while_ai_selects_does_not_create_daily_task(db):
         db.set('battle_problem_ids', [row['id']])
         return AIResult({'selected_problems': [{'id': row['id'], 'reason': '适合'}]}, {})
     ai.complete.side_effect = race
-    service = Daily(db, ai, accounts('codeforces')); service.configure(Settings())
+    service = with_selection_reports(Daily(db, ai, accounts('codeforces'))); service.configure(Settings())
     with pytest.raises(AIError, match='候选资格已变化'):
         asyncio.run(service.roll(Roll(provider='api', model='test')))
     state = service.state()
@@ -226,7 +228,7 @@ def test_legacy_contest_number_requires_explicit_saved_date_or_clear(db):
 def test_legacy_constraint_blocks_daily_before_any_ai_request(db):
     add(db, 'codeforces', '2000-A'); ai = AsyncMock()
     db.set('training', {'min_contest': 1800})
-    daily = Daily(db, ai, accounts('codeforces')); daily.configure(Settings())
+    daily = with_selection_reports(Daily(db, ai, accounts('codeforces'))); daily.configure(Settings())
     with pytest.raises(AIError, match='最小比赛编号'):
         asyncio.run(daily.roll(Roll(provider='api', model='test')))
     ai.complete.assert_not_called()

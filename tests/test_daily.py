@@ -11,6 +11,8 @@ import pytest
 from fastapi import HTTPException
 
 from acmweb.daily import Complete, Daily, Roll, Settings, TaskTime, TZ
+from selection_report_fixtures import with_selection_reports
+
 from acmweb.ai import AIResult
 from acmweb.database import Database
 from acmweb.codex_bridge import AIError
@@ -22,7 +24,7 @@ def daily(tmp_path):
     db = Database(tmp_path / 'daily.sqlite3')
     ai = AsyncMock()
     accounts = SimpleNamespace(credential_checks=SimpleNamespace(statuses=lambda: {"items": [{"platform": "codeforces", "status": "authenticated", "login_verified": True}]}))
-    service = Daily(db, ai, accounts)
+    service = with_selection_reports(Daily(db, ai, accounts))
     service.configure(Settings(daily_goal=2, duration_days=14))
     with db.connect() as conn:
         conn.executemany('INSERT INTO problem_catalog VALUES(?,?,?)', [
@@ -266,7 +268,7 @@ def test_four_daily_tasks_reject_five_model_choices_without_saving_tasks(daily):
     with daily.db.connect() as db:
         assert db.execute('SELECT COUNT(*) FROM daily_plan_tasks').fetchone()[0] == 0
 
-    restored = Daily(Database(daily.db.path), daily.ai, daily.accounts)
+    restored = with_selection_reports(Daily(Database(daily.db.path), daily.ai, daily.accounts))
     assert restored.state()['plan']['failure'] == state['plan']['failure']
 
 
@@ -276,7 +278,7 @@ def test_four_daily_tasks_survive_database_reopen_without_new_ai_call(daily):
     before = asyncio.run(daily.roll(Roll(provider='api', model='relay-model',
         task_id=before['plan']['tasks'][2]['task_id'])))
     daily.ai.complete.reset_mock()
-    restored = Daily(Database(daily.db.path), daily.ai, daily.accounts)
+    restored = with_selection_reports(Daily(Database(daily.db.path), daily.ai, daily.accounts))
     after = restored.state()
     assert after['plan'] == before['plan']
     assert len(after['plan']['tasks']) == after['locked_goal'] == 4
@@ -298,7 +300,7 @@ def test_generation_failure_is_persistent_safe_and_preserves_previous_tasks(dail
     daily.ai.complete.side_effect = error
     with pytest.raises(type(error)):
         generate(daily)
-    restored = Daily(Database(daily.db.path), daily.ai, daily.accounts)
+    restored = with_selection_reports(Daily(Database(daily.db.path), daily.ai, daily.accounts))
     failure_state = restored.state()
     assert failure_state['plan']['status'] == 'failed'
     assert failure_state['plan']['tasks'] == before['plan']['tasks']
@@ -324,7 +326,7 @@ def test_bad_daily_model_output_never_persists_validation_input_or_other_user_fa
     with daily.db.connect() as db:
         assert 'PRIVATE-INPUT' not in db.execute('SELECT value FROM web_settings WHERE key=?',
             (daily._failure_key(daily.today().isoformat()),)).fetchone()[0]
-    other = Daily(Database(tmp_path / 'other-daily.sqlite3'), daily.ai, daily.accounts)
+    other = with_selection_reports(Daily(Database(tmp_path / 'other-daily.sqlite3'), daily.ai, daily.accounts))
     assert other.state()['plan'] is None
 
 
@@ -387,7 +389,7 @@ def test_not_enough_candidates_no_billed_ai_call(daily):
 def test_concurrent_roll_reservation_atomic_across_service_instances(daily, goal):
     daily.configure(Settings(daily_goal=goal))
     state = generate(daily)
-    second = Daily(daily.db, daily.ai)
+    second = with_selection_reports(Daily(daily.db, daily.ai))
     token = daily.request_roll(state['plan']['tasks'][0]['task_id'], 'api', 'mock')
     with pytest.raises(HTTPException, match='正在进行'):
         second.request_roll(state['plan']['tasks'][-1]['task_id'], 'api', 'mock')
@@ -401,7 +403,7 @@ def test_concurrent_roll_reservation_atomic_across_service_instances(daily, goal
 def test_simultaneous_roll_requests_reserve_only_one_quota_slot(daily, goal):
     daily.configure(Settings(daily_goal=goal))
     state = generate(daily)
-    second = Daily(daily.db, daily.ai)
+    second = with_selection_reports(Daily(daily.db, daily.ai))
     barrier = Barrier(2)
 
     def reserve(service):
@@ -459,7 +461,7 @@ def test_legacy_history_preserved_quota_migrated_but_manual_claims_untrusted(dai
             db.execute('INSERT INTO daily_rolls VALUES(?,?,?,?,?)', (day, i, f'codeforces:{i}-A', '{}', 1))
         db.execute('INSERT INTO daily_completions VALUES(?,?,?)', (day, 'codeforces:1-A', 1))
         db.execute('INSERT INTO daily_checkins VALUES(?,?,?,?,?)', (day, 'k', 1, 1, 1))
-    migrated = Daily(daily.db, daily.ai)
+    migrated = with_selection_reports(Daily(daily.db, daily.ai))
     state = migrated.state()
     assert state['rerolls_remaining'] == 0 and state['legacy_notice']
     assert state['checkin']['kind'] is None
@@ -536,7 +538,7 @@ def test_actual_time_requires_verified_task_and_is_correctable(daily):
 def test_time_validation_isolated_and_legacy_budget_ignored(daily, tmp_path):
     task = generate(daily)['plan']['tasks'][0]
     ac(daily, task['problem_id'])
-    other = Daily(Database(tmp_path / 'other.sqlite3'), daily.ai)
+    other = with_selection_reports(Daily(Database(tmp_path / 'other.sqlite3'), daily.ai))
     with pytest.raises(HTTPException, match='找不到'):
         other.save_time(TaskTime(task_id=task['task_id'], duration_minutes=20))
     for bad in (0, 1441, -1, True, '30', 2.5):
@@ -592,7 +594,7 @@ def specialist(daily):
         excluded = set(options['excluded_ids'])
         rows = [dict(position=i + 1, problem_id=f'luogu:P{i}', platform='luogu', title=f'模板{i}',
                      url=f'https://www.luogu.com.cn/problem/P{i}', difficulty=1000+i,
-                     stage='模板' if i == 1 else '巩固', reason='专题证据')
+                     stage='模板' if i == 1 else '巩固', reason='专题证据', ai_report_id=f'synthetic-specialist-report-{i}')
                 for i in range(1, 100) if f'luogu:P{i}' not in excluded][:count]
         return rows
     service = SimpleNamespace(select_items=AsyncMock(side_effect=select_items))

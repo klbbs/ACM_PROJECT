@@ -14,6 +14,7 @@ from .catalog import (PLATFORMS, PUBLISHED_SOURCES, _date_floor, _pool,
                       verified_platforms)
 from .codex_bridge import AIError
 from .runtime_logs import emit_event
+from .selection_report_links import prepare_selection_reports
 from .training_topics import MODES, TOPICS, is_template, matches_topic, topic_groups
 
 DDL = '''
@@ -63,6 +64,7 @@ class Choice(Strict):
 class Training:
     def __init__(self, database, ai, accounts=None, event_log=None):
         self.db, self.ai, self.accounts, self.event_log = database, ai, accounts, event_log
+        self.selection_reports = None
         self.guard = None
         self.active_ai = False
         self._selecting = False
@@ -209,8 +211,10 @@ class Training:
             raise HTTPException(409, '专项选题正在进行，请等待后再试')
         self._selecting = True
         try:
-            return await self._select_items(topic_id, mode, count, provider, model,
-                excluded_ids, template_first, forbid_templates, difficulty_bounds)
+            return await asyncio.wait_for(self._select_items(topic_id, mode, count, provider, model,
+                excluded_ids, template_first, forbid_templates, difficulty_bounds), timeout=540)
+        except asyncio.TimeoutError:
+            raise AIError('专项选题与阅读报告超时，本次未保存；请稍后手动重试') from None
         finally:
             self._selecting = False
 
@@ -332,6 +336,7 @@ class Training:
                     if key in previous and rating < previous[key]:
                         raise AIError('AI 返回的同平台难度顺序倒退，本次未保存')
                     previous[key] = rating
+            await refresh_recommendation_sessions(self.accounts)
             current = {p['id'] for p in self._pool(topic, ids) if self._within_difficulty_bounds(p, bounds)}
             if not set(ids) <= current or set(ids) & excluded:
                 raise AIError('候选资格已变化（登录、提交、日期或对战），本次未保存，请手动重试')
@@ -346,6 +351,29 @@ class Training:
                     'difficulty_label': problem.get('difficulty_label') or problem.get('difficulty_source') or '平台未标定难度',
                     'stage': stage, 'learning_level': choice.learning_level,
                     'reason': choice.reason, 'completed': False})
+            items = await prepare_selection_reports(self.selection_reports, items, provider, model,
+                context={'topic_id': topic['id'], 'topic_title': topic['title'], 'mode': mode,
+                         'mode_title': next(m['title'] for m in MODES if m['id'] == mode)})
+            # Reading all statements may outlive the five-minute login evidence.
+            # Recheck the current account set and all constraints before a caller
+            # is allowed to persist this exact set of reported problems.
+            await refresh_recommendation_sessions(self.accounts)
+            current = {p['id']: p for p in self._pool(topic, ids) if self._within_difficulty_bounds(p, bounds)}
+            if not set(ids) <= current.keys() or set(ids) & excluded:
+                raise AIError('候选资格在阅读报告期间已变化（登录、提交、日期或对战），本次未保存，请手动重试')
+            if (template_first and (not is_template(current[ids[0]], topic)
+                    or any(is_template(current[pid], topic) for pid in ids[1:]))) or (
+                    forbid_templates and any(is_template(current[pid], topic) for pid in ids)):
+                raise AIError('模板资格在阅读报告期间已变化，本次未保存，请手动重试')
+            current_ratings = {}
+            for pid in ids:
+                problem = current[pid]
+                rating = problem.get('difficulty') if problem['platform'] == 'codeforces' else problem.get('native_difficulty')
+                if type(rating) is int and rating > 0:
+                    platform = problem['platform']
+                    if platform in current_ratings and rating < current_ratings[platform]:
+                        raise AIError('同平台递进难度在阅读报告期间已变化，本次未保存，请手动重试')
+                    current_ratings[platform] = rating
             emit_event(self.event_log, 'training.selected', train_mode=mode,
                 candidate_count=len(candidates), template_count=len(templates), requested_count=count)
             return items

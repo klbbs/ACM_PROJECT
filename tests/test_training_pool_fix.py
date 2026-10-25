@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from acmweb import catalog
+from selection_report_fixtures import with_selection_reports
+
 from acmweb.ai import AIResult
 from acmweb.codex_bridge import AIError
 from acmweb.database import Database
@@ -95,7 +97,7 @@ def test_external_platform_exact_text_tags_are_usable_but_numeric_tags_are_not()
 
 def test_specialist_shortlist_contains_all_of_this_users_verified_platforms(tmp_path):
     db, ai = Database(tmp_path / 'mine.sqlite3'), choosing_ai()
-    service = Training(db, ai, accounts(*catalog.PLATFORMS))
+    service = with_selection_reports(Training(db, ai, accounts(*catalog.PLATFORMS)))
     save(db, 'luogu', 'P3367', '【模板】并查集', tags=[47])
     save(db, 'atcoder', 'practice2_a', 'Disjoint Set Union')
     save(db, 'codeforces', '2000-A', 'CF Task', difficulty=1800, tags=['dsu'])
@@ -112,7 +114,7 @@ def test_specialist_shortlist_contains_all_of_this_users_verified_platforms(tmp_
 
 def test_attempted_wa_remains_trainable_while_official_ac_is_excluded(tmp_path):
     db = Database(tmp_path / 'retry.sqlite3')
-    service = Training(db, choosing_ai(), accounts('luogu'))
+    service = with_selection_reports(Training(db, choosing_ai(), accounts('luogu')))
     save(db, 'luogu', 'P3367', '【模板】并查集', tags=[47])
     save(db, 'luogu', 'P9999', '并查集练习', tags=[47])
     with db.connect() as con:
@@ -125,7 +127,7 @@ def test_attempted_wa_remains_trainable_while_official_ac_is_excluded(tmp_path):
 
 def test_topic_and_template_priority_applied_before_random_cap(tmp_path, monkeypatch):
     db = Database(tmp_path / 'large.sqlite3')
-    service = Training(db, choosing_ai(), accounts('luogu'))
+    service = with_selection_reports(Training(db, choosing_ai(), accounts('luogu')))
     monkeypatch.setattr(catalog.secrets, 'SystemRandom', lambda: SimpleNamespace(shuffle=lambda rows: None))
     # A non-hardcoded template can be first in storage and beyond the end of a
     # random 3000-item pool; topic filtering and template priority must precede it.
@@ -141,7 +143,7 @@ def test_topic_and_template_priority_applied_before_random_cap(tmp_path, monkeyp
 
 def test_explicit_generation_fetches_topic_metadata_and_keeps_other_catalog(tmp_path, monkeypatch):
     db, ai = Database(tmp_path / 'discover.sqlite3'), choosing_ai()
-    service = Training(db, ai, accounts('luogu', document=True))
+    service = with_selection_reports(Training(db, ai, accounts('luogu', document=True)))
     save(db, 'luogu', 'P1001', 'A+B')
     requested = []
     class PublicClient:
@@ -164,7 +166,7 @@ def test_explicit_generation_fetches_topic_metadata_and_keeps_other_catalog(tmp_
 
 def test_date_failure_names_exact_constraint_and_never_calls_ai(tmp_path):
     db, ai = Database(tmp_path / 'date.sqlite3'), choosing_ai()
-    service = Training(db, ai, accounts('luogu', 'atcoder'))
+    service = with_selection_reports(Training(db, ai, accounts('luogu', 'atcoder')))
     save(db, 'luogu', 'P3367', '【模板】并查集', tags=[47])
     save(db, 'atcoder', 'practice2_a', 'Disjoint Set Union',
          published_at=1599485511, published_at_source='atcoder.contest.startTime')

@@ -1,4 +1,5 @@
 """Per-user daily practice plans and submission-derived check-ins."""
+import asyncio
 import json
 import math
 import time
@@ -15,6 +16,7 @@ from .analytics import overview
 from .training_topics import TOPICS
 from .codex_bridge import AIError
 from .runtime_logs import emit_event
+from .selection_report_links import prepare_selection_reports
 
 TZ = ZoneInfo("Asia/Shanghai")
 DAILY_DDL = """
@@ -111,6 +113,7 @@ class Daily:
         self.db, self.ai, self.accounts = database, ai, accounts
         self.event_log = event_log
         self.specialist_training = None
+        self.selection_reports = None
         self.guard = None
         self.active_ai = False
         with self.db.connect() as db:
@@ -166,6 +169,7 @@ class Daily:
 
     def request_generate(self, provider, model, today=None):
         day = today or self.today().isoformat()
+        generation_token = uuid.uuid4().hex
         cycle = self._cycle(day, create=True)
         if day > cycle["ends_on"]:
             raise HTTPException(409, "每日任务周期已结束，请更新设置后开始新周期")
@@ -184,8 +188,15 @@ class Daily:
             options = self._options(settings)
             db.execute("INSERT INTO web_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (self._options_key(day), json.dumps(options, ensure_ascii=False)))
+            db.execute("INSERT INTO web_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (self._generation_key(day), json.dumps(generation_token)))
         # A generated plan snapshots its goal; later preference edits cannot lower today's K threshold.
-        return {"day": day, "count": settings["daily_goal"], "provider": provider, "model": model, "training_options": options}
+        return {"day": day, "count": settings["daily_goal"], "provider": provider, "model": model,
+                "training_options": options, "generation_token": generation_token}
+
+    @staticmethod
+    def _generation_key(day):
+        return f"daily_plan_generation_token:{day}"
 
     @staticmethod
     def _options_key(day):
@@ -238,25 +249,25 @@ class Daily:
 
     async def generate(self, payload):
         day, count = payload["day"], payload["count"]
+        generation_token = payload.get("generation_token")
         try:
             with self.db.connect() as db:
+                lease = db.execute("SELECT value FROM web_settings WHERE key=?", (self._generation_key(day),)).fetchone()
+                current = db.execute("SELECT status FROM daily_plans WHERE day=?", (day,)).fetchone()
+                if (not generation_token or not lease or json.loads(lease[0]) != generation_token
+                        or not current or current[0] != 'generating'):
+                    raise AIError('每日计划请求已失效，未开始选题或阅读报告，请刷新重试')
                 history = [row[0] for row in db.execute('SELECT problem_id FROM daily_roll_history WHERE day=?', (day,))]
-            options = payload.get("training_options", self._plan_options(day))
-            if options["selection_type"] == "specialist":
-                chosen = await self._select_specialist(payload, count, history)
-            else:
-                await refresh_recommendation_sessions(self.accounts)
-                pool = self._candidate_pool(count, history)
-                if len(pool) < count:
-                    raise AIError(f"题库中只有 {len(pool)} 道符合条件的未完成题，无法生成 {count} 道每日题目")
-                chosen = await self._select(payload["provider"], payload["model"], pool, count, [])
+            chosen = await self._choose_with_reports(payload, count, history)
             if day != self.today().isoformat():
                 raise AIError("日期已变化，请为新的一天重新生成任务")
             now = int(time.time())
             with self.db.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute("SELECT status FROM daily_plans WHERE day=?", (day,)).fetchone()
-                if not current or current[0] != "generating":
+                lease = db.execute("SELECT value FROM web_settings WHERE key=?", (self._generation_key(day),)).fetchone()
+                if (not current or current[0] != "generating" or not generation_token
+                        or not lease or json.loads(lease[0]) != generation_token):
                     raise AIError("每日计划状态已变化，请重试")
                 self._assert_no_battles(db, [row["id"] for row in chosen])
                 db.execute("DELETE FROM daily_plan_tasks WHERE day=?", (day,))
@@ -269,7 +280,10 @@ class Daily:
         except BaseException as error:
             with self.db.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                changed = db.execute("UPDATE daily_plans SET status='failed' WHERE day=? AND status='generating'", (day,)).rowcount
+                lease = db.execute("SELECT value FROM web_settings WHERE key=?", (self._generation_key(day),)).fetchone()
+                changed = 0
+                if generation_token and lease and json.loads(lease[0]) == generation_token:
+                    changed = db.execute("UPDATE daily_plans SET status='failed' WHERE day=? AND status='generating'", (day,)).rowcount
                 if changed:
                     # Persist only our fixed descriptions, never upstream text or validation inputs.
                     failure = self._generation_failure(error)
@@ -307,15 +321,7 @@ class Daily:
     async def _roll(self, payload):
         token, day, task_id = payload["token"], payload["day"], payload["task_id"]
         try:
-            if payload.get("training_options", self._plan_options(day))["selection_type"] == "specialist":
-                chosen = await self._select_specialist(payload, 1, payload["excluded_ids"], replacing=True)
-            else:
-                await refresh_recommendation_sessions(self.accounts)
-                pool = self._candidate_pool(1, payload["excluded_ids"])
-                if not pool:
-                    raise AIError("没有新的候选题可替换，请同步题库或调整训练难度")
-                chosen = await self._select(payload["provider"], payload["model"], pool, 1, payload["excluded_ids"],
-                                            task_id, payload.get('target_problem'))
+            chosen = await self._choose_with_reports(payload, 1, payload["excluded_ids"], replacing=True)
             replacement = chosen[0]
             if day != self.today().isoformat():
                 raise AIError("日期已变化，本次换题不消耗额度")
@@ -344,6 +350,28 @@ class Daily:
                 db.execute("DELETE FROM daily_roll_reservations WHERE token=? AND status='reserved'", (token,))
             raise
 
+    async def _choose_with_reports(self, payload, count, excluded, replacing=False):
+        # Keep the entire operation (session refresh, initial selection and
+        # reading reports) shorter than the existing ten-minute reservations.
+        try:
+            return await asyncio.wait_for(self._choose(payload, count, excluded, replacing), timeout=540)
+        except asyncio.TimeoutError:
+            raise AIError('每日选题与阅读报告超时，未保存题单且不扣换题次数；请稍后手动重试') from None
+
+    async def _choose(self, payload, count, excluded, replacing):
+        options = payload.get("training_options", self._plan_options(payload["day"]))
+        if options["selection_type"] == "specialist":
+            return await self._select_specialist(payload, count, excluded, replacing=replacing)
+        await refresh_recommendation_sessions(self.accounts)
+        pool = self._candidate_pool(count, excluded)
+        if len(pool) < count:
+            if replacing:
+                raise AIError("没有新的候选题可替换，请同步题库或调整训练难度")
+            raise AIError(f"题库中只有 {len(pool)} 道符合条件的未完成题，无法生成 {count} 道每日题目")
+        return await self._select(payload["provider"], payload["model"], pool, count, excluded,
+                                  payload["task_id"] if replacing else None,
+                                  payload.get('target_problem') if replacing else None)
+
     async def _select_specialist(self, payload, count, excluded, replacing=False):
         if self.specialist_training is None:
             raise AIError("专项选题服务尚未配置，请稍后重试")
@@ -361,12 +389,16 @@ class Daily:
             forbid_templates=bool(replacing and learn and payload.get("ordinal") != 0), **constraints)
         if len(items) != count:
             raise DailyCountError(count, len(items))
-        rows, seen = [], set()
+        rows, seen, reports = [], set(), set()
         for item in items:
             pid = item["problem_id"]
             if pid in seen or pid in excluded or ':' not in pid:
                 raise AIError("专项候选无效或重复，未保存每日计划")
+            report_id = item.get('ai_report_id')
+            if not isinstance(report_id, str) or not report_id.strip() or len(report_id) > 128 or report_id in reports:
+                raise AIError('专项题目缺少匹配的阅读报告，未保存每日计划，请重试')
             seen.add(pid)
+            reports.add(report_id)
             platform, raw = pid.split(':', 1)
             rows.append({**item, "id": pid, "problem_id": raw, "platform": platform})
         return rows
@@ -419,28 +451,40 @@ class Daily:
              "training_preferences": prefs, "daily_budget": self.settings(),
              "actual_time_evidence": self.evidence(), "recent_learning_evidence": self._learning_evidence(),
              "candidates": [{k: p.get(k) for k in ("id", "platform", "title", "difficulty", "difficulty_source", "native_difficulty", "difficulty_label", "tags", "url", "published_at", "published_at_source")} for p in pool]}, selection_schema)
+            allowed = {item["id"]: item for item in pool}
+            selected, seen = [], set()
+            try:
+                validated = DailySelection.model_validate(result.data)
+            except ValidationError:
+                raise AIError("AI 返回的每日题目格式不符合要求，未保存题单") from None
+            for item in validated.selected_problems:
+                row = item.model_dump()
+                pid = row.get("id")
+                if pid not in allowed or pid in seen or pid in excluded:
+                    raise AIError("AI 返回了候选列表以外或重复的题目，未保存每日计划")
+                seen.add(pid)
+                selected.append({**allowed[pid], "reason": str(row.get("reason", ""))[:500]})
+            if len(selected) != count:
+                raise DailyCountError(count, len(selected))
+            await refresh_recommendation_sessions(self.accounts)
+            self._assert_current_selection(selected)
+            selected = await prepare_selection_reports(self.selection_reports, selected, provider, model,
+                context={'mode': 'random', 'mode_title': '每日随机训练'})
+            await refresh_recommendation_sessions(self.accounts)
+            self._assert_current_selection(selected)
+            return selected
         finally:
             self.active_ai = False
-        allowed = {item["id"]: item for item in pool}
-        selected, seen = [], set()
-        try:
-            validated = DailySelection.model_validate(result.data)
-        except ValidationError:
-            raise AIError("AI 返回的每日题目格式不符合要求，未保存题单") from None
-        for item in validated.selected_problems:
-            row = item.model_dump()
-            pid = row.get("id")
-            if pid not in allowed or pid in seen or pid in excluded:
-                raise AIError("AI 返回了候选列表以外或重复的题目，未保存每日计划")
-            seen.add(pid)
-            selected.append({**allowed[pid], "reason": str(row.get("reason", ""))[:500]})
-        if len(selected) != count:
-            raise DailyCountError(count, len(selected))
+
+    def _assert_current_selection(self, selected):
+        # Read current preferences, not those captured before a potentially
+        # lengthy model/statement-reading request.
+        prefs = self.db.get("training", {})
         current = recommendation_candidates(self.db, self.accounts, minimum=prefs.get("minimum", 1000),
-            maximum=prefs.get("maximum", 1600), limit=count, preferred_ids=[row["id"] for row in selected])
+            maximum=prefs.get("maximum", 1600), limit=len(selected),
+            preferred_ids=[row["id"] for row in selected])
         if not {row["id"] for row in selected} <= {row["id"] for row in current}:
             raise AIError("候选资格已变化（登录、训练日期、提交或对战），未保存题单，请重试")
-        return selected
 
     @staticmethod
     def _assert_no_battles(db, ids):
