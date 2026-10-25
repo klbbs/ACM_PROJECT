@@ -1,0 +1,18 @@
+.wb-choice-entry {
+  min-width: 0;
+  margin: 9px 0;
+}
+.wb-choice-entry > .wb-choice {
+  margin: 0;
+}
+.wb-choice-entry > .selection-report-entry {
+  margin-top: 0.4rem;
+}
+.wb-choice-entry > .selection-report-entry > .button {
+  width: 100%;
+  white-space: normal;
+}
+.wb-choice-entry > .selection-report-entry > .help {
+  margin: 0.4rem 0;
+  overflow-wrap: anywhere;
+}

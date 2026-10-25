@@ -13,6 +13,8 @@ import { TranslationPanel } from './translation-panel'
 import { ProblemRecordEditor } from './problem-records'
 import { RemoteSubmissionPanel } from './remote-submission'
 import { EditorTemplates } from './editor-templates'
+import { SelectionReportButton } from './selection-report'
+import './workbench-selection-report.css'
 import type { CodeTemplate } from './template-types'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
 type Row = Record<string, any>
@@ -317,25 +319,34 @@ export function WorkbenchPage({
             </p>
           )}
           {choices.items.map((p: Row) => (
-            <button
-              key={p.id}
-              disabled={busy}
-              className={`wb-choice ${pid === p.id ? 'selected' : ''}`}
-              onClick={() => choose(p.id)}
-            >
-              <span>
-                <strong>
-                  {p.problem_id} · {p.title}
-                </strong>
-                <b className="wb-score">{p.match_score}</b>
-              </span>
-              <small>
-                {names[p.platform] || p.platform} ·{' '}
-                {p.difficulty ?? p.native_difficulty ?? '未标定难度'} · {p.recommendation_source}
-              </small>
-              {p.difficulty_source && <small>{p.difficulty_source}</small>}
-              <small>{p.reason}</small>
-            </button>
+            <div className="wb-choice-entry" key={p.id}>
+              <button
+                disabled={busy}
+                className={`wb-choice ${pid === p.id ? 'selected' : ''}`}
+                onClick={() => choose(p.id)}
+              >
+                <span>
+                  <strong>
+                    {p.problem_id} · {p.title}
+                  </strong>
+                  <b className="wb-score">{p.match_score}</b>
+                </span>
+                <small>
+                  {names[p.platform] || p.platform} ·{' '}
+                  {p.difficulty ?? p.native_difficulty ?? '未标定难度'} · {p.recommendation_source}
+                </small>
+                {p.difficulty_source && <small>{p.difficulty_source}</small>}
+                <small>{p.reason}</small>
+              </button>
+              {(p.ai_report_id || p.recommendation_source === '已保存的 AI 推荐') && (
+                <SelectionReportButton
+                  key={`${p.id}:${p.ai_report_id || 'legacy'}`}
+                  reportId={p.ai_report_id}
+                  problemId={p.id}
+                  title={p.title}
+                />
+              )}
+            </div>
           ))}
           {!!choices.recent.length && (
             <>
