@@ -48,6 +48,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
   const mounted = useRef(true)
   const profileInitialized = useRef(false)
   const boardRequest = useRef(0)
+  const profileRequest = useRef(0)
   function fail(e: any) {
     const message = e?.message || '请求未完成'
     if (mounted.current) setError(message)
@@ -110,7 +111,12 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
   useEffect(() => {
     if (!available) return
     let alive = true
-    readBoard().catch((error) => {
+    Promise.all([
+      readBoard(),
+      api('/social/me').then((own) => {
+        if (alive && mounted.current) setMe(own)
+      }),
+    ]).catch((error) => {
       if (alive) fail(error)
     })
     return () => {
@@ -146,10 +152,12 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
   }
   async function openProfile(id: string) {
     setError('')
+    const request = ++profileRequest.current
     try {
-      setProfile(await api(`/social/users/${encodeURIComponent(id)}?day=${day}`))
+      const value = await api(`/social/users/${encodeURIComponent(id)}?day=${day}`)
+      if (mounted.current && request === profileRequest.current) setProfile(value)
     } catch (e) {
-      fail(e)
+      if (request === profileRequest.current) fail(e)
     }
   }
   useEffect(() => {
@@ -162,6 +170,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
     detail?.focus({ preventScroll: true })
   }, [profile])
   useEffect(() => {
+    profileRequest.current += 1
     setProfile(null)
   }, [tab, day])
   const friendButtons = (u: any, showProfile = true) => (
@@ -305,7 +314,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                     type="date"
                     max={today()}
                     value={day}
-                    onChange={(e) => setDay(e.target.value || today())}
+                    onChange={(e) => { profileRequest.current += 1; setProfile(null); setDay(e.target.value || today()) }}
                   />
                 </label>
               </div>
@@ -326,7 +335,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
               </div>
               {!me.accounts.length && (
                 <p className="help">
-                  尚未认领已验证的平台身份，记录暂不计入榜单。请到“我的主页”完成身份认领。
+                  尚无可计数的平台身份。请在“连接与设置”检测登录，验证通过后将自动关联榜单；已解除认领或存在身份冲突时，请到“我的主页”处理。
                 </p>
               )}
               {board?.items?.length ? (
@@ -339,6 +348,9 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                         {u.self ? ' · 我' : ''}
                       </button>
                       <strong>{u.count} 题</strong>
+                      <button className="secondary" onClick={() => openProfile(u.id)}>
+                        查看当日题目
+                      </button>
                     </li>
                   ))}
                 </ol>
@@ -346,7 +358,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                 <p>还没有用户开启公开榜单。成为第一位分享进步的人吧。</p>
               )}
               <p className="help">
-                每日任务以外的题目同样计入。同步题库只更新题目资料；更新做题数量请点击“同步我的提交记录”，或在工作台同步本题提交。
+                每日任务以外的题目同样计入，按官方提交时间统计；今天同步的历史 AC 不会计入今天。同步题库也会获取已配置账号的今日提交；更新做题数量还可点击“同步我的提交记录”，或在工作台同步本题提交。点击“查看当日题目”查看其他用户完成的题目、链接、分数和标签。
                 分数与标签保留原平台口径；没有提供的数据会标为“未标定”。
               </p>
             </section>
@@ -472,9 +484,8 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
               <section className="card">
                 <h2>用于榜单与对战的平台身份</h2>
                 <p>
-                  先在“连接与设置”保存 Cookie
-                  并点击“检测登录状态”，成功后在这里认领。每个平台账号仅能认领到一个站内用户；认领证明身份归属，不代表登录状态永久有效；实际登录状态仍以设置页检测为准。修改
-                  Cookie 后需重新检测认领。
+                  在“连接与设置”完成扫码或 Cookie 绑定并通过“检测登录状态”后，平台身份会自动关联榜单与对战。
+                  每个平台账号仅能关联一个站内用户；主动解除后可在这里重新认领。修改凭据后需重新检测，实际登录状态以设置页检测为准。
                 </p>
                 <div className="social-user-list">
                   {me.bindings.map((a: any) => {
@@ -696,7 +707,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
         <section className="card social-profile-detail" aria-label="用户主页" tabIndex={-1}>
           <div className="section-head">
             <h2>{profile.profile.display_name} 的主页</h2>
-            <button className="secondary" onClick={() => setProfile(null)}>
+            <button className="secondary" onClick={() => { profileRequest.current += 1; setProfile(null) }}>
               关闭主页
             </button>
           </div>

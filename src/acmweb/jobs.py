@@ -77,8 +77,21 @@ class Jobs:
                     result=await asyncio.to_thread(refresh_catalog,self.db,on_progress=publish_progress)
                 finally:
                     with progress_lock: progress_open = False
-                status = "completed" if result["complete"] else ("partial" if result["count"] else "failed")
-                self.update(job_id,status,result,error="所有平台题库同步失败；已保留原缓存，请查看分平台状态" if status == "failed" else None)
+                catalog_status = "completed" if result["complete"] else ("partial" if result["count"] else "failed")
+                # Personal history is independent of public catalog metadata.
+                # Its failure must never discard successful catalog data.
+                if self.accounts and self.accounts.public()['configured']:
+                    self.update(job_id, "running", {**result, "submission_sync": {"status": "running"}})
+                    try:
+                        history = await asyncio.to_thread(self.crawl, since_today=True)
+                        result['submission_sync'] = {"status": "completed" if history['complete'] else "partial",
+                            "accounts": history['accounts'], "message": "今日官方提交已同步，已验证的平台身份将用于当日榜单" if history['complete'] else "部分平台提交未能同步，请在连接与设置检查账号后重试"}
+                    except Exception:
+                        result['submission_sync'] = {"status": "failed", "message": "今日提交同步失败；题库结果已保留，请单独重试同步我的提交记录"}
+                else:
+                    result['submission_sync'] = {"status": "skipped", "message": "尚未配置平台账号，仅同步公开题库；请先连接平台再同步我的提交记录"}
+                status = "partial" if catalog_status == "completed" and result['submission_sync']['status'] in {'partial', 'failed'} else catalog_status
+                self.update(job_id,status,result,error="所有平台题库同步失败；已保留原缓存，请查看分平台状态" if catalog_status == "failed" else None)
             elif kind=="ai_test":
                 result=await self.ai.test_connection()
                 self.update(job_id,"completed",result)
@@ -137,11 +150,16 @@ class Jobs:
             message=str(exc) if isinstance(exc,AIError) else f"任务失败 ({type(exc).__name__})，请检查服务端环境与网络"
             self.update(job_id,"failed",error=message)
 
-    def crawl(self, platform=None):
+    def crawl(self, platform=None, *, since_today=False):
         config=load(self.accounts.effective_path if self.accounts else self.settings.config_path)
         config.database=self.settings.database
         config.output_dir=self.settings.data_dir/"runs"
-        code=crawl(config,Namespace(platform=[platform] if platform else None,since=None,full=False,max_pages=None))
+        since = None
+        if since_today:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            since = int(datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        code=crawl(config,Namespace(platform=[platform] if platform else None,since=since,full=False,max_pages=None))
         with self.db.connect() as db:
             row=db.execute("SELECT data FROM runs ORDER BY collected_at DESC,id DESC LIMIT 1").fetchone()
         if not row:

@@ -5,6 +5,9 @@ from datetime import datetime
 from test_multiuser import site
 from ojcrawler.models import Collection, Submission
 from ojcrawler.storage import Store
+from acmweb.jobs import Jobs
+
+_REAL_CRAWL = Jobs.crawl
 
 
 def child(site, who):
@@ -382,3 +385,97 @@ def test_duel_ac_preserves_account_snapshot_rating_history_and_watermark(site, m
     assert current_overview['platforms'][0]['rating_history'] == saved_history
     assert current_overview['platforms'][0]['last_sync'] == previous_overview['platforms'][0]['last_sync']
     assert current_overview['stats']['accepted'] == previous_overview['stats']['accepted'] + 1
+
+
+def test_verified_binding_automatically_joins_board_without_second_claim(site):
+    request, admin, member, *_ = site
+    assert request(admin, 'PUT', '/api/accounts', {'items': [
+        {'platform': 'codeforces', 'handle': 'Owner', 'cookie': 'session=verified-private-value'}]}).status_code == 200
+    runtime = child(site, admin)
+    checks = runtime.state.credential_checks
+    _, fingerprint = checks.credential('codeforces', 'Owner')
+    checks.cache[('codeforces', 'Owner')] = (fingerprint, {'platform': 'codeforces', 'handle': 'Owner',
+        'checked_at': int(time.time()), 'login_verified': True})
+    now = int(time.time())
+    with runtime.state.database.connect() as db:
+        db.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',
+            ('codeforces', 'Owner', '801', '1000-A', now, 'AC', json.dumps({'problem': {'tags': ['dp'], 'difficulty': 1200}, 'score': 100}), now))
+    assert request(admin, 'PUT', '/api/social/me', {'leaderboard': True}).status_code == 200
+    board = request(member, 'GET', '/api/social/leaderboard').json()
+    assert board['items'][0]['count'] == 1
+    detail = request(member, 'GET', f"/api/social/users/{admin['user']['id']}").json()['items'][0]
+    assert detail['score'] == 100 and detail['tags'] == ['dp']
+    # Ownership persists when the short-lived connectivity cache is gone.
+    checks.cache.clear()
+    assert request(member, 'GET', '/api/social/leaderboard').json()['items'][0]['count'] == 1
+
+
+def test_automatic_claim_respects_explicit_optout_and_cannot_steal_identity(site):
+    request, admin, member, *_ = site
+    runtime = claim(site, admin, 'Owner')
+    assert request(admin, 'DELETE', '/api/social/accounts/codeforces/OWNER', {}).status_code == 200
+    assert request(admin, 'GET', '/api/social/me').json()['accounts'] == []
+    assert request(admin, 'POST', '/api/social/accounts', {'platform': 'codeforces', 'handle': 'Owner'}).status_code == 200
+    assert request(member, 'PUT', '/api/accounts', {'items': [
+        {'platform': 'codeforces', 'handle': 'owner', 'cookie': 'session=other'}]}).status_code == 200
+    other = child(site, member)
+    checks = other.state.credential_checks
+    _, fp = checks.credential('codeforces', 'owner')
+    checks.cache[('codeforces', 'owner')] = (fp, {'platform': 'codeforces', 'handle': 'owner',
+        'checked_at': int(time.time()), 'login_verified': True})
+    assert request(member, 'GET', '/api/social/me').json()['accounts'] == []
+    assert request(admin, 'GET', '/api/social/me').json()['accounts'] == [{'platform': 'codeforces', 'handle': 'Owner'}]
+
+
+def test_unverified_or_changed_binding_never_auto_claims(site):
+    request, admin, *_ = site
+    runtime = claim(site, admin, 'Owner')
+    assert request(admin, 'PUT', '/api/accounts', {'items': [
+        {'platform': 'codeforces', 'handle': 'Owner', 'cookie': 'session=changed'}]}).status_code == 200
+    # Stale cache proves the former credential only.
+    assert request(admin, 'GET', '/api/social/me').json()['accounts'] == []
+    checks = runtime.state.credential_checks
+    _, fp = checks.credential('codeforces', 'Owner')
+    checks.cache[('codeforces', 'Owner')] = (fp, {'platform': 'codeforces', 'handle': 'Owner',
+        'checked_at': int(time.time()), 'login_verified': False})
+    assert request(admin, 'GET', '/api/social/me').json()['accounts'] == []
+
+
+def test_catalog_sync_updates_today_board_and_public_problem_details(site, monkeypatch):
+    import asyncio
+    import acmweb.jobs as jobs_module
+    request, admin, member, *_ = site
+    runtime = claim(site, admin, 'Owner')
+    assert request(admin, 'PUT', '/api/social/me', {'leaderboard': True}).status_code == 200
+    monkeypatch.setattr(jobs_module, 'refresh_catalog', lambda database, on_progress=None:
+        {'count': 1, 'complete': True, 'platforms': [{'platform': 'codeforces', 'status': 'updated', 'count': 1}]})
+    now = int(time.time())
+    def collect(config, args):
+        assert args.since <= now
+        store = Store(config.database)
+        try:
+            result = Collection('codeforces', 'Owner', complete=True, submissions=[
+                Submission('901', '1000-A', now, 'AC', score=100,
+                    problem={'title': 'Synced official fixture', 'difficulty': 1200, 'tags': ['dp']})])
+            store.save('fixture-catalog-run', now, result)
+            store.save_run({'run_id': 'fixture-catalog-run', 'collected_at': now,
+                'accounts': [result.to_dict()]})
+        finally:
+            store.close()
+        return 0
+    monkeypatch.setattr(jobs_module, 'crawl', collect)
+    # The multi-user fixture stubs Jobs.crawl globally; restore the real bridge
+    # while replacing only the official network collector with test evidence.
+    monkeypatch.setattr(Jobs, 'crawl', _REAL_CRAWL)
+    async def run():
+        jobs = runtime.state.jobs
+        job = jobs.start('catalog')
+        await jobs.tasks[job['id']][1]
+        return jobs.list()[0]
+    row = asyncio.run(run())
+    assert row['status'] == 'completed'
+    assert row['result']['submission_sync']['status'] == 'completed'
+    assert request(member, 'GET', '/api/social/leaderboard').json()['items'][0]['count'] == 1
+    item = request(member, 'GET', f"/api/social/users/{admin['user']['id']}").json()['items'][0]
+    assert item['url'] == 'https://codeforces.com/problemset/problem/1000/A'
+    assert item['score'] == 100 and item['difficulty'] == 1200 and item['tags'] == ['dp']

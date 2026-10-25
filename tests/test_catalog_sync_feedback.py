@@ -123,6 +123,7 @@ def test_job_persists_partial_progress_and_finishes_with_partial_status(db, monk
     row = asyncio.run(run())
     assert any(args[1] == 'running' and len(args) > 2 and args[2]['count'] == 3 for args, kwargs in calls)
     assert row['status'] == 'partial' and row['result']['count'] == 3
+    assert row['result']['submission_sync']['status'] == 'skipped'
 
 
 def test_late_thread_progress_cannot_resurrect_cancelled_job(db, monkeypatch):
@@ -154,3 +155,48 @@ def test_diagnostic_rejection_order_matches_candidate_predicates(db):
     counts = result['platforms'][0]['filter_counts']
     assert counts['difficulty'] == 1 and counts['unknown_date'] == 0
     assert not catalog.recommendation_candidates(db, accounts('codeforces'), minimum=800, maximum=1200)
+
+
+@pytest.mark.parametrize('history_status', ['complete', 'partial', 'exception'])
+def test_catalog_also_syncs_today_submissions_without_losing_catalog_on_failure(db, monkeypatch, history_status):
+    import acmweb.jobs as jobs_module
+    monkeypatch.setattr(jobs_module, 'refresh_catalog', lambda database, on_progress=None:
+        {'count': 3, 'complete': True, 'platforms': [{'platform': 'codeforces', 'status': 'updated', 'count': 3}]})
+    called = []
+    def history(self, platform=None, *, since_today=False):
+        called.append(since_today)
+        if history_status == 'exception':
+            raise RuntimeError('session=PRIVATE-SECRET')
+        return {'complete': history_status == 'complete', 'accounts': []}
+    monkeypatch.setattr(Jobs, 'crawl', history)
+    async def run():
+        jobs = Jobs(db, SimpleNamespace(), None, SimpleNamespace(public=lambda: {'configured': True}))
+        job = jobs.start('catalog')
+        await jobs.tasks[job['id']][1]
+        return jobs.list()[0]
+    row = asyncio.run(run())
+    assert called == [True]
+    assert row['result']['count'] == 3 and row['result']['platforms'][0]['status'] == 'updated'
+    assert row['status'] == ('completed' if history_status == 'complete' else 'partial')
+    assert row['result']['submission_sync']['status'] == {'complete': 'completed', 'partial': 'partial', 'exception': 'failed'}[history_status]
+    assert 'PRIVATE-SECRET' not in json.dumps(row)
+
+
+def test_catalog_crawl_reads_full_beijing_day_instead_of_old_watermark(db, monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import acmweb.jobs as jobs_module
+    monkeypatch.setattr(jobs_module, 'load', lambda path: SimpleNamespace())
+    captured = []
+    def collect(config, args):
+        captured.append(args.since)
+        run = {'run_id': 'day-run', 'accounts': []}
+        with db.connect() as connection:
+            connection.execute('INSERT INTO runs VALUES(?,?,?)', ('day-run', 1, json.dumps(run)))
+        return 0
+    monkeypatch.setattr(jobs_module, 'crawl', collect)
+    jobs = Jobs(db, SimpleNamespace(config_path=tmp_path / 'account.toml', database=db.path, data_dir=tmp_path), None)
+    before = int(datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    assert jobs.crawl(since_today=True)['complete']
+    after = int(datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    assert captured[0] in {before, after}

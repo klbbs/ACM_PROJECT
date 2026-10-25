@@ -97,6 +97,7 @@ async function community(page: any, options: { duel?: boolean } = {}) {
             title: 'Watermelon',
             url: 'https://codeforces.com/problemset/problem/4/A',
             difficulty: 800,
+            score: 100,
             tags: ['brute force', 'math'],
           },
         ],
@@ -158,13 +159,14 @@ test('community leaderboard opens problem details and workbench; public settings
 }) => {
   const sent = await community(page)
   await expect(page.getByText('你的榜单目前仅自己掌握')).toBeVisible()
-  await page.getByRole('button', { name: '练习伙伴', exact: true }).click()
+  await page.getByRole('button', { name: '查看当日题目', exact: true }).click()
   await expect(page.getByRole('heading', { name: '练习伙伴 的主页' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Watermelon', exact: true })).toHaveAttribute(
     'href',
     'https://codeforces.com/problemset/problem/4/A',
   )
   await expect(page.getByText('brute force / math', { exact: true })).toBeVisible()
+  await expect(page.getByText('Codeforces · 4-A · 难度 800 · 得分 100')).toBeVisible()
   await expect(page.getByRole('region', { name: '用户主页' })).toBeFocused()
   await page.getByRole('button', { name: '申请好友', exact: true }).click()
   await expect(page.getByRole('button', { name: '撤回申请', exact: true })).toBeVisible()

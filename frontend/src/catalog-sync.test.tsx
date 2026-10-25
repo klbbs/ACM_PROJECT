@@ -183,3 +183,14 @@ it('waits for current candidate conditions before displaying old or zero eligibi
     },
   )
 })
+
+it('keeps successful catalog rows visible when personal submission sync fails', async () => {
+  await render({ candidateCount: 3, job: { status: 'partial', result: {
+    platforms: [{ platform: 'codeforces', status: 'updated', count: 123 }],
+    submission_sync: { status: 'failed', message: '今日提交同步失败；题库结果已保留，请单独重试同步我的提交记录' },
+  } } }, (host) => {
+    expect(host.textContent).toContain('更新 123 题')
+    expect(host.textContent).toContain('今日提交同步：未完成')
+    expect(host.textContent).toContain('题库结果已保留')
+  })
+})
