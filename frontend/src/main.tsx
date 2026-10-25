@@ -56,6 +56,7 @@ import { useRecommendationReport } from './recommendation-report'
 import { version as appVersion } from '../package.json'
 import { TrainingHub } from './training-hub'
 import { SpecialistTrainingPage } from './specialist-training'
+import { SelectionReportButton } from './selection-report'
 
 type Row = Record<string, any>
 const statusNames: Record<string, string> = {
@@ -1864,6 +1865,12 @@ function PracticePage({
                       跳过
                     </Button>
                   </div>
+                  <SelectionReportButton
+                    key={`${p.id}:${p.ai_report_id || 'legacy'}`}
+                    reportId={p.ai_report_id}
+                    problemId={p.id}
+                    title={p.title}
+                  />
                 </article>
               ))}
           </div>

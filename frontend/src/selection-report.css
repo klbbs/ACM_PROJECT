@@ -1,0 +1,110 @@
+.selection-report-entry {
+  min-width: 0;
+}
+.selection-report-entry > .help {
+  max-width: 34rem;
+  margin-top: 0.4rem;
+}
+.selection-report-dialog {
+  box-sizing: border-box;
+  width: min(860px, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 1.4rem;
+  overflow: auto;
+  color: var(--text, #26312b);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #dbe3eb);
+  border-radius: 1rem;
+  box-shadow: 0 20px 70px #10251a40;
+}
+.selection-report-dialog::backdrop {
+  background: #15261e80;
+}
+.selection-report-header,
+.selection-report-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.selection-report-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+.selection-report-header button {
+  flex-shrink: 0;
+}
+.selection-report-problem {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.selection-report-notice {
+  padding: 0.85rem;
+  border-radius: 0.7rem;
+  background: #f5f8ed;
+  line-height: 1.7;
+}
+.selection-report-confirmation {
+  margin: 1.4rem 0;
+  font-weight: 700;
+  line-height: 1.8;
+}
+.selection-report-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.selection-report-loading {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 1.6rem 0;
+}
+.selection-report-loading svg {
+  animation: selection-report-spin 1s linear infinite;
+}
+.selection-report-error {
+  color: var(--danger, #b42335);
+  overflow-wrap: anywhere;
+}
+.selection-report-content {
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.selection-report-content section + section {
+  margin-top: 1.2rem;
+  border-top: 1px solid var(--border, #dbe3eb);
+  padding-top: 0.8rem;
+}
+.selection-report-content h3 {
+  margin: 0.4rem 0;
+}
+.selection-report-content pre,
+.selection-report-content table {
+  max-width: 100%;
+  overflow: auto;
+}
+.selection-report-content pre {
+  padding: 0.8rem;
+  background: var(--surface-secondary, #f1f5f1);
+  border-radius: 0.5rem;
+}
+.selection-report-content table {
+  display: block;
+}
+.selection-report-content img {
+  max-width: 100%;
+}
+@keyframes selection-report-spin {
+  to { transform: rotate(360deg); }
+}
+@media (max-width: 600px) {
+  .selection-report-dialog {
+    width: calc(100vw - 1rem);
+    max-height: calc(100dvh - 1rem);
+    padding: 1rem;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .selection-report-loading svg { animation: none; }
+}

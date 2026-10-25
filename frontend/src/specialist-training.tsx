@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { api, names } from './api'
+import { SelectionReportButton } from './selection-report'
 import './specialist-training.css'
 
 type Topic = {
@@ -44,6 +45,7 @@ type Item = {
   stage: string
   reason: string
   completed: boolean
+  ai_report_id?: string
 }
 type Plan = {
   id: string
@@ -531,6 +533,12 @@ export function SpecialistTrainingPage({
                       提交评估与讨论
                     </button>
                   </div>
+                  <SelectionReportButton
+                    key={`${plan.id}:${item.problem_id}:${item.ai_report_id || 'legacy'}`}
+                    reportId={item.ai_report_id}
+                    problemId={item.problem_id}
+                    title={item.title}
+                  />
                   {expanded === item.position && (
                     <ItemReview
                       key={`${plan.id}:${item.position}`}
