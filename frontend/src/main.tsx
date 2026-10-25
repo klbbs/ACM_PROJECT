@@ -154,7 +154,7 @@ function Button({
   )
 }
 
-function App() {
+export function App() {
   const [auth, setAuth] = useState<Row | null>(null),
     [token, setToken] = useState('')
   const [page, setPageRaw] = useState<Page>('home'),
@@ -207,15 +207,17 @@ function App() {
     [globalSearch, setGlobalSearch] = useState('')
   const [jobsReadError, setJobsReadError] = useState('')
   const seenJobs = useRef<Record<string, string>>({})
-  const [provider, setProvider] = useState('codex'),
-    [model, setModel] = useState(''),
-    [models, setModels] = useState<Row[]>([])
-  const [aiReadiness, setAiReadiness] = useState({ has_key: false, codex_enabled: false })
+  const [provider, setProvider] = useState<'api' | 'codex'>('api'),
+    [model, setModel] = useState('')
+  const [aiReadiness, setAiReadiness] = useState({
+    has_key: false,
+    codex_enabled: false,
+    ready: false,
+    loaded: false,
+  })
   const [reports, setReports] = useState<Row[]>([]),
     [report, setReport] = useState<Row | null>(null),
     [goal, setGoal] = useState('提升比赛稳定性，发现薄弱算法，并制定可执行的训练计划。')
-  const [modelBusy, setModelBusy] = useState(false),
-    [modelNote, setModelNote] = useState('')
   const unlocked = auth?.authenticated
   const recommendationReport = useRecommendationReport(
     unlocked
@@ -249,22 +251,38 @@ function App() {
       window.removeEventListener('acm:open-settings', settings)
     }
   }, [])
+  const applyAiConfig = useCallback((config: Row) => {
+    const channel: 'api' | 'codex' = config.channel === 'codex' ? 'codex' : 'api'
+    setProvider(channel)
+    setModel(String((channel === 'codex' ? config.codex_model : config.model) ?? '').trim())
+    setAiReadiness({
+      has_key: Boolean(config.has_key),
+      codex_enabled: Boolean(config.codex_enabled),
+      ready: Boolean(config.ready),
+      loaded: true,
+    })
+  }, [])
   useEffect(() => {
     if (!auth?.authenticated) return
-    const refreshReadiness = () =>
+    let alive = true
+    const refresh = () =>
       api('/ai/settings')
         .then((config) => {
-          setAiReadiness({
-            has_key: Boolean(config.has_key),
-            codex_enabled: Boolean(config.codex_enabled),
-          })
-          if (!config.codex_enabled) chooseProvider('api')
+          if (alive) applyAiConfig(config)
         })
-        .catch(() => setAiReadiness({ has_key: false, codex_enabled: false }))
-    void refreshReadiness()
-    window.addEventListener('acm:ai-config-changed', refreshReadiness)
-    return () => window.removeEventListener('acm:ai-config-changed', refreshReadiness)
-  }, [auth?.authenticated])
+        .catch(() => {
+          if (!alive) return
+          setProvider('api')
+          setModel('')
+          setAiReadiness({ has_key: false, codex_enabled: false, ready: false, loaded: true })
+        })
+    void refresh()
+    window.addEventListener('acm:ai-config-changed', refresh)
+    return () => {
+      alive = false
+      window.removeEventListener('acm:ai-config-changed', refresh)
+    }
+  }, [auth?.authenticated, applyAiConfig])
   const reload = useCallback(() => {
     setRevision((n) => n + 1)
   }, [])
@@ -364,66 +382,32 @@ function App() {
   }
   const running = (kind: string) =>
     jobs.some((j) => j.kind === kind && ['queued', 'running'].includes(j.status))
-  const loadModels = async () => {
-    setModelBusy(true)
-    setError('')
-    try {
-      const data = await api(`/ai/models?provider=${provider}`)
-      setModels(data.items)
-      setModelNote(data.note)
-      if (!data.items.some((m: Row) => m.id === model))
-        setModel(data.default_model || data.items[0]?.id || '')
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setModelBusy(false)
-    }
-  }
-  const chooseProvider = (p: string, defaultModel = '') => {
-    setProvider(p)
-    setModel(defaultModel)
-    setModels([])
-    setModelNote('')
-  }
-  useEffect(() => {
-    const changed = (event: Event) => {
-      if (provider !== 'api') return
-      setModels([])
-      setModel((event as CustomEvent).detail?.model || '')
-      setModelNote('AI 配置已更新，可使用默认模型或重新读取模型列表')
-    }
-    window.addEventListener('acm:ai-config-changed', changed)
-    return () => window.removeEventListener('acm:ai-config-changed', changed)
-  }, [provider])
   const startAnalysis = (recommend = false, extra: Row = {}) =>
     run(recommend ? '/recommend' : '/analysis', { provider, model, days, platform, goal, ...extra })
+  // Read-only status: the channel and model are chosen once in connections & settings.
+  const aiStatus = !aiReadiness.loaded
+    ? '正在读取 AI 配置…'
+    : !model
+      ? provider === 'codex'
+        ? '未配置官方默认模型'
+        : '未配置 API 默认模型'
+      : !aiReadiness.ready
+        ? provider === 'codex'
+          ? `官方 Codex · ${model}（通道未启用）`
+          : `API · ${model}（缺少 Key）`
+        : `${provider === 'codex' ? '官方 Codex' : 'API'} · ${model}`
   const aiPicker = (
-    <div className="ai-picker">
-      <select
-        aria-label="AI 通道"
-        value={provider}
-        onChange={(e) => chooseProvider(e.target.value)}
+    <div className="ai-picker ai-picker-status">
+      <span
+        className={`badge ${aiReadiness.ready && model ? 'success' : 'neutral'}`}
+        role="status"
+        aria-label="当前 AI 配置"
       >
-        <option value="codex">ChatGPT 官方账号</option>
-        <option value="api">API Key 通道</option>
-      </select>
-      <select aria-label="选择模型" value={model} onChange={(e) => setModel(e.target.value)}>
-        <option value="">选择模型</option>
-        {models.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.name || m.id}
-          </option>
-        ))}
-      </select>
-      <Button
-        className="icon-btn"
-        onClick={loadModels}
-        loading={modelBusy}
-        title="读取可用模型"
-        aria-label="读取可用模型"
-      >
-        <RefreshCw size={16} />
-      </Button>
+        {aiStatus}
+      </span>
+      <button className="text-button" type="button" onClick={() => setPage('settings')}>
+        在连接与设置中修改 <ArrowRight size={13} />
+      </button>
     </div>
   )
   if (!auth)
@@ -988,7 +972,7 @@ function App() {
                   {aiPicker}
                   <Button
                     className="primary"
-                    disabled={!model}
+                    disabled={!aiReadiness.ready}
                     loading={running('analysis')}
                     onClick={() => startAnalysis()}
                   >
@@ -996,7 +980,6 @@ function App() {
                     开始分析
                   </Button>
                 </div>
-                {modelNote && <p className="help">{modelNote}</p>}
                 <label className="goal-label">
                   这一次，你想重点提升什么？
                   <textarea
@@ -1052,7 +1035,7 @@ function App() {
                 <section className="card">
                   <Empty
                     title="你的第一份训练报告，等你开启"
-                    detail="先在连接与设置中接入 AI，再选择模型生成基于真实数据的训练建议。"
+                    detail="先在连接与设置中接入 AI 并保存默认模型，这里的分析会直接使用该配置。"
                     action={
                       <Button className="secondary" onClick={() => setPage('settings')}>
                         配置 AI 接入 <ArrowRight size={15} />
@@ -1076,10 +1059,7 @@ function App() {
                   onOpenProblem={openProblem}
                   onError={setError}
                   onNotice={setNotice}
-                  aiReady={
-                    !!model &&
-                    (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)
-                  }
+                  aiReady={aiReadiness.ready}
                 />
               }
               daily={
@@ -1115,9 +1095,7 @@ function App() {
               jobs={jobs}
               run={run}
               onError={setError}
-              aiReady={
-                !!model && (provider === 'api' ? aiReadiness.has_key : aiReadiness.codex_enabled)
-              }
+              aiReady={aiReadiness.ready}
             />
           )}
           {page === 'social' && auth.multi_user && (
@@ -1142,14 +1120,11 @@ function App() {
               guideOpen={guideOpen}
               setGuideOpen={setGuideOpen}
               guideRequest={guideRequest}
-              provider={provider}
-              setProvider={chooseProvider}
               onError={setError}
               onNotice={setNotice}
               revision={revision}
               jobs={jobs}
               run={run}
-              model={model}
             />
           </RetainedPage>
           <section className="jobs-strip">
@@ -1982,14 +1957,11 @@ function SettingsPage({
   guideOpen,
   setGuideOpen,
   guideRequest,
-  provider,
-  setProvider,
   onError,
   onNotice,
   revision,
   jobs,
   run,
-  model,
 }: any) {
   const guideRef = useRef<HTMLDetailsElement>(null)
   useEffect(() => {
@@ -1999,6 +1971,8 @@ function SettingsPage({
     base_url: 'https://api.openai.com/v1',
     protocol: 'responses',
     model: '',
+    channel: 'api',
+    codex_model: '',
     has_key: false,
   })
   const { value: config, setValue: setConfig } = configDraft
@@ -2013,6 +1987,9 @@ function SettingsPage({
   const [apiModelNote, setApiModelNote] = useState('')
   const [apiModelSource, setApiModelSource] = useState('')
   const [readingModels, setReadingModels] = useState(false)
+  const [codexModels, setCodexModels] = useState<Row[]>([])
+  const [codexModelNote, setCodexModelNote] = useState('')
+  const [readingCodexModels, setReadingCodexModels] = useState(false)
   useEffect(() => {
     api('/ai/presets')
       .then((d) => setPresets(d.items))
@@ -2154,6 +2131,8 @@ function SettingsPage({
         base_url: config.base_url,
         protocol: config.protocol,
         model: config.model || '',
+        channel: config.channel === 'codex' ? 'codex' : 'api',
+        codex_model: config.codex_model || '',
         vendor: config.vendor || 'custom',
         output_mode: config.output_mode || 'auto',
         thinking: config.thinking || 'auto',
@@ -2167,15 +2146,18 @@ function SettingsPage({
       const saved = await api('/ai/settings', 'PUT', payload)
       const committed = configDraft.commit(saved, savedVersion)
       if (committed) setKeyRaw('')
+      // Readiness and the active model always come back from the server snapshot.
       window.dispatchEvent(
-        new CustomEvent('acm:ai-config-changed', { detail: { model: saved.model } }),
+        new CustomEvent('acm:ai-config-changed', {
+          detail: { channel: saved.channel, model: saved.active_model },
+        }),
       )
       onNotice(
         !committed
-          ? '已保存刚才提交的 API 配置；之后的新修改仍保留，请再次保存。'
+          ? '已保存刚才提交的 AI 配置；之后的新修改仍保留，请再次保存。'
           : clearKey
-            ? '当前 API 地址的密钥已清除'
-            : 'AI API 配置已保存，密钥仅保存在服务端',
+            ? '当前 API 地址的密钥已清除，所有功能将暂停使用 AI 直到重新填写 Key'
+            : '默认 AI 配置已保存，所有功能会自动使用该通道与模型',
       )
       return committed
     } catch (e: any) {
@@ -2412,9 +2394,57 @@ function SettingsPage({
       <SettingsSection
         id="settings-ai"
         title="AI 接入"
-        description="配置 API 或连接 ChatGPT 官方账号，选择适合训练的模型。"
+        description="这里是唯一选择 AI 通道与默认模型的地方；所有功能会自动使用保存的配置。"
         defaultOpen
       >
+        <section className="card settings-card ai-channel-card">
+          <div className="card-heading">
+            <div>
+              <h2>
+                <span className="inline">
+                  <Bot size={19} />
+                  默认 AI 配置
+                </span>
+              </h2>
+              <p>分析、训练、每日题单与工作台不再单独选择通道或模型，会直接使用这里保存的配置。</p>
+            </div>
+            <span className={`badge ${config.channel === 'codex' ? 'neutral' : 'success'}`}>
+              {config.channel === 'codex' ? '官方 Codex' : 'API Key'}
+            </span>
+          </div>
+          <label className="checkbox">
+            <input
+              type="radio"
+              name="ai-channel"
+              aria-label="使用 API Key 通道"
+              checked={(config.channel || 'api') !== 'codex'}
+              onChange={() => setConfig({ ...config, channel: 'api' })}
+            />
+            使用已保存的 API 地址与默认模型
+          </label>
+          <label className="checkbox">
+            <input
+              type="radio"
+              name="ai-channel"
+              aria-label="使用官方 Codex 通道"
+              disabled={config.codex_enabled === false}
+              checked={config.channel === 'codex'}
+              onChange={() => setConfig({ ...config, channel: 'codex' })}
+            />
+            ChatGPT 官方账号（Codex）
+            {config.codex_enabled === false ? '（服务器未启用官方通道）' : ''}
+          </label>
+          <div className="settings-actions">
+            <Button className="primary" loading={saving} onClick={() => save()}>
+              保存默认 AI 配置 <Check size={16} />
+            </Button>
+            <span className="help">
+              {config.channel === 'codex'
+                ? `当前模型：${config.codex_model || '未设置官方默认模型'}`
+                : `当前模型：${config.model || '未设置 API 默认模型'}`}
+            </span>
+          </div>
+        </section>
         <div className="settings-grid">
           <section className="card settings-card">
             <div className="card-heading">
@@ -2720,16 +2750,10 @@ function SettingsPage({
                 run={() => run('/ai/test')}
                 onError={onError}
               />
-              <button
-                className="text-button"
-                onClick={() => {
-                  setProvider('api', config.model || '')
-                  onNotice('已切换到 API Key 通道，可使用默认模型或读取模型列表')
-                }}
-              >
-                使用此通道 <ArrowRight size={14} />
-              </button>
             </div>
+            <p className="help">
+              功能页不再选择通道或模型；保存后的 API 配置会立即成为所有功能的默认配置。
+            </p>
             <button
               className="text-button"
               disabled={saving || !config.has_key}
@@ -2773,6 +2797,75 @@ function SettingsPage({
               </p>
             </div>
             {account?.message && <p className="help">{account.message}</p>}
+            <label>
+              官方通道默认模型
+              <select
+                aria-label="官方默认模型"
+                value={config.codex_model || ''}
+                onChange={(e) => setConfig({ ...config, codex_model: e.target.value })}
+              >
+                <option value="">先读取官方模型目录</option>
+                {codexModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.id}
+                  </option>
+                ))}
+                {config.codex_model && !codexModels.some((m) => m.id === config.codex_model) && (
+                  <option value={config.codex_model}>
+                    {config.codex_model}（当前填写；未验证）
+                  </option>
+                )}
+              </select>
+            </label>
+            <details>
+              <summary>目录未包含可用模型？手动填写官方模型 ID</summary>
+              <label>
+                官方模型 ID
+                <input
+                  aria-label="手动官方模型 ID"
+                  value={config.codex_model || ''}
+                  onChange={(e) => setConfig({ ...config, codex_model: e.target.value })}
+                  maxLength={150}
+                  placeholder="填写官方客户端提供的模型 ID；保存后设为默认通道即可使用"
+                />
+              </label>
+            </details>
+            <Button
+              className="text-button"
+              loading={readingCodexModels}
+              disabled={saving || config.codex_enabled === false}
+              onClick={async () => {
+                setReadingCodexModels(true)
+                try {
+                  const data = await api('/ai/models?provider=codex')
+                  const items: Row[] = data.items || []
+                  setCodexModels(items)
+                  setCodexModelNote(
+                    items.length
+                      ? `${items.length} 个官方模型；${data.note || ''}`
+                      : data.note || '',
+                  )
+                  if (!items.some((m) => m.id === config.codex_model)) {
+                    const nextModel = data.default_model || items[0]?.id || ''
+                    if (nextModel)
+                      setConfig((current: Row) => ({ ...current, codex_model: nextModel }))
+                  }
+                } catch (e: any) {
+                  setCodexModels([])
+                  setCodexModelNote('读取失败；请先完成官方登录或检查服务器官方通道。')
+                  onError(e.message)
+                } finally {
+                  setReadingCodexModels(false)
+                }
+              }}
+            >
+              读取官方模型目录
+            </Button>
+            {codexModelNote && (
+              <p className="help" role="status">
+                {codexModelNote}
+              </p>
+            )}
             <div className="settings-actions">
               <Button className="secondary" loading={connecting} onClick={readAccount}>
                 <RefreshCw size={15} />
@@ -2979,8 +3072,10 @@ function SettingsPage({
   )
 }
 
-createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+const container = document.getElementById('root')
+if (container)
+  createRoot(container).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  )
