@@ -1124,7 +1124,9 @@ function App() {
               onOpenProblem={openProblem}
               revision={revision}
               syncing={jobs.some(
-                (job) => job.kind === 'crawl' && ['queued', 'running'].includes(job.status),
+                (job) =>
+                  ['crawl', 'catalog'].includes(job.kind) &&
+                  ['queued', 'running'].includes(job.status),
               )}
             />
           )}
