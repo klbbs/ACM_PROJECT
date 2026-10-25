@@ -48,6 +48,24 @@ def test_daily_count_metadata_is_bounded_and_does_not_accept_provider_text(tmp_p
     assert 'PRIVATE' not in (tmp_path / 'logs' / 'runtime.jsonl').read_text()
 
 
+def test_training_diagnostics_keep_only_bounded_counts_and_known_mode(tmp_path):
+    store = RuntimeLogs(tmp_path / 'logs')
+    store.emit('training.selection_failed', level='WARNING',
+               reason='training_template_unavailable', train_mode='learn',
+               requested_count=4, template_count=0, candidate_count=3200,
+               eligible_count=17, cookie='PRIVATE-COOKIE', source='PRIVATE-SOURCE',
+               error='PRIVATE-ERROR')
+    assert store.listing()['items'][0]['details'] == {
+        'reason': 'training_template_unavailable', 'train_mode': 'learn',
+        'requested_count': 4, 'template_count': 0, 'candidate_count': 3200,
+        'eligible_count': 17,
+    }
+    store.emit('training.selected', train_mode='PRIVATE-MODE', template_count=True,
+               candidate_count=-1, eligible_count=100001)
+    assert store.listing()['items'][0]['details'] == {}
+    assert 'PRIVATE' not in (tmp_path / 'logs' / 'runtime.jsonl').read_text()
+
+
 def test_admin_log_route_calls_authorizer_and_does_not_reflect_untrusted_file_data(tmp_path):
     store = RuntimeLogs(tmp_path / 'logs')
     store.emit('request.completed', method='GET', route='/api/overview', status=200)

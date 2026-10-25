@@ -35,6 +35,8 @@ EVENTS = {
     'job.interrupted': ('task', '后台任务已中断'),
     'daily.generated': ('task', '每日题单已保存'),
     'daily.failed': ('task', '每日题单生成失败，原有题单保留'),
+    'training.selection_failed': ('task', '专项选题未完成，请检查候选筛选条件'),
+    'training.selected': ('task', '专项题目已选定'),
     'platform.qr.retry': ('platform', '牛客扫码检测暂未完成，正在重试'),
     'platform.qr.failed': ('platform', '牛客扫码绑定未完成'),
     'platform.qr.verified': ('platform', '牛客扫码身份已验证并绑定'),
@@ -56,7 +58,8 @@ REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'bindi
            'model_list_timeout', 'model_list_network', 'model_list_invalid_json', 'model_list_invalid_structure',
            'daily_invalid_output', 'daily_invalid_count', 'daily_candidates_unavailable',
            'daily_provider_unavailable', 'daily_provider_configuration', 'daily_interrupted',
-           'daily_generation_failed'}
+           'daily_generation_failed', 'training_template_unavailable',
+           'training_candidates_unavailable', 'training_selection_invalid'}
 
 
 def known_failure_reason(error):
@@ -111,6 +114,8 @@ def safe_details(details):
             clean[key] = value
         elif key == 'mode' and isinstance(value, str) and value in {'single', 'multi'}:
             clean[key] = value
+        elif key == 'train_mode' and isinstance(value, str) and value in {'learn', 'consolidate', 'variation', 'strengthen'}:
+            clean[key] = value
         elif key == 'method' and isinstance(value, str) and value in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'}:
             clean[key] = value
         elif key == 'route' and isinstance(value, str) and len(value) <= 200 and re.fullmatch(r'/[a-zA-Z0-9_/{:}.-]*', value):
@@ -120,6 +125,8 @@ def safe_details(details):
         elif key == 'upstream_code' and type(value) is int and abs(value) <= 10**9:
             clean[key] = value
         elif key in {'requested_count', 'actual_count'} and type(value) is int and 0 <= value <= 1000:
+            clean[key] = value
+        elif key in {'template_count', 'candidate_count', 'eligible_count'} and type(value) is int and 0 <= value <= 100000:
             clean[key] = value
         elif key in {'duration_ms', 'warning_count', 'finding_count'} and type(value) is int and 0 <= value <= 86400000:
             clean[key] = value
