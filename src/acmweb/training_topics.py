@@ -45,7 +45,7 @@ _DEFINITIONS = [
         ('topological-sort', '拓扑排序', '有向无环图与依赖关系', ['topological', '拓扑排序'], []),
         ('lca', '最近公共祖先', '树上倍增与距离查询', ['lca', 'lowest common ancestor', '最近公共祖先'], ['luogu:P3379']),
         ('scc', '强连通分量', '有向图分解与缩点', ['scc', 'strongly connected', '强连通', '缩点'], ['luogu:P3387']),
-        ('network-flow', '网络流', '增广路、最大流与建模', ['flow', '网络流', '最大流'], ['luogu:P3376']),
+        ('network-flow', '网络流', '增广路、最大流与建模', ['maxflow', 'max flow', '网络流', '最大流'], ['luogu:P3376', 'atcoder:practice2_d']),
     ]),
     ('geometry', '计算几何', [
         ('convex-hull', '凸包', '叉积、点序与凸多边形', ['convex hull', '凸包'], ['luogu:P2742']),
@@ -118,6 +118,16 @@ _CF_TAG_TO_LUOGU = {
     'probabilities': 266,
 }
 
+# Verified public implementation exercises from the official ACL practice
+# contest (https://atcoder.jp/contests/practice2/tasks). These are algorithm
+# library templates, not arbitrary ABC tasks relabelled by an AI.
+_ATCODER_TEMPLATES = {
+    'practice2_a': {47}, 'practice2_b': {53}, 'practice2_d': {79},
+    'practice2_e': {204}, 'practice2_f': {324}, 'practice2_g': {179},
+    'practice2_h': {176}, 'practice2_j': {42},
+    'practice2_k': {42}, 'practice2_l': {42},
+}
+
 GROUPS = []
 for root_id in _CHILDREN[None]:
     root = _TAGS[root_id]
@@ -128,6 +138,8 @@ for root_id in _CHILDREN[None]:
         inherited = _descendants(tag_id)
         templates = list(dict.fromkeys(pid for alias, tags in LUOGU_TOPIC_TAGS.items()
             if tags & inherited for pid in TOPICS[alias]['template_ids']))
+        templates.extend('atcoder:' + pid for pid, tags in _ATCODER_TEMPLATES.items()
+                         if tags & inherited and 'atcoder:' + pid not in templates)
         topic = {'id': f'luogu-{tag_id}', 'title': path[-1],
                  'description': ' / '.join(path), 'path': path, 'depth': depth,
                  'parent_id': f"luogu-{row['parent']}" if row['parent'] is not None else None,
@@ -136,6 +148,9 @@ for root_id in _CHILDREN[None]:
                  'source_version': _CATALOG['source_version']}
         TOPICS[topic['id']] = {**topic, 'template_ids': templates,
             'luogu_tags': inherited, 'official_exact': True,
+            'text_keywords': list(dict.fromkeys([path[-1]] + [keyword
+                for alias, tags in LUOGU_TOPIC_TAGS.items() if tags & inherited
+                for keyword in TOPICS[alias]['keywords']])),
             'cf_tags': {tag for tag, target in _CF_TAG_TO_LUOGU.items() if target in inherited}}
         group['topics'].append(topic)
         for child in _CHILDREN.get(tag_id, []):
@@ -164,7 +179,10 @@ def matches_topic(problem, topic):
             return bool(_luogu_tags(problem) & topic.get('luogu_tags', set()))
         if problem.get('platform') == 'codeforces':
             return bool({str(tag).casefold() for tag in problem.get('tags', [])} & topic.get('cf_tags', set()))
-        return False
+        # AtCoder and Nowcoder do not use Luogu's numeric taxonomy. They may,
+        # however, publish exact algorithm names in task titles/text tags. Do
+        # not discard those platforms solely because their tag schema differs.
+        return _matches_text(problem, topic.get('text_keywords', []))
     if problem.get('platform') == 'luogu':
         tags = _luogu_tags(problem)
         if tags & LUOGU_TOPIC_TAGS.get(topic['id'], set()):
@@ -172,9 +190,15 @@ def matches_topic(problem, topic):
         # Hashing alone also covers numeric/set hashing; require string evidence.
         if topic['id'] == 'string-hash' and {2, 235} <= tags:
             return True
-    text = (' '.join([str(problem.get('title', '')), *map(str, problem.get('tags', []))])).casefold()
+    return _matches_text(problem, topic['keywords'])
+
+
+def _matches_text(problem, keywords):
+    text_tags = [tag for tag in problem.get('tags', [])
+                 if isinstance(tag, str) and not re.fullmatch(r'-?[0-9]+', tag)]
+    text = ' '.join([str(problem.get('title', '')), *text_tags]).casefold()
     return any(re.search(r'(?<![a-z0-9])' + re.escape(keyword.casefold()) + r'(?![a-z0-9])', text)
-               if keyword.isascii() else keyword.casefold() in text for keyword in topic['keywords'])
+               if keyword.isascii() else keyword.casefold() in text for keyword in keywords)
 
 
 def is_template(problem, topic):

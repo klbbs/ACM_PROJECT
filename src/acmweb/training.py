@@ -1,4 +1,5 @@
 """Persistent, per-workspace specialist plans using verified catalog candidates."""
+import asyncio
 import json
 import time
 import uuid
@@ -7,8 +8,12 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
-from .catalog import recommendation_candidates, refresh_recommendation_sessions
+from .catalog import (PLATFORMS, PUBLISHED_SOURCES, _date_floor, _pool,
+                      publication_time, recommendation_candidates,
+                      refresh_recommendation_sessions, refresh_specialist_candidates,
+                      verified_platforms)
 from .codex_bridge import AIError
+from .runtime_logs import emit_event
 from .training_topics import MODES, TOPICS, is_template, matches_topic, topic_groups
 
 DDL = '''
@@ -17,6 +22,24 @@ CREATE TABLE IF NOT EXISTS training_plans (
 );
 '''
 LOCK_KEY = 'specialist_generation_lock'
+
+
+def _balanced_shortlist(pool, limit):
+    # Shortlist across every eligible platform instead of letting a large
+    # template collection consume the entire AI payload.
+    grouped = {}
+    for row in pool:
+        grouped.setdefault(row['platform'], []).append(row)
+    result = []
+    for index in range(limit):
+        progressed = False
+        for rows in grouped.values():
+            if index < len(rows) and len(result) < limit:
+                result.append(rows[index])
+                progressed = True
+        if not progressed or len(result) >= limit:
+            break
+    return result
 
 
 class Strict(BaseModel):
@@ -97,9 +120,59 @@ class Training:
         pool = recommendation_candidates(self.db, self.accounts,
             minimum=prefs.get('minimum', 800), maximum=prefs.get('maximum', 3500),
             published_after=prefs.get('published_after'), limit=3000,
-            preferred_ids=preferred_ids or topic['template_ids'])
+            preferred_ids=preferred_ids or topic['template_ids'],
+            predicate=lambda p: matches_topic(p, topic), allow_attempted=True,
+            prioritize=lambda p: is_template(p, topic))
         completed = self._ac_ids()
-        return [p for p in pool if p['id'] not in completed and matches_topic(p, topic)]
+        return [p for p in pool if p['id'] not in completed]
+
+    def _pool_diagnostics(self, topic, excluded, bounds):
+        """Application-owned counts/reasons only; never expose credentials."""
+        prefs = self.db.get('training', {})
+        floor = _date_floor(prefs.get('published_after'))
+        active = set(verified_platforms(self.accounts))
+        configured = ({row.get('platform') for row in self.accounts.document().get('accounts', [])}
+                      if callable(getattr(self.accounts, 'document', None)) else active)
+        complete = self._ac_ids()
+        names = {'codeforces': 'Codeforces', 'atcoder': 'AtCoder', 'luogu': '洛谷', 'nowcoder': '牛客'}
+        details = []
+        for platform in PLATFORMS:
+            if platform not in active:
+                if platform in configured:
+                    details.append(names[platform] + '：登录未通过检测或检测已过期，请到连接与设置检测登录状态')
+                continue
+            raw = [p for p in _pool(self.db, platform, include_excluded=True) if matches_topic(p, topic)]
+            templates = [p for p in raw if is_template(p, topic)]
+            reasons = []
+            if not raw:
+                reasons.append('题库尚无该专题候选，需同步或等待官方列表可访问')
+            elif not templates:
+                reasons.append('官方候选中暂无可确认的模板题；可选择巩固、变式或加强')
+            if floor is not None:
+                unknown = sum(p.get('published_at_source') not in PUBLISHED_SOURCES
+                    or not publication_time(p.get('published_at')) for p in templates)
+                old = sum(p.get('published_at_source') in PUBLISHED_SOURCES
+                    and publication_time(p.get('published_at')) and p['published_at'] < floor for p in templates)
+                if unknown:
+                    reasons.append(f'{unknown} 道模板缺少可靠发布日期')
+                if old:
+                    reasons.append(f'{old} 道模板早于 {prefs["published_after"]}')
+            if platform == 'codeforces':
+                outside = sum(type(p.get('difficulty')) is not int
+                    or not prefs.get('minimum', 800) <= p['difficulty'] <= prefs.get('maximum', 3500) for p in templates)
+                if outside:
+                    reasons.append(f'{outside} 道模板不满足 CF {prefs.get("minimum", 800)}–{prefs.get("maximum", 3500)} 难度')
+            done = sum(p['id'] in complete for p in templates)
+            reserved = sum(p['id'] in excluded or not self._within_difficulty_bounds(p, bounds) for p in templates)
+            if done:
+                reasons.append(f'{done} 道模板已通过')
+            if reserved:
+                reasons.append(f'{reserved} 道模板与本次题单重复或不满足递进范围')
+            details.append(names[platform] + '：' + ('；'.join(reasons) or f'该专题 {len(raw)} 道候选、{len(templates)} 道模板'))
+        message = '。'.join(details)
+        if floor is not None:
+            message += f'。当前最早发布日期为 {prefs["published_after"]}，不会跳过日期限制；如需旧模板，请在训练偏好中自行调整或清除该日期'
+        return message
 
     def _lock(self):
         token, now = uuid.uuid4().hex, int(time.time())
@@ -187,19 +260,42 @@ class Training:
         pool = [p for p in self._pool(topic) if p['id'] not in excluded
                 and self._within_difficulty_bounds(p, bounds)]
         templates = [p['id'] for p in pool if is_template(p, topic)]
+        usable_count = 1 + sum(p['id'] not in templates for p in pool) if template_first and templates else len(pool)
+        if forbid_templates:
+            usable_count = sum(p['id'] not in templates for p in pool)
+        refresh_notice = ''
+        if ((template_first and not templates) or usable_count < count) and callable(getattr(self.accounts, 'document', None)):
+            # The explicit Generate/Roll action authorizes metadata discovery;
+            # browsing saved plans does not trigger I/O or an AI request.
+            refresh_result = await asyncio.to_thread(refresh_specialist_candidates, self.db, self.accounts, topic)
+            refresh_notice = '。'.join(row['platform'] + ' 补充题库失败：' + row['message']
+                                      for row in refresh_result if row['status'] == 'failed')
+            pool = [p for p in self._pool(topic) if p['id'] not in excluded
+                    and self._within_difficulty_bounds(p, bounds)]
+            templates = [p['id'] for p in pool if is_template(p, topic)]
         if template_first and not templates:
-            raise AIError('没有符合当前登录、日期及难度条件的未完成模板题；请同步平台题库并验证对应平台登录，或调整训练偏好；不会用普通题替代模板题')
+            emit_event(self.event_log, 'training.selection_failed', 'WARNING',
+                reason='training_template_unavailable', train_mode=mode,
+                candidate_count=len(pool), template_count=0, requested_count=count)
+            raise AIError('没有符合条件的未完成模板题。' + self._pool_diagnostics(topic, excluded, bounds)
+                + ('。' + refresh_notice if refresh_notice else '')
+                + '。仅从你本人已验证登录的全部平台共同筛选，不会用普通题替代模板题')
         if forbid_templates:
             pool = [p for p in pool if p['id'] not in templates]
             templates = []
         usable_count = 1 + sum(p['id'] not in templates for p in pool) if template_first else len(pool)
         if usable_count < count:
-            raise AIError(f'该专题只有 {usable_count} 道符合要求的候选题，不足 {count} 道；请同步题库、验证平台登录或调整训练偏好')
+            emit_event(self.event_log, 'training.selection_failed', 'WARNING',
+                reason='training_candidates_unavailable', train_mode=mode,
+                candidate_count=usable_count, template_count=len(templates), requested_count=count)
+            raise AIError(f'该专题只有 {usable_count} 道符合要求的候选题，不足 {count} 道。'
+                + self._pool_diagnostics(topic, excluded, bounds)
+                + ('。' + refresh_notice if refresh_notice else ''))
         # Bound payload size while preserving enough ordinary candidates even for
         # a user-selected 50-item course; template evidence remains explicit.
-        candidates = (([p for p in pool if p['id'] in templates][:8]
-                       + [p for p in pool if p['id'] not in templates][:192])
-                      if template_first else pool[:200])
+        candidates = ((_balanced_shortlist([p for p in pool if p['id'] in templates], 8)
+                       + _balanced_shortlist([p for p in pool if p['id'] not in templates], 192))
+                      if template_first else _balanced_shortlist(pool, 200))
         templates = [p['id'] for p in candidates if p['id'] in templates]
         schema = create_model('SpecialistSelection', __base__=Strict,
             selected_problems=(list[Choice], Field(min_length=count, max_length=count)))
@@ -250,6 +346,8 @@ class Training:
                     'difficulty_label': problem.get('difficulty_label') or problem.get('difficulty_source') or '平台未标定难度',
                     'stage': stage, 'learning_level': choice.learning_level,
                     'reason': choice.reason, 'completed': False})
+            emit_event(self.event_log, 'training.selected', train_mode=mode,
+                candidate_count=len(candidates), template_count=len(templates), requested_count=count)
             return items
         finally:
             self.active_ai = False
