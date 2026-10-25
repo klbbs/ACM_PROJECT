@@ -424,6 +424,16 @@ def test_markdown_code_blocks_remain_original_and_tokens_are_not_split():
     assert ''.join(fragment['text'] for fragment in fragments) == 'x' * 3980 + token + 'y' * 100
 
 
+def test_prose_relation_symbols_and_bare_tex_commands_are_protected_from_translation():
+    source = 'Read a ≠ b and c =\u0338 d; use `x != y`; preserve \\neq and \\not=.'
+    doc = Document({'title': 'Relations', 'sections': [source]})
+    masked = next(block['text'] for block in doc.blocks if 'Read' in block['text'])
+    assert not any(value in masked for value in ('≠', '\u0338', '!=', r'\neq', r'\not='))
+    translated = doc.apply({'blocks': [
+        {**block, 'text': block['text'].replace('Read', '读取')} for block in doc.blocks]})
+    assert translated['sections'] == [source.replace('Read', '读取')]
+
+
 def test_bad_batch_stops_before_more_calls_and_does_not_persist(workspace, monkeypatch):
     app, _, statement = workspace
     app.state.workbench.store_statement('codeforces:4-A', {**statement, 'body_html': '',

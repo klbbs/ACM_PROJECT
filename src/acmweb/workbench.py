@@ -54,6 +54,8 @@ def parse_statement(html, pid):
     root = soup.select_one('.problem-statement')
     if root is None:
         raise AIError('未获取到题面，平台可能要求浏览器验证；请打开原题查看后重试')
+    from .statement_math import preserve_math_markup
+    preserve_math_markup(root)
     for node in root.select('script,style,iframe,form,button,object,svg'):
         node.decompose()
     body = BeautifulSoup(''.join(str(c) for c in root.find_all(recursive=False) if not set(c.get('class', [])) & {'header', 'sample-tests'}), 'html.parser')

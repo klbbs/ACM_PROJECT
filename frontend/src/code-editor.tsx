@@ -3,19 +3,22 @@ import { basicSetup } from 'codemirror'
 import { Compartment, EditorState, Prec, Transaction } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { openSearchPanel } from '@codemirror/search'
-import { indentWithTab, insertNewline, redo } from '@codemirror/commands'
+import { redo } from '@codemirror/commands'
 import { indentUnit } from '@codemirror/language'
 import {
   autocompletion,
   startCompletion,
   closeCompletion,
-  acceptCompletion,
-  completionStatus,
-  nextSnippetField,
   moveCompletionSelection,
 } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { localCompletion } from './editor-completions'
+import {
+  EDITOR_INDENT_UNIT,
+  EDITOR_TAB_SIZE,
+  acceptCompletionOnTab,
+  indentKeymap,
+} from './editor-indentation'
 import { CODE_LIMIT, codeBytes, type CodeEditorProps } from './editor-settings'
 
 export default function CodeEditor(props: CodeEditorProps) {
@@ -44,6 +47,12 @@ export default function CodeEditor(props: CodeEditorProps) {
   const vimMode = (editor: EditorView) => {
     const state = vimApi.current?.getCM(editor)?.state.vim
     return !state ? '普通' : state.insertMode ? 'INSERT' : state.visualMode ? 'VISUAL' : 'NORMAL'
+  }
+  // Vim normal/visual mode keeps its own keys; only insert mode indents like a plain editor.
+  const canIndent = (editor: EditorView) => {
+    if (latest.current.settings.keymap !== 'vim') return true
+    const vim = vimApi.current?.getCM(editor)?.state.vim
+    return !vim || !!vim.insertMode
   }
   useEffect(() => {
     const editor = new EditorView({
@@ -88,11 +97,11 @@ export default function CodeEditor(props: CodeEditorProps) {
               },
             }),
           ),
-          Prec.highest(keymap.of([{ key: 'Tab', run: acceptCompletion }])),
+          Prec.highest(keymap.of([{ key: 'Tab', run: acceptCompletionOnTab }])),
           basicSetup,
           oneDark,
-          EditorState.tabSize.of(4),
-          indentUnit.of('    '),
+          EditorState.tabSize.of(EDITOR_TAB_SIZE),
+          indentUnit.of(EDITOR_INDENT_UNIT),
           Prec.high(
             keymap.of([
               { key: 'Ctrl-Space', run: startCompletion },
@@ -109,23 +118,8 @@ export default function CodeEditor(props: CodeEditorProps) {
               },
               { key: 'ArrowDown', run: moveCompletionSelection(true) },
               { key: 'ArrowUp', run: moveCompletionSelection(false) },
-              {
-                key: 'Tab',
-                run: (editor) =>
-                  completionStatus(editor.state)
-                    ? acceptCompletion(editor)
-                    : nextSnippetField(editor) || (indentWithTab.run?.(editor) ?? false),
-              },
-              {
-                key: 'Enter',
-                run: (editor) => {
-                  if (!completionStatus(editor.state)) return false
-                  closeCompletion(editor)
-                  return insertNewline(editor)
-                },
-              },
+              ...indentKeymap(canIndent),
               { key: 'Escape', run: closeCompletion },
-              indentWithTab,
             ]),
           ),
           completion.current.of([]),

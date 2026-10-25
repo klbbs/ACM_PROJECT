@@ -1,5 +1,5 @@
 """Development checks for CF's canonical Markdown, not live crawl acceptance."""
-from acmweb.statement_markdown import html_markdown, upgrade_statement
+from acmweb.statement_markdown import RENDER_VERSION, html_markdown, upgrade_statement
 from acmweb.translations import Document, fingerprint
 from acmweb.workbench import parse_statement
 
@@ -16,7 +16,7 @@ RICH = '''<div class="problem-statement"><div class="header"><div class="title">
 def test_cf_response_has_canonical_markdown_and_separate_samples():
     result = parse_statement(RICH, 'codeforces:4-A')
     md = result['markdown']
-    assert result['render_version'] == 4 and result['sections'] == [md]
+    assert result['render_version'] == RENDER_VERSION and result['sections'] == [md]
     assert '$a_i \\le 10^9$' in md and '$$$' not in md
     assert '**two**' in md and '- First' in md and '## Input' in md
     assert '![Diagram](<https://codeforces.com/diagram.png>)' in md
@@ -53,7 +53,7 @@ def test_old_rich_cf_cache_upgrades_without_network_and_preserves_translation():
     old = {'id': 'codeforces:4-A', 'body_html': '<p><b>Read</b> $$$x_i$$$.</p>', 'sections': ['Read\nx_i'], 'render_version': 2}
     upgraded = upgrade_statement(old)
     assert old['render_version'] == 2
-    assert upgraded['markdown'] == '**Read** $x_i$.' and upgraded['render_version'] == 4
+    assert upgraded['markdown'] == '**Read** $x_i$.' and upgraded['render_version'] == RENDER_VERSION
     assert fingerprint(old) == fingerprint(upgraded)
     changed_prose = {**upgraded, 'body_html': '<p><b>Print</b> $$$x_i$$$.</p>'}
     changed_formula = {**upgraded, 'body_html': '<p><b>Read</b> $$$x_i + 1$$$.</p>'}
@@ -72,3 +72,39 @@ def test_translated_cf_markdown_is_regenerated_from_translated_html():
     assert 'Given' not in translated['markdown'] and translated['sections'] == [translated['markdown']]
     assert source['samples'] == translated['samples'] and source['images'] == translated['images']
     assert '$a_i \\le 10^9$' in translated['markdown']
+
+
+def test_cf_crawl_translation_and_cache_upgrade_preserve_original_not_equal_tex():
+    rendered = r'''<span class="katex"><span class="katex-mathml"><math><semantics>
+    <mrow><mi>a</mi><mo>≠</mo><mi>b</mi></mrow>
+    <annotation encoding="application/x-tex">a \neq b</annotation>
+    </semantics></math></span><span class="katex-html">VISUAL DUPLICATE</span></span>'''
+    html = '<div class="problem-statement"><div class="header"><div class="title">A. Relations</div></div><p>Given ' + rendered + '.</p><p><span class="tex-font-style-tt">a != b</span></p></div>'
+    statement = parse_statement(html, 'codeforces:4-A')
+    assert statement['markdown'].startswith(r'Given $a \neq b$.')
+    assert statement['markdown'].endswith('`a != b`')
+    assert statement['markdown'].count(r'\neq') == 1
+    assert 'VISUAL DUPLICATE' not in statement['body_html']
+    assert '<annotation' not in statement['body_html']
+    doc = Document(statement)
+    assert not any(r'\neq' in block['text'] or '!=' in block['text'] for block in doc.blocks)
+    translated = doc.apply({'blocks': [
+        {**block, 'text': block['text'].replace('Given', '给定')} for block in doc.blocks]})
+    assert r'给定 $a \neq b$.' in translated['markdown']
+    assert '`a != b`' in translated['markdown']
+    cached = {**statement, 'render_version': 4, 'markdown': 'OLD BROKEN OUTPUT'}
+    assert r'$a \neq b$' in upgrade_statement(cached)['markdown']
+
+
+def test_mathml_split_negation_and_mathjax_tex_survive_html_sanitization():
+    mathml = '<math><mrow><mi>a</mi><mo>=</mo><mo>&#x0338;</mo><mi>b</mi></mrow></math>'
+    enclosed = '<math><menclose notation="updiagonalstrike"><mo>=</mo></menclose></math>'
+    body = (f'<p>{mathml} and {enclosed}</p>'
+            r'<p><script type="math/tex; mode=display">c \not= d</script></p>'
+            '<script>alert("never execute")</script>')
+    html = '<div class="problem-statement"><div class="header"><div class="title">A. Relations</div></div>' + body + '</div>'
+    statement = parse_statement(html, 'codeforces:4-A')
+    assert '$a≠b$' in statement['markdown']
+    assert r'$\neq $' in statement['markdown']
+    assert '$$\nc \\not= d\n$$' in statement['markdown']
+    assert 'alert' not in statement['markdown'] and '<script' not in statement['body_html']

@@ -77,8 +77,7 @@ it('renders server Markdown directly with tables, code, images and math instead 
 it('preserves Codeforces teletype operators and literal != inside TeX', async () => {
   expect(
     statementMarkdown({
-      body_html:
-        '<p><span class="tex-font-style-tt">a != b</span> and $$$a != b$$$.</p>',
+      body_html: '<p><span class="tex-font-style-tt">a != b</span> and $$$a != b$$$.</p>',
     }),
   ).toContain('`a != b` and $a \\texttt{!=} b$.')
 
@@ -87,9 +86,7 @@ it('preserves Codeforces teletype operators and literal != inside TeX', async ()
   const root = createRoot(host)
   await act(async () =>
     root.render(
-      <StatementView
-        statement={{ markdown: 'Code: `a != b` and formula $a \\texttt{!=} b$.' }}
-      />,
+      <StatementView statement={{ markdown: 'Code: `a != b` and formula $a \\texttt{!=} b$.' }} />,
     ),
   )
   expect(host.querySelector('code')?.textContent).toBe('a != b')
@@ -132,4 +129,59 @@ it('asks to refresh plain CF caches even when an old render version is set', asy
   expect(host.querySelector('h2')?.textContent).toBe('题目描述')
   await act(async () => root.unmount())
   host.remove()
+})
+
+it('preserves not-equal semantics for TeX aliases and Unicode overlays without changing code', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const expressions = [
+    String.raw`a\neq b`,
+    String.raw`a\ne b`,
+    String.raw`a\not= b`,
+    'a≠b',
+    'a=\u0338b',
+  ]
+  for (const expression of expressions) {
+    await act(async () =>
+      root.render(
+        <StatementView
+          statement={{
+            markdown: `Formula $${expression}$; prose ≠; code \`a != b; \\neq\`.`,
+          }}
+        />,
+      ),
+    )
+    expect(host.querySelector('.katex-mathml mo')?.textContent?.normalize('NFC')).toBe('≠')
+    expect(host.querySelector('.katex-error')).toBeNull()
+    expect(host.querySelector('code')?.textContent).toBe('a != b; \\neq')
+    expect(host.textContent).toContain('prose ≠')
+  }
+  await act(async () => root.unmount())
+  host.remove()
+})
+
+it('recovers the TeX annotation once from legacy rendered math instead of visual duplicates', async () => {
+  const body = String.raw`<p>Given <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>a</mi><mo>≠</mo><mi>b</mi></mrow><annotation encoding="application/x-tex">a \ne b</annotation></semantics></math></span><span class="katex-html">VISUAL DUPLICATE</span></span>.</p>`
+  const markdown = statementMarkdown({ body_html: body })
+  expect(markdown).toBe(String.raw`Given $a \ne b$.`)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  await act(async () => root.render(<StatementView statement={{ body_html: body }} />))
+  expect(host.querySelectorAll('.katex')).toHaveLength(1)
+  expect(host.querySelector('.katex-mathml mo')?.textContent).toBe('≠')
+  expect(host.textContent).not.toContain('VISUAL DUPLICATE')
+  await act(async () => root.unmount())
+  host.remove()
+})
+
+it('keeps split MathML negation and MathJax source in the legacy HTML fallback', () => {
+  const markdown = statementMarkdown({
+    body_html:
+      '<p><math><mrow><mi>a</mi><mo>=</mo><mo>&#x0338;</mo><mi>b</mi></mrow></math></p>' +
+      String.raw`<p><script type="math/tex; mode=display">c \not= d</script></p>`,
+  })
+  expect(markdown).toContain('$a≠b$')
+  expect(markdown).toContain('$$\nc \\not= d\n$$')
 })
