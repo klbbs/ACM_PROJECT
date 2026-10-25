@@ -22,11 +22,12 @@ def test_atcoder_samples_math_images():
  assert r['images'][0]['url']=='https://atcoder.jp/images/test.png'
  assert '\\(N\\)' in r['body_html'] and 'onerror' not in r['body_html'] and 'bad()' not in r['body_html']
 
-def test_luogu_lentille_markdown():
+@pytest.mark.parametrize('title_key', ['title', 'name'])
+def test_luogu_lentille_markdown(title_key):
  import json
- html='<script id="lentille-context" type="application/json">'+json.dumps({'data':{'problem':{'title':'A+B','contenu':{'description':'计算 $a+b$ ![图](https://cdn.luogu.com.cn/x.png)','formatI':'两个整数','formatO':'和'},'samples':[['1 2','3']]}}})+'</script>'
+ html='<script id="lentille-context" type="application/json">'+json.dumps({'data':{'problem':{title_key:'A+B','contenu':{'description':'计算 $a+b$ ![图](https://cdn.luogu.com.cn/x.png)','formatI':'两个整数','formatO':'和'},'samples':[['1 2','3']]}}})+'</script>'
  r=parse_statement(html,'luogu:P1001')
- assert '$a+b$' in r['sections'][0] and not r['body_html']
+ assert r['title']=='A+B' and '$a+b$' in r['sections'][0] and not r['body_html']
  assert len(r['samples'])==1 and r['has_images']
 
 def test_nowcoder_samples_and_permission():

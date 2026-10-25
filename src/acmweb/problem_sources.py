@@ -107,7 +107,7 @@ def parse_statement(html,pid):
         # Markdown stays Markdown; the frontend renders its math, code and image links.
         text='\n\n'.join(sections); body=BeautifulSoup('<div>placeholder</div>','html.parser')
         samples=[{'input':str(x[0]),'output':str(x[1])} for x in p.get('samples',content.get('samples',[])) if isinstance(x,list) and len(x)==2]
-        result=_result(pid,p.get('title',''),body,samples); result['body_html']='';result['sections']=[text]
+        result=_result(pid,p.get('name') or p.get('title',''),body,samples); result['body_html']='';result['sections']=[text]
         result['images']=[{'url':urljoin(source_url(pid),m[1]),'alt':m[0]} for m in re.findall(r'!\[([^\]]*)\]\((https://[^\s)]+)\)',text)]; result['has_images']=bool(result['images']);result['diagnostics']['images']=len(result['images']);result['diagnostics']['math']=bool(re.search(r'\$|\\\(|\\\[',text))
         return result
     if platform=='nowcoder':
