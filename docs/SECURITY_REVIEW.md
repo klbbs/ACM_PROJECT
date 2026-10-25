@@ -25,21 +25,21 @@
 ### 1 登录定向锁定
 
 - 代码：`multiuser.login` 只用 `login-source:<peer>\0<username>`（10 次/900 秒），没有用户名级或全站级失败计数。
-- 复现：同一对端对 `member` 连续 10 次错密码 → 第 11 次 429；同一对端改用 `kendas` 仍 200；另一对端登录 `member` 仍 200。
+- 复现：同一对端对 `member` 连续 10 次错密码 → 第 11 次 429；同一对端改用 `site_owner` 仍 200；另一对端登录 `member` 仍 200。
 - 测试：`test_login_throttle_is_scoped_to_peer_and_account_pair`、`test_login_flood_from_other_peer_cannot_lock_out_correct_password`。
 - 取舍：换成大量 IP 猜同一账号时，唯一成本是 scrypt（n=2^17）与 2 个认证槽；若需要账号级保护，应由边缘 WAF 提供，不能再用“全站桶”实现。
 
 ### 2 邀请码在哈希前校验
 
 - `Users.create`：先 `validate()`（邀请码有效期/未使用、保留名、人数、重名），再在认证槽内 `password_hash`，最后 `BEGIN IMMEDIATE` 内二次校验后写入。
-- 复现：把 `acmweb.users.password_hash` 替换为“一旦调用即失败”，用无效邀请码注册 `kendas/admin/kds/unusedname/KENDAS` 全部 400、正文一致，且哈希函数 0 次调用。
+- 复现：把 `acmweb.users.password_hash` 替换为“一旦调用即失败”，用无效邀请码注册 `site_owner/admin/kds/unusedname/site_owner` 全部 400、正文一致，且哈希函数 0 次调用。
 - 测试：`test_bad_invitation_rejected_before_scrypt_and_reserved_name_disclosure`、`test_registration_does_not_reveal_reserved_names_before_the_invitation`。
 
 ### 3 保留用户名枚举
 
 - 登录：未知账号用 `dummy_hash` 走同一验证路径，统一 `401 用户名或密码不正确`；停用账号即使密码正确也同一响应。
 - 注册：无效邀请码时保留名与普通名一致返回 400；初始化：先校验设置令牌，错误令牌对任意用户名一致返回 403。
-- 复现：`nobody_here`（不存在）、`kendas`（保留）、`member`（存在但错密码）、停用后的 `member`（正确密码）四种请求状态码与正文完全一致；未知账号同样调用 `verify_password`（计数 2/2）。
+- 复现：`nobody_here`（不存在）、`site_owner`（保留）、`member`（存在但错密码）、停用后的 `member`（正确密码）四种请求状态码与正文完全一致；未知账号同样调用 `verify_password`（计数 2/2）。
 - 测试：`test_login_errors_are_identical_for_unknown_reserved_and_inactive_accounts`、`test_unknown_user_still_pays_the_password_verification_cost`、`test_initial_setup_requires_secret_before_disclosing_reserved_name_or_state`。
 - 功能边界：持有**有效**邀请码后，保留名返回 409“用户名不可用”，与“已被占用”同一答复，属于注册功能而非枚举口子。
 
@@ -67,7 +67,7 @@
 ### 7 presence 内部 ID
 
 - `/api/presence` 只返回 `{username, self}` 与 `expires_after`；用户 ID 只用于 `self` 比较，不进入响应。
-- 复现：管理员与成员各发一次心跳，成员视图得到 `[{"username":"kendas","self":false},{"username":"member","self":true}]`，数据库中管理员 ID 不出现在正文。
+- 复现：管理员与成员各发一次心跳，成员视图得到 `[{"username":"site_owner","self":false},{"username":"member","self":true}]`，数据库中管理员 ID 不出现在正文。
 - 测试：`test_presence_payload_contains_only_display_fields`、`test_member_contract_is_not_published_and_presence_contains_no_internal_ids`。
 
 ### 8 公开源码与版本对齐
