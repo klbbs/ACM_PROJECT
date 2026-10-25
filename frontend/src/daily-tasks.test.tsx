@@ -370,7 +370,7 @@ it.each([
     },
     {},
   ],
-  ['请先配置并选择 AI 模型', {}, { model: '' }],
+  ['请先在连接与设置中保存默认 AI 模型', {}, { model: '' }],
   ['今日 Roll 机会已用完', { rerolls_remaining: 0 }, {}],
   ['训练周期未开启，请先保存每日任务', { active: false }, {}],
 ])('disables per-task Roll with a visible reason: %s', async (reason, overrides, props) => {

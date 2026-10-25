@@ -107,7 +107,7 @@ it('keeps unconfigured services and missing AI models from generating, with accu
   })
   await render({ model: '' })
   expect(button('翻译题面（AI）').disabled).toBe(true)
-  expect(host.textContent).toContain('尚未选择模型')
+  expect(host.textContent).toContain('尚未配置默认模型')
   await selectEngine('google')
   expect(host.textContent).toContain('服务器尚未配置此翻译服务')
   expect(

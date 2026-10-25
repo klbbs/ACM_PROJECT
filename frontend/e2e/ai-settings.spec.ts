@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 test('API Key is saved before reading a remote catalog, dropdown selection is saved, failed refresh clears stale choices', async ({ page }) => {
+  expect((await page.request.put('/api/ai/settings', { data: { model: '' } })).ok()).toBe(true)
   await page.goto('/')
   await page.getByRole('button', { name: '连接与设置', exact: true }).click()
   await page.getByLabel('模型提供方').selectOption('deepseek')

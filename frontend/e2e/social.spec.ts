@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-async function community(page: any, options: { duel?: boolean } = {}) {
+async function community(page: any, options: { duel?: boolean; friend?: boolean } = {}) {
   const self = {
     id: 'self',
     username: 'fixture',
@@ -10,7 +10,7 @@ async function community(page: any, options: { duel?: boolean } = {}) {
     public_profile: false,
   }
   let accepted = false
-  let friendship = options.duel ? 'friend' : 'none'
+  let friendship = options.duel || options.friend ? 'friend' : 'none'
   let settings: any = { ...self }
   const sent: any[] = []
   await page.route('**/api/auth/status', (route: any) =>
@@ -102,7 +102,10 @@ async function community(page: any, options: { duel?: boolean } = {}) {
           },
         ],
       }
-    else if (path === '/social/duels')
+    else if (path === '/social/duels' && method === 'POST') {
+      sent.push({ path, body: request.postDataJSON() })
+      response = { id: 'new-synthetic-duel', status: 'pending' }
+    } else if (path === '/social/duels')
       response = {
         items: options.duel
           ? [
@@ -116,6 +119,7 @@ async function community(page: any, options: { duel?: boolean } = {}) {
                 status: accepted ? 'active' : 'pending',
                 difficulty: 1200,
                 duration_minutes: 60,
+                published_after: '2025-01-01',
                 ...(accepted
                   ? {
                       problem: {
@@ -241,7 +245,7 @@ test('friend battle requires recipient acceptance and distinct official verifica
 }) => {
   const sent = await community(page, { duel: true })
   await page.getByRole('button', { name: '好友对战', exact: true }).click()
-  await expect(page.getByText('CF 1200 · 60 分钟', { exact: true })).toBeVisible()
+  await expect(page.getByText('CF 1200 · 60 分钟 · 2025-01-01 起（北京时间，含当天）', { exact: true })).toBeVisible()
   await expect(page.getByText(/对战 AC 计入每日榜单与普通签到，不抵扣每日任务/)).toBeVisible()
   await page.getByRole('button', { name: '接受并随机抽题', exact: true }).click()
   await expect(page.getByRole('button', { name: '在工作台打开对战题', exact: true })).toBeVisible()
@@ -255,4 +259,21 @@ test('friend battle requires recipient acceptance and distinct official verifica
   await page.getByRole('button', { name: '核验双方官方提交', exact: true }).click()
   expect(sent.filter((r) => r.path === '/social/duels/d1/check')).toHaveLength(1)
   await expect(page.getByText(/后台不会自动代交/)).toBeVisible()
+})
+
+test('a battle invitation requires a valid earliest publication date and sends the agreed date', async ({ page }) => {
+  const sent = await community(page, { friend: true })
+  await page.getByRole('button', { name: '好友对战', exact: true }).click()
+  await page.getByLabel('对战好友').selectOption('partner')
+  const invite = page.getByRole('button', { name: '发出邀请', exact: true })
+  await expect(invite).toBeDisabled()
+  await page.getByLabel('对战题目最早发布日期').fill('2099-01-01')
+  await expect(invite).toBeDisabled()
+  await page.getByLabel('对战题目最早发布日期').fill('2025-01-01')
+  await expect(invite).toBeEnabled()
+  await invite.click()
+  expect(sent.filter((entry) => entry.path === '/social/duels')).toEqual([{
+    path: '/social/duels',
+    body: { user_id: 'partner', difficulty: 1200, duration_minutes: 60, published_after: '2025-01-01' },
+  }])
 })

@@ -102,11 +102,7 @@ test('recommendation mixes platforms, inherits the saved date and can renew expi
       },
     }),
   )
-  await page.route('**/api/ai/models?provider=api', (route) =>
-    route.fulfill({
-      json: { items: [{ id: 'synthetic', name: '隔离测试模型' }], default_model: 'synthetic' },
-    }),
-  )
+  expect((await page.request.put('/api/ai/settings', { data: { model: 'synthetic', api_key: 'synthetic-recommendation-key' } })).ok()).toBe(true)
   await page.route('**/api/recommend', (route) => {
     body = route.request().postDataJSON()
     return route.fulfill({ status: 400, json: { detail: '隔离验收已捕获选题请求，不调用真实AI' } })
@@ -118,8 +114,8 @@ test('recommendation mixes platforms, inherits the saved date and can renew expi
   await expect(panel.getByLabel('选题发布日期下限')).toHaveValue('2025-01-01')
   await expect(panel.getByText('Codeforces · 待检测登录')).toBeVisible()
   await expect(panel.getByText('AtCoder · 待检测登录')).toBeVisible()
-  await panel.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await panel.getByLabel('选择模型', { exact: true }).selectOption('synthetic')
+  await expect(panel.getByRole('status', { name: '当前 AI 配置' })).toContainText('synthetic')
+  await expect(panel.getByLabel('选择模型', { exact: true })).toHaveCount(0)
   // Empty stale GET candidates must not disable the explicit background renewal.
   await expect(panel.getByRole('button', { name: 'AI 为我选题', exact: true })).toBeEnabled()
   await panel.getByRole('button', { name: 'AI 为我选题', exact: true }).click()

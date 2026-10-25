@@ -222,7 +222,7 @@ export function DailyTasksPage({
   const rollDisabledReason = (task: Row) => {
     if (!ready) return '题单尚未生成成功，请先重试生成'
     if (task.completed) return '已完成题目不能 Roll'
-    if (!model) return '请先配置并选择 AI 模型'
+    if (!model) return '请先在连接与设置中保存默认 AI 模型'
     if (!data?.active) return '训练周期未开启，请先保存每日任务'
     if (rerollsRemaining <= 0) return '今日 Roll 机会已用完'
     if (busy && rollingTaskId !== task.task_id) return '请等待当前操作完成'

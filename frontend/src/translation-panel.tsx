@@ -270,9 +270,9 @@ export function TranslationPanel({
           {engine === 'ai' ? (
             <p className="translation-model">
               当前 AI：{provider === 'codex' ? '官方登录通道' : 'API 通道'} ·{' '}
-              <strong>{model || '尚未选择模型'}</strong>
+              <strong>{model || '尚未配置默认模型'}</strong>
               <br />
-              <span className="muted">在下方 AI 选择器选择模型，或到连接与设置中配置。</span>
+              <span className="muted">自动使用连接与设置中保存的默认 AI 模型；如需修改，请前往连接与设置。</span>
             </p>
           ) : (
             <p className="translation-model">

@@ -247,7 +247,7 @@ export function WorkbenchPage({
   }
   const coach = (path: string) => {
     if (!model) {
-      onError('请先选择用于提示或错因分析的模型')
+      onError('请先在连接与设置中保存用于提示或错因分析的默认模型')
       return
     }
     return run(path, { provider, model })

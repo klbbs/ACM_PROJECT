@@ -11,16 +11,7 @@ test('daily plan locks k Roll chances, replaces only the selected problem, and c
     if (request.method() === 'GET' && request.url().includes('/api/selection-reports/'))
       reportRequests.push(request.url())
   })
-  await page.route('**/api/ai/models?provider=api', (route) =>
-    route.fulfill({
-      json: {
-        items: [{ id: 'fixture-daily', name: '隔离验收模型' }],
-        default_model: 'fixture-daily',
-        source: 'fixture',
-        note: '仅测试模型',
-      },
-    }),
-  )
+  expect((await page.request.put('/api/ai/settings', { data: { model: 'fixture-daily', api_key: 'synthetic-daily-key' } })).ok()).toBe(true)
   await page.goto('/')
   await page.getByRole('button', { name: '训练', exact: true }).click()
   const daily = page.locator('.daily-mission')
@@ -30,9 +21,10 @@ test('daily plan locks k Roll chances, replaces only the selected problem, and c
   await daily.getByLabel('持续天数').fill('14')
   await daily.getByRole('button', { name: '保存每日任务', exact: true }).click()
   await expect(daily).toContainText('今日目标 2 题')
-  await daily.getByLabel('AI 通道').selectOption('api')
-  await daily.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await daily.getByLabel('选择模型').selectOption('fixture-daily')
+  await expect(daily.getByLabel('AI 通道')).toHaveCount(0)
+  await expect(daily.getByLabel('选择模型')).toHaveCount(0)
+  await expect(daily.getByRole('button', { name: '读取可用模型', exact: true })).toHaveCount(0)
+  await expect(daily.getByRole('status', { name: '当前 AI 配置' })).toContainText('fixture-daily')
   await expect(daily.getByRole('checkbox', { name: /同意将训练偏好/ })).toHaveCount(0)
   await expect(daily).toContainText('点击“AI 生成”或“Roll · 换这道题”会将训练偏好')
   await expect(daily.getByRole('button', { name: 'AI 生成今日 2 道题' })).toBeEnabled()
@@ -222,14 +214,7 @@ test('daily specialist preferences allow a custom count and keep today locked af
       },
     }),
   )
-  await page.route('**/api/ai/models?provider=api', (route) =>
-    route.fulfill({
-      json: {
-        items: [{ id: 'daily-topic-model', name: '合成模型' }],
-        default_model: 'daily-topic-model',
-      },
-    }),
-  )
+  expect((await page.request.put('/api/ai/settings', { data: { model: 'daily-topic-model', api_key: 'synthetic-daily-topic-key' } })).ok()).toBe(true)
   await page.route('**/api/daily/roll', (route) => {
     expect(route.request().postDataJSON()).toEqual({ provider: 'api', model: 'daily-topic-model' })
     plan = {
@@ -263,8 +248,7 @@ test('daily specialist preferences allow a custom count and keep today locked af
     topic_id: 'luogu-47',
     training_mode: 'variation',
   })
-  await daily.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await daily.getByLabel('选择模型', { exact: true }).selectOption('daily-topic-model')
+  await expect(daily.getByRole('status', { name: '当前 AI 配置' })).toContainText('daily-topic-model')
   await daily.getByRole('button', { name: 'AI 生成今日 12 道题', exact: true }).click()
   await expect(daily.locator('.daily-problem')).toHaveCount(12)
   await expect(daily).toContainText('专项训练 · 并查集 · 变式')

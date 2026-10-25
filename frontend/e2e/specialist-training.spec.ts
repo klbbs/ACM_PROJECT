@@ -131,15 +131,7 @@ async function install(page: Page, initiallySaved = true) {
     reviews: new Map<number, any>(),
   }
   await page.route('**/api/ai/settings', (route) =>
-    route.fulfill({ json: { has_key: true, codex_enabled: false, model: 'synthetic-coach' } }),
-  )
-  await page.route('**/api/ai/models?provider=api', (route) =>
-    route.fulfill({
-      json: {
-        items: [{ id: 'synthetic-coach', name: '隔离教练模型' }],
-        default_model: 'synthetic-coach',
-      },
-    }),
+    route.fulfill({ json: { channel: 'api', has_key: true, codex_enabled: false, model: 'synthetic-coach', ready: true } }),
   )
   await page.route('**/api/training/topics', (route) => route.fulfill({ json: topics }))
   await page.route('**/api/training/plans**', async (route) => {
@@ -157,6 +149,7 @@ async function install(page: Page, initiallySaved = true) {
         const generated = {
           ...savedPlan,
           mode: body.mode,
+          rating_request: body.cf_minimum != null ? { minimum: body.cf_minimum, maximum: body.cf_maximum } : undefined,
           items: Array.from({ length: body.count }, (_, position) => ({
             ...savedPlan.items[Math.min(position, savedPlan.items.length - 1)],
             position,
@@ -212,10 +205,12 @@ async function openTraining(page: Page) {
   await page.getByRole('tab', { name: '专项训练', exact: true }).click()
   await expect(page.getByRole('heading', { name: '专项训练', exact: true })).toBeVisible()
 }
-async function chooseModel(page: Page) {
+async function expectSavedAi(page: Page) {
   const panel = page.locator('.specialist-training')
-  await panel.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await panel.getByLabel('选择模型', { exact: true }).selectOption('synthetic-coach')
+  await expect(panel.getByRole('status', { name: '当前 AI 配置' })).toContainText('synthetic-coach')
+  await expect(panel.getByLabel('AI 通道')).toHaveCount(0)
+  await expect(panel.getByLabel('选择模型', { exact: true })).toHaveCount(0)
+  await expect(panel.getByRole('button', { name: '读取可用模型', exact: true })).toHaveCount(0)
 }
 const generateAction = (panel: Locator) => panel.locator('.specialist-generate-action')
 
@@ -239,14 +234,12 @@ test('training hub generates an explicit progressive plan, opens its first probl
   await panel.getByLabel('专题分类', { exact: true }).selectOption('graph')
   await panel.getByLabel('训练专题', { exact: true }).selectOption('shortest-path')
   await panel.getByLabel('专项题量', { exact: true }).fill('12')
+  await panel.getByLabel('专项 CF rating 下限').fill('1000')
+  await panel.getByLabel('专项 CF rating 上限').fill('2000')
   await expect(panel.getByRole('checkbox')).toHaveCount(0)
   await expect(panel.locator('.specialist-scope')).toContainText('你已验证登录的所有平台')
   await expect(panel.locator('.specialist-scope')).toContainText('检测登录状态')
-  await expect(generateAction(panel)).toBeDisabled()
-  await expect(panel.locator('.specialist-generate-state')).toContainText(
-    '请先在连接与设置中配置 AI',
-  )
-  await chooseModel(page)
+  await expectSavedAi(page)
   await expect(panel.getByRole('radio')).toHaveCount(4)
   await panel.getByRole('radio', { name: /巩固/ }).check()
   await panel.getByRole('radio', { name: /新学/ }).check()
@@ -267,6 +260,8 @@ test('training hub generates an explicit progressive plan, opens its first probl
       mode: 'learn',
       provider: 'api',
       model: 'synthetic-coach',
+      cf_minimum: 1000,
+      cf_maximum: 2000,
     },
   ])
   await expect(panel.locator('.specialist-step').first()).toContainText('模板入门')
@@ -304,7 +299,7 @@ test('a selected official AC submission is evaluated by an explicit click and al
   const state = await install(page)
   await page.goto('/')
   await openTraining(page)
-  await chooseModel(page)
+  await expectSavedAi(page)
   const first = page.locator('.specialist-step').first()
   await first.getByRole('button', { name: '提交评估与讨论', exact: true }).click()
   const review = first.locator('.specialist-review')
@@ -348,7 +343,7 @@ test('failed generation retains saved training and late item results cannot leak
   const state = await install(page)
   await page.goto('/')
   await openTraining(page)
-  await chooseModel(page)
+  await expectSavedAi(page)
   const panel = page.locator('.specialist-training')
   const action = generateAction(panel)
   await expect(action).toBeVisible()

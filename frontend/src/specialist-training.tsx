@@ -324,7 +324,7 @@ export function SpecialistTrainingPage({
       if (alive.current) setBusy(false)
     }
   }
-  const modelReason = !model || !aiReady ? '请先在连接与设置中配置 AI，并选择可用模型' : ''
+  const modelReason = !model || !aiReady ? '请先在连接与设置中保存默认 AI 模型' : ''
   const countReason = countValid ? '' : `题目数量需为 1–${maxCount} 的整数`
   const ratingReason = ratingValid
     ? ''
@@ -737,7 +737,7 @@ function ItemReview({
     void load()
   }, [revision])
   const source = data?.sources.find((candidate) => sourceKey(candidate) === selected)
-  const modelReason = !model || !aiReady ? '请先配置并选择可用 AI 模型' : ''
+  const modelReason = !model || !aiReady ? '请先在连接与设置中保存默认 AI 模型' : ''
   const blocked = !data?.completed
     ? '本题尚未完成 AC，请先通过官方判题并同步提交记录'
     : !source

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from acmweb.app import create_app
+from acmweb.ai import ProviderConfig
 from acmweb.settings import Settings
 import uvicorn
 
@@ -22,6 +23,32 @@ def main():
                             allow_env_ai_key=False, multi_user=False, production=False,
                             access_token='', public_origin='')
         app = create_app(settings)
+        def reset_ai_config():
+            # A disposable test configuration, never a product fallback/key.
+            # Saving through the real service preserves its normal validation.
+            app.state.ai.save(ProviderConfig(model='fixture-default', api_key='synthetic-guarded-fixture-key'))
+        reset_ai_config()
+
+        # Reject accidental upstream traffic in this explicitly opted-in process.
+        # Known OJ/AI operations below have narrowly scoped synthetic transports.
+        import requests
+        import httpx
+        def no_real_request(*args, **kwargs):
+            raise requests.RequestException('External requests are disabled in the guarded browser fixture')
+        def no_real_httpx_request(*args, **kwargs):
+            raise httpx.TransportError('External requests are disabled in the guarded browser fixture')
+        async def no_real_async_request(*args, **kwargs):
+            raise httpx.TransportError('External requests are disabled in the guarded browser fixture')
+        requests.Session.request = no_real_request
+        httpx.Client.request = no_real_httpx_request
+        httpx.AsyncClient.request = no_real_async_request
+
+        async def fixture_models(provider='api'):
+            current = app.state.ai.config()
+            model = current.get('codex_model' if provider == 'codex' else 'model') or 'fixture-default'
+            return {'items': [{'id': model, 'name': model + ' (synthetic)'}],
+                    'default_model': model, 'source': 'fixture', 'note': '本地合成模型目录，不调用外部服务'}
+        app.state.ai.models = fixture_models
         # Synthetic principal evidence exists only in this guarded temporary fixture.
         app.state.credential_checks.statuses = lambda: {'items':[{'platform':'codeforces','handle':'fixture','status':'authenticated','login_verified':True,'checked_at':int(time.time())}]}
         def fixture_login_check(platform, handle, force_refresh=False):
@@ -128,10 +155,10 @@ def main():
                     'check_directions':['先检查输入边界是否满足题目条件。'], 'confidence':'low'},ensure_ascii=False)
             raise RuntimeError('Unexpected test AI schema')
         app.state.ai._api_generate = fixture_ai
-        original_json = workbench.Client.json
         def fixture_judge(self, url, **kwargs):
             if url != 'https://codeforces.com/api/contest.status':
-                return original_json(self,url,**kwargs)
+                from ojcrawler.models import CrawlError
+                raise CrawlError('Unknown upstream request blocked by the guarded browser fixture')
             handle = kwargs.get('params',{}).get('handle','')
             rows = [{'id':sid,'creationTimeSeconds':int(time.time())-(3600 if sid == 920003 else 0),
                      'problem':{'contestId':4,'index':'A','name':'Synthetic acceptance problem','rating':1200,'tags':['math']},
@@ -170,6 +197,7 @@ def main():
                     db.execute('DELETE FROM ' + table)
                 db.execute("DELETE FROM web_settings WHERE key LIKE 'problem_sync:%'")
                 db.executemany('INSERT INTO wb_problems VALUES(?,?,?)', seeded_statements)
+            reset_ai_config()
             remote_receipts.clear()
             remote_sources.clear()
             submission_reviews.clear()

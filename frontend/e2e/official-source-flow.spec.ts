@@ -12,9 +12,6 @@ test('sync without code, fetch official source and review it without replacing t
   expect((await page.request.put('/api/ai/settings', {
     data: { model: 'fixture-coach', api_key: 'synthetic-only-key' },
   })).ok()).toBe(true)
-  await page.route('**/api/ai/models?provider=api', (route) => route.fulfill({
-    json: { items: [{ id: 'fixture-coach', name: '合成教练模型' }], default_model: 'fixture-coach' },
-  }))
   let syncBody: unknown
   page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/sync') && request.url().includes('/problem-submissions/'))
@@ -42,9 +39,10 @@ test('sync without code, fetch official source and review it without replacing t
   await page.getByLabel('源代码', { exact: true }).fill(currentDraft)
   await page.getByLabel('源代码', { exact: true }).press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
-  await page.getByLabel('AI 通道').selectOption('api')
-  await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
+  await expect(page.getByRole('status', { name: '当前 AI 配置' })).toContainText('fixture-coach')
+  await expect(page.getByLabel('AI 通道')).toHaveCount(0)
+  await expect(page.getByLabel('选择模型', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '读取可用模型', exact: true })).toHaveCount(0)
   const review = record.getByRole('button', { name: 'AI 分析', exact: true })
   await expect(review).toBeEnabled()
   await review.click()

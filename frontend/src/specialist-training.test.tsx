@@ -462,5 +462,5 @@ it('states loading, generating, missing-model, ai-unready and invalid-count reas
   expect(host.textContent).toContain('新的专项路线')
   await render({ model: '', aiReady: false })
   expect(generateAction().disabled).toBe(true)
-  expect(generateState().textContent).toContain('请先在连接与设置中配置 AI')
+  expect(generateState().textContent).toContain('请先在连接与设置中保存默认 AI 模型')
 })

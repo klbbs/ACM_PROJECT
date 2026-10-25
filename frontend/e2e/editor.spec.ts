@@ -290,7 +290,7 @@ test('AI presets expose dedicated fields and preserve secrets per endpoint', asy
   await page.getByLabel('API Key', { exact: true }).fill('synthetic-deepseek-key')
   await page.getByRole('button', { name: '保存 API 配置' }).click()
   await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
-  await expect(page.getByText('AI API 配置已保存，密钥仅保存在服务端')).toBeVisible()
+  await expect(page.getByText('默认 AI 配置已保存，所有功能会自动使用该通道与模型')).toBeVisible()
   await page.getByLabel('模型提供方').selectOption('anthropic')
   await expect(page.getByLabel('接入协议')).toHaveValue('anthropic')
   await page.getByRole('button', { name: '保存 API 配置' }).click()
@@ -316,16 +316,6 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
       manualAiRequests.push(path)
   })
   // All upstream judge/AI responses are synthetic in the isolated test server.
-  await page.route('**/api/ai/models?provider=api', (route) =>
-    route.fulfill({
-      json: {
-        items: [{ id: 'fixture-coach', name: '合成教练模型' }],
-        default_model: 'fixture-coach',
-        source: 'fixture',
-        note: '仅用于离线教练交互验收',
-      },
-    }),
-  )
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user', cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })
@@ -338,10 +328,10 @@ test('practice loop keeps hints, submitted code, WA reviews and navigable AC sub
   await editor.fill('print("deliberately wrong")')
   await editor.press('Control+s')
   await expect(page.getByText('已保存到个人数据库', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: /给我一个小提示/ })).toBeDisabled()
-  await page.getByLabel('AI 通道').selectOption('api')
-  await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
+  await expect(page.getByRole('status', { name: '当前 AI 配置' })).toContainText('fixture-coach')
+  await expect(page.getByLabel('AI 通道')).toHaveCount(0)
+  await expect(page.getByLabel('选择模型', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '读取可用模型', exact: true })).toHaveCount(0)
   await expect(page.getByRole('checkbox', { name: /我同意将本题题面/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /给我一个小提示/ })).toBeEnabled()
   expect(manualAiRequests).toHaveLength(0)
@@ -532,16 +522,6 @@ test('self-test uses custom input, compares output and keeps results out of subm
 test('a verified WA does not automatically send source to AI and supports explicit analysis', async ({
   page,
 }) => {
-  await page.route('**/api/ai/models?provider=api', (route) =>
-    route.fulfill({
-      json: {
-        items: [{ id: 'fixture-coach', name: '合成教练模型' }],
-        default_model: 'fixture-coach',
-        source: 'fixture',
-        note: '离线测试',
-      },
-    }),
-  )
   await page.request.put('/api/accounts', {
     data: { items: [{ platform: 'codeforces', handle: 'fixture_user', cookie: 'JSESSIONID=synthetic-e2e-session', enrich: false }] },
   })
@@ -550,9 +530,10 @@ test('a verified WA does not automatically send source to AI and supports explic
   })).ok()).toBe(true)
   await open(page)
   await expect(page.getByRole('checkbox', { name: '开启自动错误提示', exact: true })).toHaveCount(0)
-  await page.getByLabel('AI 通道').selectOption('api')
-  await page.getByRole('button', { name: '读取可用模型', exact: true }).click()
-  await page.getByLabel('选择模型', { exact: true }).selectOption('fixture-coach')
+  await expect(page.getByRole('status', { name: '当前 AI 配置' })).toContainText('fixture-coach')
+  await expect(page.getByLabel('AI 通道')).toHaveCount(0)
+  await expect(page.getByLabel('选择模型', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '读取可用模型', exact: true })).toHaveCount(0)
   await page.getByLabel('代码语言').selectOption('python3')
   await page.getByLabel('源代码', { exact: true }).fill('print("manual analysis only")')
   const form = page.getByRole('region', { name: '真实平台提交', exact: true })
