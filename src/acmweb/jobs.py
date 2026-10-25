@@ -10,6 +10,7 @@ from . import analytics
 from .catalog import refresh_catalog, recommendation_candidates, recommendation_status, refresh_recommendation_sessions
 from .codex_bridge import AIError
 from .runtime_logs import emit_event, known_failure_reason
+from .selection_report_links import prepare_selection_reports
 from ojcrawler.config import load
 from ojcrawler.cli import crawl
 
@@ -23,6 +24,7 @@ class Jobs:
         self.accounts=accounts
         self.guard=None
         self.event_log=None
+        self.selection_reports=None
 
     def list(self):
         with self.db.connect() as db:
@@ -126,6 +128,20 @@ class Jobs:
                         raise AIError("没有满足条件的未做题，请先同步题库或调整筛选条件")
                 report=await self.ai.generate(payload["provider"],payload["model"],context,selected,payload.get("goal",""),task=kind)
                 if kind == "recommend":
+                    ids = [p["id"] for p in report.get("selected_problems", [])]
+                    current = recommendation_candidates(self.db,self.accounts,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),max(1,len(ids)),published_after=payload.get("published_after"),preferred_ids=ids)
+                    if not set(ids) <= {p["id"] for p in current}:
+                        raise AIError("候选资格已变化（登录、日期、提交或对战），未保存推荐，请重试")
+                    if self.selection_reports is None:
+                        raise AIError('选题阅读报告服务尚未初始化，请稍后重试')
+                    # Metadata is only a shortlist. Final recommendations must
+                    # first be confirmed against the actual official statement.
+                    if report.get('selected_problems'):
+                        report['selected_problems'] = await prepare_selection_reports(
+                            self.selection_reports, report['selected_problems'],
+                            payload['provider'], payload['model'],
+                            context={'mode_title': 'AI 推荐训练'})
+                    await refresh_recommendation_sessions(self.accounts)
                     ids = [p["id"] for p in report.get("selected_problems", [])]
                     current = recommendation_candidates(self.db,self.accounts,payload.get("minimum",800),payload.get("maximum",1600),payload.get("tags"),max(1,len(ids)),published_after=payload.get("published_after"),preferred_ids=ids)
                     if not set(ids) <= {p["id"] for p in current}:

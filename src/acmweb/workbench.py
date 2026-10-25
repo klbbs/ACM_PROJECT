@@ -267,7 +267,7 @@ class Workbench:
             recent = [dict(r) for r in conn.execute('SELECT problem_id,updated_at FROM wb_drafts ORDER BY updated_at DESC LIMIT 30')]
             all_catalog = {r['id']: json.loads(r['data']) for r in conn.execute('SELECT id,data FROM problem_catalog')}
             rows = conn.execute("SELECT problem_id,verdict FROM wb_attempts WHERE verdict NOT IN ('UNLINKED','PENDING','AC')").fetchall()
-        selected = {p['id']: p.get('reason', '') for p in json.loads(report['data']).get('selected_problems', [])} if report else {}
+        selected = {p['id']: p for p in json.loads(report['data']).get('selected_problems', [])} if report else {}
         notice = ''
         try:
             pool = recommendation_candidates(self.db, self.accounts, prefs.get('minimum', 1000),
@@ -279,12 +279,16 @@ class Workbench:
             weak_tags.update(all_catalog.get(row['problem_id'], {}).get('tags', []))
         target = (prefs.get('minimum', 1000) + prefs.get('maximum', 1600)) / 2
         for p in pool:
-            ai_reason = selected.get(p['id'])
+            ai_choice = selected.get(p['id'])
+            ai_reason = ai_choice.get('reason', '') if ai_choice else ''
+            p.pop('ai_report_id', None)
+            if ai_choice and isinstance(ai_choice.get('ai_report_id'), str):
+                p['ai_report_id'] = ai_choice['ai_report_id']
             weak = sorted(set(p.get('tags', [])) & weak_tags)
             base = round(70 - abs(p['difficulty'] - target) / 20) if p['platform'] == 'codeforces' and isinstance(p.get('difficulty'), int) else 70
             p['match_score'] = min(100, max(10, base) + (15 if weak else 0) + (15 if ai_reason else 0))
             p['reason'] = ai_reason or ('近期未通过题目的关联知识点：' + '、'.join(weak) if weak else ('符合当前训练难度范围' if p['platform'] == 'codeforces' else '来自已验证登录的平台；保留该平台原始难度'))
-            p['recommendation_source'] = '已保存的 AI 推荐' if ai_reason else '训练规则匹配'
+            p['recommendation_source'] = '已保存的 AI 推荐' if ai_choice else '训练规则匹配'
         pool.sort(key=lambda p: -p['match_score'])
         return {'items': pool[:30], 'recent': recent, 'profile': training_evidence(self.db),
                 'handles_by_platform': {p:[a['handle'] for a in self.accounts.document().get('accounts', []) if a.get('platform')==p] for p in ('codeforces','atcoder','luogu','nowcoder')},

@@ -303,6 +303,11 @@ def create_app(settings=None):
     from .workbench import Workbench, register
     app.state.workbench = Workbench(database, ai, account_config)
     register(app, app.state.workbench, jobs, app.state.daily)
+    from .selection_reports import SelectionReports, register as register_selection_reports
+    app.state.selection_reports = SelectionReports(database, ai, app.state.workbench, event_log=event_log)
+    jobs.selection_reports = app.state.selection_reports
+    app.state.daily.selection_reports = app.state.selection_reports
+    register_selection_reports(app, app.state.selection_reports)
     from .code_templates import register as register_code_templates
     register_code_templates(app, database)
 
@@ -316,6 +321,7 @@ def create_app(settings=None):
     from .training import Training as SpecialistTraining, register as register_specialist_training
     from .training_assessment import TrainingAssessment, register as register_training_assessment
     app.state.specialist_training = SpecialistTraining(database, ai, account_config, event_log=event_log)
+    app.state.specialist_training.selection_reports = app.state.selection_reports
     app.state.daily.specialist_training = app.state.specialist_training
     register_specialist_training(app, app.state.specialist_training)
     app.state.training_assessment = TrainingAssessment(

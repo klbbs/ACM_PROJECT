@@ -37,6 +37,8 @@ EVENTS = {
     'daily.failed': ('task', '每日题单生成失败，原有题单保留'),
     'training.selection_failed': ('task', '专项选题未完成，请检查候选筛选条件'),
     'training.selected': ('task', '专项题目已选定'),
+    'selection_reports.failed': ('task', '选题阅读报告未能生成，原有题单保留'),
+    'selection_reports.generated': ('task', '选题阅读报告已保存'),
     'platform.qr.retry': ('platform', '牛客扫码检测暂未完成，正在重试'),
     'platform.qr.failed': ('platform', '牛客扫码绑定未完成'),
     'platform.qr.verified': ('platform', '牛客扫码身份已验证并绑定'),
@@ -59,7 +61,9 @@ REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'bindi
            'daily_invalid_output', 'daily_invalid_count', 'daily_candidates_unavailable',
            'daily_provider_unavailable', 'daily_provider_configuration', 'daily_interrupted',
            'daily_generation_failed', 'training_template_unavailable',
-           'training_candidates_unavailable', 'training_selection_invalid'}
+           'training_candidates_unavailable', 'training_selection_invalid',
+           'selection_statement_unavailable', 'selection_report_invalid',
+           'selection_report_rejected', 'selection_report_timeout', 'selection_report_failed'}
 
 
 def known_failure_reason(error):
@@ -88,7 +92,7 @@ def record_failure(scope, error):
 
 COMPONENTS = {'auth', 'admin', 'accounts', 'workbench', 'remote-submissions', 'problem-submissions',
               'platform-login', 'platforms', 'translations', 'daily', 'ai', 'catalog', 'social',
-              'crawl', 'analysis', 'recommend', 'training', 'shared', 'other'}
+              'crawl', 'analysis', 'recommend', 'training', 'selection-reports', 'shared', 'other'}
 HEX = re.compile(r'[a-f0-9]{32}')
 _registry = weakref.WeakValueDictionary()
 _registry_lock = threading.RLock()
