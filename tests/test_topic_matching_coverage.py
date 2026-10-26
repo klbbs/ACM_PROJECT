@@ -52,7 +52,7 @@ def test_cf_precise_official_tag_mapping_and_parent_coverage(tag, target):
     ('codeforces', 'Count Paths', ['线性动态规划'], 444),
 ])
 def test_exact_algorithm_names_across_platform_schemas(platform, title, tags, target):
-    problem = {'platform': platform, 'title': title, 'tags': tags}
+    problem = {'platform': platform, 'title': title, 'tags': tags, 'candidate_source': '官方题库'}
     assert matches_topic(problem, TOPICS[f'luogu-{target}'])
     assert topic_evidence(problem, TOPICS[f'luogu-{target}'])['source'] == 'official_title_or_text_tag'
 
@@ -153,3 +153,33 @@ def test_coverage_legacy_date_guard_matches_generation_without_mutating_preferen
     with pytest.raises(AIError, match='最早发布日期'):
         service._pool(TOPICS['luogu-47'])
     assert db.get('training') == {'min_contest': 1800}
+
+
+def test_third_party_index_title_remains_metadata_not_official_statement_reading():
+    problem = {'platform': 'atcoder', 'id': 'atcoder:abc200_a', 'title': 'Disjoint Set Union',
+               'tags': [], 'candidate_source': 'AtCoder Problems（Kenkoooo）公开题目索引（第三方）'}
+    evidence = topic_evidence(problem, TOPICS['luogu-47'])
+    assert evidence['matched']
+    assert evidence['source'] == 'third_party_index_title'
+    # A verified official contest date does not promote a third-party title.
+    assert topic_evidence({**problem, 'published_at_source': 'atcoder.archive.time'}, TOPICS['luogu-47'])['source'] == 'third_party_index_title'
+    # Specific title provenance takes precedence over generic catalog wording.
+    assert topic_evidence({**problem, 'candidate_source': '官方题库', 'title_source': 'kenkoooo.problems'}, TOPICS['luogu-47'])['source'] == 'third_party_index_title'
+    assert topic_evidence({**problem, 'candidate_source': 'unknown metadata source'}, TOPICS['luogu-47'])['source'] == 'catalog_title_or_text_tag'
+    assert topic_evidence({**problem, 'candidate_source': '官方题库'}, TOPICS['luogu-47'])['source'] == 'official_title_or_text_tag'
+
+
+def test_third_party_index_date_cannot_pass_official_publication_floor(tmp_path):
+    db = Database(tmp_path / 'third-party.db')
+    db.set('training', {'published_after': '2024-01-01'})
+    service = Training(db, AsyncMock(), accounts('atcoder'))
+    save(db, 'atcoder', 'abc200_a', 'Disjoint Set Union',
+         candidate_source='AtCoder Problems（Kenkoooo）公开题目索引（第三方）',
+         published_at=1706000000, published_at_source='kenkoooo.contest.start_epoch_second')
+    result = service.candidate_coverage('luogu-47')
+    row = next(row for row in result['platforms'] if row['platform'] == 'atcoder')
+    assert row['topic_count'] == 1 and row['eligible_count'] == 0
+    assert row['conditions'] == [{'code': 'unknown_date', 'count': 1,
+        'message': '缺少可核查的官方发布日期，无法确认满足日期要求'}]
+    assert service._pool(TOPICS['luogu-47']) == []
+    service.ai.complete.assert_not_called()
