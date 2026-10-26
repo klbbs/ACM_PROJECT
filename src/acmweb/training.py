@@ -70,10 +70,36 @@ class Choice(Strict):
     learning_level: int = Field(ge=1, le=50, strict=True)
 
 
+def completed_problem_ids(database):
+    now = int(time.time())
+    with database.connect() as db:
+        ids = {row['platform'] + ':' + row['problem_id'].removeprefix(row['platform'] + ':')
+               for row in db.execute("SELECT platform,problem_id FROM submissions WHERE verdict='AC' AND submitted_at>0 AND submitted_at<=?", (now,))}
+        rows = db.execute("""SELECT a.problem_id,a.judge_data FROM wb_attempts a
+            WHERE a.verdict='AC' AND a.submission_id IS NOT NULL AND a.handle<>'' AND a.last_synced>0
+            AND NOT EXISTS (SELECT 1 FROM submissions s WHERE s.id=CAST(a.submission_id AS TEXT)
+                AND s.platform=substr(a.problem_id,1,instr(a.problem_id,':')-1)
+                AND CASE WHEN s.platform='codeforces' THEN lower(s.account)=lower(a.handle)
+                         ELSE s.account=a.handle END)""").fetchall()
+    for row in rows:
+        try:
+            platform = row['problem_id'].split(':', 1)[0]
+            judge = json.loads(row['judge_data'] or '{}')
+            timestamp = judge.get('creationTimeSeconds') if platform == 'codeforces' else judge.get('submitted_at')
+            if (judge.get('verdict') in {'OK', 'AC'} and type(timestamp) is int and 0 < timestamp <= now
+                    and judge.get('platform', platform) == platform
+                    and (platform == 'codeforces' or judge.get('source') == 'official_remote_submission')):
+                ids.add(row['problem_id'])
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return ids
+
+
 class Training:
     def __init__(self, database, ai, accounts=None, event_log=None):
         self.db, self.ai, self.accounts, self.event_log = database, ai, accounts, event_log
         self.selection_reports = None
+        self.topic_feasibility = None
         self.guard = None
         self.active_ai = False
         self._selecting = False
@@ -81,28 +107,7 @@ class Training:
             db.executescript(DDL)
 
     def _ac_ids(self):
-        now = int(time.time())
-        with self.db.connect() as db:
-            ids = {row['platform'] + ':' + row['problem_id'].removeprefix(row['platform'] + ':')
-                   for row in db.execute("SELECT platform,problem_id FROM submissions WHERE verdict='AC' AND submitted_at>0 AND submitted_at<=?", (now,))}
-            rows = db.execute("""SELECT a.problem_id,a.judge_data FROM wb_attempts a
-                WHERE a.verdict='AC' AND a.submission_id IS NOT NULL AND a.handle<>'' AND a.last_synced>0
-                AND NOT EXISTS (SELECT 1 FROM submissions s WHERE s.id=CAST(a.submission_id AS TEXT)
-                    AND s.platform=substr(a.problem_id,1,instr(a.problem_id,':')-1)
-                    AND CASE WHEN s.platform='codeforces' THEN lower(s.account)=lower(a.handle)
-                             ELSE s.account=a.handle END)""").fetchall()
-        for row in rows:
-            try:
-                platform = row['problem_id'].split(':', 1)[0]
-                judge = json.loads(row['judge_data'] or '{}')
-                timestamp = judge.get('creationTimeSeconds') if platform == 'codeforces' else judge.get('submitted_at')
-                if (judge.get('verdict') in {'OK', 'AC'} and type(timestamp) is int and 0 < timestamp <= now
-                        and judge.get('platform', platform) == platform
-                        and (platform == 'codeforces' or judge.get('source') == 'official_remote_submission')):
-                    ids.add(row['problem_id'])
-            except (ValueError, TypeError, AttributeError):
-                continue
-        return ids
+        return completed_problem_ids(self.db)
 
     def _decorate(self, data, completed=None):
         result = json.loads(data)
@@ -134,8 +139,9 @@ class Training:
             raise HTTPException(422, 'CF rating 下限不能大于上限，请同时设置有效范围')
         constrained = cf_minimum is not None or cf_maximum is not None
         reference = cf_reference(self.db)
+        methods = self.topic_feasibility.approved_map(topic['id']) if self.topic_feasibility is not None else {}
         def eligible(problem):
-            return matches_topic(problem, topic) and (not constrained or overlaps(estimate(problem, reference), minimum, maximum))
+            return (matches_topic(problem, topic) or problem['id'] in methods) and (not constrained or overlaps(estimate(problem, reference), minimum, maximum))
         pool = recommendation_candidates(self.db, self.accounts,
             minimum=minimum, maximum=maximum,
             published_after=prefs.get('published_after'), limit=3000,
@@ -143,7 +149,8 @@ class Training:
             predicate=eligible, allow_attempted=True,
             prioritize=lambda p: is_template(p, topic))
         completed = self._ac_ids()
-        return [{**p, 'cf_rating_estimate': estimate(p, reference), 'topic_evidence': topic_evidence(p, topic)}
+        return [{**p, 'cf_rating_estimate': estimate(p, reference),
+                 'topic_evidence': topic_evidence(p, topic) if matches_topic(p, topic) else methods[p['id']]}
                 for p in pool if p['id'] not in completed]
 
     def candidate_coverage(self, topic_id, *, excluded_ids=(), difficulty_bounds=None,
@@ -170,6 +177,7 @@ class Training:
         avoided = set(prefs.get('avoid_tags', []))
         reference = cf_reference(self.db)
         active, complete, excluded = set(verified_platforms(self.accounts)), self._ac_ids(), set(excluded_ids)
+        methods = self.topic_feasibility.approved_map(topic_id) if self.topic_feasibility is not None else {}
         messages = {
             'unverified': '当前平台登录未通过验证或验证已过期',
             'legacy_date': LEGACY_DATE_NOTICE,
@@ -189,7 +197,7 @@ class Training:
             raw = _pool(self.db, platform, include_excluded=True)
             available = {p['id'] for p in _pool(self.db, platform, allow_attempted=True)}
             counts = {key: 0 for key in messages}
-            matched = [p for p in raw if topic_evidence(p, topic)['matched']]
+            matched = [p for p in raw if topic_evidence(p, topic)['matched'] or p['id'] in methods]
             matched_ids = {p['id'] for p in matched}
             eligible = []
             for problem in raw:
@@ -243,6 +251,7 @@ class Training:
             result.append({'platform': platform, 'verified': platform in active,
                 'cached_count': len(raw), 'topic_count': len(matched),
                 'eligible_count': len(eligible), 'template_count': sum(is_template(p, topic) for p in eligible),
+                'ai_eligible_count': sum(p['id'] in methods and not matches_topic(p, topic) for p in eligible),
                 'unknown_topic_count': counts['unknown_topic'],
                 'conditions': [{'code': key, 'count': value, 'message': messages[key]}
                                for key, value in counts.items() if value],
@@ -250,6 +259,7 @@ class Training:
         return {'topic_id': topic_id, 'platforms': result,
             'eligible_count': sum(row['eligible_count'] for row in result),
             'template_count': sum(row['template_count'] for row in result),
+            'method_check_summary': self.topic_feasibility.summary(topic_id) if self.topic_feasibility is not None else {},
             'notice': '仅展示本人题库缓存与已验证登录平台的证据覆盖，不代表平台全站无题；未知标签、日期或难度不会被猜测。刷新只补充官方元信息，生成时才会按已保存模型阅读题面。'}
 
     def _learner_evidence(self):
@@ -294,12 +304,13 @@ class Training:
         complete = self._ac_ids()
         names = {'codeforces': 'Codeforces', 'atcoder': 'AtCoder', 'luogu': '洛谷', 'nowcoder': '牛客'}
         details = []
+        methods = self.topic_feasibility.approved_map(topic['id']) if self.topic_feasibility is not None else {}
         for platform in PLATFORMS:
             if platform not in active:
                 if platform in configured:
                     details.append(names[platform] + '：登录未通过检测或检测已过期，请到连接与设置检测登录状态')
                 continue
-            raw = [p for p in _pool(self.db, platform, include_excluded=True) if matches_topic(p, topic)]
+            raw = [p for p in _pool(self.db, platform, include_excluded=True) if matches_topic(p, topic) or p['id'] in methods]
             templates = [p for p in raw if is_template(p, topic)]
             reasons = []
             if not raw:
@@ -443,6 +454,27 @@ class Training:
                                       for row in refresh_result if row['status'] == 'failed')
             pool = [p for p in self._pool(topic, cf_minimum=cf_minimum, cf_maximum=cf_maximum) if p['id'] not in excluded
                     and self._within_difficulty_bounds(p, bounds)]
+            templates = [p['id'] for p in pool if is_template(p, topic)]
+        usable_count = (1 + sum(p['id'] not in templates for p in pool)
+                        if template_first and templates else len(pool))
+        if forbid_templates:
+            usable_count = sum(p['id'] not in templates for p in pool)
+        # Explicit paid generation may discover alternative method applications.
+        # This cannot certify an ordinary task as the mandatory first template.
+        if self.topic_feasibility is not None and usable_count < count and (not template_first or templates):
+            if self.guard:
+                self.guard()
+            self.active_ai = True
+            try:
+                checked = await self.topic_feasibility.check(topic['id'], provider, model,
+                    cf_minimum, cf_maximum, excluded_ids=excluded, difficulty_bounds=bounds)
+                refresh_notice += ('。' if refresh_notice else '') + checked.get('notice', '')
+            except AIError:
+                refresh_notice += ('。' if refresh_notice else '') + '补充方法核查未完成，已保留原候选和训练计划'
+            finally:
+                self.active_ai = False
+            pool = [p for p in self._pool(topic, cf_minimum=cf_minimum, cf_maximum=cf_maximum)
+                    if p['id'] not in excluded and self._within_difficulty_bounds(p, bounds)]
             templates = [p['id'] for p in pool if is_template(p, topic)]
         if template_first and not templates:
             emit_event(self.event_log, 'training.selection_failed', 'WARNING',

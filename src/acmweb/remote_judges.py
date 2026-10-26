@@ -15,8 +15,9 @@ from bs4 import BeautifulSoup
 from ojcrawler.http import browser_headers
 from ojcrawler.models import verdict
 from ojcrawler.storage import codeforces_judge_verdict
+from .codex_bridge import AIError
 from .cookie_validation import prepare_cookie
-from .problem_sources import normalize
+from .problem_sources import atcoder_contest, normalize
 
 
 _MESSAGES = {
@@ -140,7 +141,17 @@ class PlatformSession:
 
     @staticmethod
     def _contest(key):
-        return 'abs' if key == 'practice_1' else key.rsplit('_', 1)[0]
+        """Single source of truth for the official AtCoder contest path.
+
+        Statement URLs, submit URLs, the submissions list and the record check
+        must all name the same allowlisted contest; a task id alone cannot
+        always carry it (e.g. ``math_and_algorithm_a`` lives in
+        ``/contests/math-and-algorithm/``).
+        """
+        try:
+            return atcoder_contest(key)
+        except AIError:
+            raise SubmissionError('invalid_input') from None
 
     def _identity(self, soup, handle):
         selector, pattern = ('.lang-chooser', r'^/profile/([^/?#]+)$') if self.platform == 'codeforces' else ('#navbar-collapse', r'^/users/([^/?#]+)$')

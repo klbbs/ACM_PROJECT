@@ -28,6 +28,8 @@ type MethodSummary = {
   accepted_count: number
   uncertain_count: number
   rejected_count: number
+  cached_count?: number
+  not_checked_count?: number
 }
 type Job = {
   id: string
@@ -355,9 +357,11 @@ export function TrainingCandidates({
             已核查 {methodSummary.checked_count ?? 0} 题 · 方法可行{' '}
             {methodSummary.accepted_count ?? 0} 题 · 无法确定 {methodSummary.uncertain_count ?? 0}{' '}
             题 · 未通过核查 {methodSummary.rejected_count ?? 0} 题
+            {!!methodSummary.cached_count && ` · 复用已核查 ${methodSummary.cached_count} 题`}
+            {!!methodSummary.not_checked_count && ` · 本次未完成读取或核查 ${methodSummary.not_checked_count} 题`}
           </p>
           <p className="help">
-            仅有证据支持的方法可行候选会参与后续筛选，仍需满足日期、难度等要求；无法确定时不会强行归类。这不是官方标签、标准解法或判题结果。
+            以上为最近一次核查的历史数量；题面缓存或规则更新后旧证据会失效，当前可用数量以各平台统计为准。仅有证据支持的方法可行候选会参与后续筛选，仍需满足日期、难度等要求；无法确定时不会强行归类。这不是官方标签、标准解法或判题结果。
           </p>
         </div>
       )}

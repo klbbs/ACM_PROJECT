@@ -51,7 +51,10 @@ def test_statement_plaintext_samples_and_url_validation():
     assert 'evil()' not in json.dumps(parsed) and '<script' not in json.dumps(parsed)
     assert parsed['has_images']
     assert normalize('https://codeforces.com/contest/4/problem/a') == 'codeforces:4-A'
-    for value in ('https://evil.invalid/4/A', 'https://codeforces.com:443/problemset/problem/4/A', 'https://codeforces.com@127.0.0.1/problemset/problem/4/A', 'https://codeforces.com/problemset/problem/4/A?x=1', '../../account.toml', '100000-A'):
+    # Gym task IDs became valid when explicit Gym submission sync was added;
+    # URL host/path protections remain enforced for both contest types.
+    assert normalize('100000-A') == 'codeforces:100000-A'
+    for value in ('https://evil.invalid/4/A', 'https://codeforces.com:443/problemset/problem/4/A', 'https://codeforces.com@127.0.0.1/problemset/problem/4/A', 'https://codeforces.com/problemset/problem/4/A?x=1', '../../account.toml'):
         with pytest.raises(AIError): normalize(value)
     with pytest.raises(AIError): parse_statement('<html>Cloudflare verification</html>', 'codeforces:4-A')
 

@@ -10,6 +10,13 @@ from acmweb.jobs import Jobs
 _REAL_CRAWL = Jobs.crawl
 
 
+def test_atcoder_collection_links_without_cached_contest_id():
+    from acmweb.social import Social
+    assert Social.url('atcoder', 'math_and_algorithm_a') == 'https://atcoder.jp/contests/math-and-algorithm/tasks/math_and_algorithm_a'
+    assert Social.url('atcoder', 'tessoku_book_a') == 'https://atcoder.jp/contests/tessoku-book/tasks/tessoku_book_a'
+    assert Social.url('atcoder', 'practice_1') == 'https://atcoder.jp/contests/abs/tasks/practice_1'
+
+
 def child(site, who):
     request, _, _, app, *_ = site
     assert request(who, 'GET', '/api/social/me').status_code == 200

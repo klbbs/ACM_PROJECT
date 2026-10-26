@@ -1067,6 +1067,7 @@ export function App() {
               daily={
                 <PracticePage
                   aiPicker={aiPicker}
+                  aiReady={aiReadiness.ready}
                   overview={overview}
                   model={model}
                   provider={provider}
@@ -1547,6 +1548,7 @@ function Report({ data: r }: { data: Row }) {
 
 function PracticePage({
   aiPicker,
+  aiReady,
   overview,
   model,
   provider,
@@ -1791,6 +1793,7 @@ function PracticePage({
       </section>
       <DailyTasksPage
         revision={revision}
+        aiReady={aiReady}
         provider={provider}
         model={model}
         aiPicker={aiPicker}

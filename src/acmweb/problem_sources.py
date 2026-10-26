@@ -11,6 +11,46 @@ from .codex_bridge import AIError
 
 HOSTS = {'codeforces': 'codeforces.com', 'atcoder': 'atcoder.jp', 'luogu': 'www.luogu.com.cn', 'nowcoder': 'ac.nowcoder.com'}
 
+# Official AtCoder task collections whose contest screen name is NOT the task-id
+# prefix. A task id alone cannot carry the contest path for these, so the
+# correction is fixed here instead of being guessed: the contest part uses
+# hyphens where the task id uses underscores.
+#   ABS (practice_1)         https://atcoder.jp/contests/abs/tasks
+#   Math and Algorithm       https://atcoder.jp/contests/math-and-algorithm/tasks
+#   Tessoku Book             https://atcoder.jp/contests/tessoku-book/tasks
+# Keys are either an exact task id or a task-id prefix; every other task keeps
+# the documented '<contest>_<index>' rule. Nothing here comes from user input.
+ATCODER_FIXED_CONTESTS = {
+    'practice_1': 'abs',
+    'math_and_algorithm': 'math-and-algorithm',
+    'tessoku_book': 'tessoku-book',
+}
+
+_ATCODER_TASK = re.compile(r'[a-z0-9]+(?:_[a-z0-9]+)+')
+_ATCODER_CONTEST = re.compile(r'[a-z0-9][a-z0-9-]{0,60}')
+
+
+def atcoder_fixed_contest(key):
+    """Return the allowlisted contest for a known collection task, else None."""
+    if not isinstance(key, str):
+        return None
+    return ATCODER_FIXED_CONTESTS.get(key) or ATCODER_FIXED_CONTESTS.get(key.rsplit('_', 1)[0])
+
+
+def atcoder_contest(key):
+    """Official AtCoder contest screen name for a task id.
+
+    Only the task-id syntax and the fixed allowlist above decide the contest;
+    no host, URL or user supplied path segment is ever accepted.
+    """
+    if not isinstance(key, str) or not _ATCODER_TASK.fullmatch(key):
+        raise AIError('AtCoder 题号格式错误')
+    contest = atcoder_fixed_contest(key) or key.rsplit('_', 1)[0]
+    if not _ATCODER_CONTEST.fullmatch(contest):
+        raise AIError('AtCoder 题号格式错误')
+    return contest
+
+
 def normalize(value):
     value = value.strip()
     if value.startswith('https://'):
@@ -19,10 +59,23 @@ def normalize(value):
             raise AIError('请使用不带查询参数的官方题目链接')
         host = u.hostname
         patterns = {
-            'atcoder.jp': (r'/contests/[a-z0-9_-]+/tasks/([a-z0-9_]+?)/?', 'atcoder:{}'),
             'www.luogu.com.cn': (r'/problem/([A-Za-z0-9_]+?)/?', 'luogu:{}'),
             'ac.nowcoder.com': (r'/acm/problem/(\d+)/?', 'nowcoder:{}'),
         }
+        if host == 'atcoder.jp':
+            m = re.fullmatch(r'/contests/([a-z0-9][a-z0-9-]{0,60})/tasks/([a-z0-9_]+?)/?', u.path)
+            if not m:
+                raise AIError('AtCoder 题目链接格式错误')
+            contest, task = m[1], m[2]
+            try:
+                derived = atcoder_contest(task)
+            except AIError:
+                raise AIError('AtCoder 题目链接格式错误') from None
+            # A fixed collection lives under exactly one contest path; a link
+            # naming another contest for that task is not an official page.
+            if atcoder_fixed_contest(task) and contest != derived:
+                raise AIError('AtCoder 题目链接与官方比赛路径不一致')
+            return 'atcoder:' + task
         if host == 'ac.nowcoder.com':
             m = re.fullmatch(r'/acm/contest/(\d+)/([A-Za-z]\d?)/?', u.path)
             if m: return f'nowcoder:contest-{int(m[1])}-{m[2].upper()}'
@@ -52,7 +105,7 @@ def source_url(pid):
     if platform == 'codeforces':
         a,b=key.split('-')
         return f'https://codeforces.com/gym/{a}/problem/{b}' if int(a) >= 100000 else f'https://codeforces.com/problemset/problem/{a}/{b}'
-    if platform == 'atcoder': return f'https://atcoder.jp/contests/{"abs" if key == "practice_1" else key.rsplit("_",1)[0]}/tasks/{key}'
+    if platform == 'atcoder': return f'https://atcoder.jp/contests/{atcoder_contest(key)}/tasks/{key}'
     if platform == 'luogu': return f'https://www.luogu.com.cn/problem/{key}'
     if key.startswith('contest-'):
         _, contest,index=key.split('-'); return f'https://ac.nowcoder.com/acm/contest/{contest}/{index}'
@@ -146,7 +199,7 @@ def fetch_statement(pid,accounts):
 def capabilities(pid,accounts):
     pid=normalize(pid);platform,key=pid.split(':',1); matched=[a for a in accounts if a.get('platform')==platform]
     url=source_url(pid)
-    if platform=='atcoder': url=f'https://atcoder.jp/contests/{"abs" if key == "practice_1" else key.rsplit("_",1)[0]}/submit?taskScreenName={key}'
+    if platform=='atcoder': url=f'https://atcoder.jp/contests/{atcoder_contest(key)}/submit?taskScreenName={key}'
     elif platform=='codeforces': url=f'https://codeforces.com/problemset/submit?contestId={key.split("-")[0]}&submittedProblemIndex={key.split("-")[1]}'
     elif platform=='luogu':url+='#submit'
     gym = platform == 'codeforces' and int(key.split('-')[0]) >= 100000

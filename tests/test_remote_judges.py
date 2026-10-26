@@ -18,8 +18,8 @@ def ac_nav(handle='demo'):
     return f'<div id="navbar-collapse"><a href="/users/{handle}">{handle}</a></div><form action="/logout" method="post"></form>'
 
 
-def ac_form():
-    return ac_nav() + '''<form method="post" action="/contests/abs/submit"><input type="hidden" name="csrf_token" value="SECRET-CSRF"><select name="data.TaskScreenName"><option value="practice_1">Practice</option></select><div id="select-lang"><div id="select-lang-wrong_task"><select><option value="9999">Wrong task language</option></select></div><div id="select-lang-practice_1"><select><option value="6001">C++ 23</option><option value="6002">Python 3.13</option></select></div></div><textarea name="sourceCode"></textarea></form>'''
+def ac_form(contest='abs', task='practice_1'):
+    return ac_nav() + f'''<form method="post" action="/contests/{contest}/submit"><input type="hidden" name="csrf_token" value="SECRET-CSRF"><select name="data.TaskScreenName"><option value="{task}">{task}</option></select><div id="select-lang"><div id="select-lang-wrong_task"><select><option value="9999">Wrong task language</option></select></div><div id="select-lang-{task}"><select><option value="6001">C++ 23</option><option value="6002">Python 3.13</option></select></div></div><textarea name="sourceCode"></textarea></form>'''
 
 
 def cf_record(sid=123, **changes):
@@ -28,9 +28,9 @@ def cf_record(sid=123, **changes):
     return row
 
 
-def ac_record(handle='demo', task='practice_1'):
+def ac_record(handle='demo', task='practice_1', contest='abs'):
     stamp = datetime.now(timezone.utc).isoformat()
-    return f'''<table><tr><th>Submission Time</th><td><time datetime="{stamp}">{stamp}</time></td></tr><tr><th>Task</th><td><a href="/contests/abs/tasks/{task}">Practice</a></td></tr><tr><th>User</th><td><a href="/users/{handle}">{handle}</a></td></tr><tr><th>Language</th><td>C++ 23</td></tr><tr><th>Status</th><td><span>WA</span></td></tr></table><pre id="submission-code">SECRET-SOURCE</pre>'''
+    return f'''<table><tr><th>Submission Time</th><td><time datetime="{stamp}">{stamp}</time></td></tr><tr><th>Task</th><td><a href="/contests/{contest}/tasks/{task}">{task}</a></td></tr><tr><th>User</th><td><a href="/users/{handle}">{handle}</a></td></tr><tr><th>Language</th><td>C++ 23</td></tr><tr><th>Status</th><td><span>WA</span></td></tr></table><pre id="submission-code">SECRET-SOURCE</pre>'''
 
 
 @pytest.fixture
@@ -209,6 +209,53 @@ def test_post_redirect_preserving_method_is_never_followed(session,monkeypatch):
     s=session();calls=script(monkeypatch,s,[(200,{},cf_form()),(200,{},json.dumps({'status':'OK','result':[]})),(307,{'Location':'/problemset/submit'},'')])
     with pytest.raises(SubmissionError) as e:s.submit('4-A','demo','code','89')
     assert e.value.uncertain and len([c for c in calls if c[0]=='POST'])==1
+
+
+@pytest.mark.parametrize('task,contest',[('math_and_algorithm_a','math-and-algorithm'),
+                                         ('tessoku_book_a','tessoku-book'),
+                                         ('practice_1','abs')])
+def test_atcoder_collection_task_uses_official_contest_path(session,monkeypatch,task,contest):
+    """Submit form, baseline list and POST receipt share one allowlisted path."""
+    s = session('atcoder');pid = 'atcoder:' + task
+    calls = script(monkeypatch,s,[(200,{},ac_form(contest,task)),
+                                  (200,{},ac_nav()+'<p>No Submission</p>'),
+                                  (302,{'Location':f'/contests/{contest}/submissions/123'},'')])
+    assert s.submit(pid,'demo','code','6001')['id'] == '123'
+    assert calls[0][1] == f'https://atcoder.jp/contests/{contest}/submit?taskScreenName={task}'
+    assert calls[1][1] == f'/contests/{contest}/submissions/me'
+    assert calls[-1][2]['data.TaskScreenName'] == task
+    assert len([c for c in calls if c[0] == 'POST']) == 1
+
+
+def test_atcoder_judge_reads_official_collection_submission(session,monkeypatch):
+    s = session('atcoder')
+    calls = script(monkeypatch,s,[(200,{},ac_record(task='math_and_algorithm_a',contest='math-and-algorithm'))])
+    record = s.judge('atcoder:math_and_algorithm_a','demo',123)
+    assert calls[0][1] == 'https://atcoder.jp/contests/math-and-algorithm/submissions/123'
+    assert record['contest_id'] == 'math-and-algorithm'
+    assert record['problem_id'] == 'math_and_algorithm_a' and record['verdict'] == 'WA'
+
+
+def test_atcoder_record_from_other_contest_is_a_mismatch(session,monkeypatch):
+    s = session('atcoder')
+    script(monkeypatch,s,[(200,{},ac_record(task='math_and_algorithm_a',contest='math_and_algorithm'))])
+    with pytest.raises(SubmissionError) as e:s.judge('atcoder:math_and_algorithm_a','demo',123)
+    assert e.value.reason == 'record_mismatch'
+
+
+def test_atcoder_form_must_post_to_the_official_contest(session,monkeypatch):
+    """A form served under another contest path never receives source code."""
+    s = session('atcoder')
+    calls = script(monkeypatch,s,[(200,{},ac_form('math_and_algorithm','math_and_algorithm_a'))])
+    with pytest.raises(SubmissionError) as e:s.options('atcoder:math_and_algorithm_a','demo')
+    assert e.value.reason == 'form_changed' and not any(c[0] == 'POST' for c in calls)
+
+
+@pytest.mark.parametrize('key',['','abc001','ABC001_1','../abs','math_and_algorithm_a/../x'])
+def test_atcoder_contest_path_helper_fails_closed(session,key):
+    s = session('atcoder')
+    with pytest.raises(SubmissionError) as e:s._contest(key)
+    assert e.value.reason == 'invalid_input' and 'SECRET' not in str(e.value)
 
 
 @pytest.mark.parametrize('platform,pid',[('luogu','luogu:P1001'),('nowcoder','nowcoder:1000')])

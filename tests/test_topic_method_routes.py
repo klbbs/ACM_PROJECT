@@ -95,12 +95,12 @@ def test_method_route_keeps_multiuser_csrf_and_expensive_action_limit(site, monk
         assert request(owner, 'POST', path, {'topic_id': 'dsu'}).status_code == 200
     assert request(owner, 'POST', path, {'topic_id': 'dsu'}).status_code == 429
     assert start.call_count == 6
-    assert request(peer, 'GET', '/api/jobs').json() == []
+    assert request(peer, 'GET', '/api/jobs').json() == {'items': []}
 
 
 def test_method_prompt_requires_reading_constraints_and_preserves_uncertainty():
     policy = TASK_POLICIES['topic_method_feasibility']
-    for phrase in ('官方完整题面', 'uncertain', '复杂度', '模板', '推断', '完整代码', '不可信'):
+    for phrase in ('官方完整题面', 'uncertain', '复杂度', '模板', '推测', '完整代码', '不可信'):
         assert phrase in policy
     prompt = build_prompt('topic_method_feasibility', {'problem_id': 'codeforces:1-A',
         'statement': {'sections': [{'content': 'UNTRUSTED-STATEMENT'}]}})

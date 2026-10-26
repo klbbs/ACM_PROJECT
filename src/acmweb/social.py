@@ -17,6 +17,8 @@ import requests
 from fastapi import HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .catalog import publication_time
+from .codex_bridge import AIError
+from .problem_sources import atcoder_contest
 
 TZ = ZoneInfo('Asia/Shanghai')
 PLATFORMS = ('codeforces', 'atcoder', 'luogu', 'nowcoder')
@@ -345,7 +347,10 @@ class Social:
         if platform == 'luogu' and re.fullmatch(r'[A-Za-z0-9_]+', raw):
             return 'https://www.luogu.com.cn/problem/' + raw
         if platform == 'atcoder' and re.fullmatch(r'[A-Za-z0-9_-]+', raw):
-            contest = (problem or {}).get('contest_id') or raw.rsplit('_', 1)[0]
+            try:
+                contest = (problem or {}).get('contest_id') or atcoder_contest(raw)
+            except AIError:
+                return ''
             if re.fullmatch(r'[A-Za-z0-9_-]+', str(contest)):
                 return f'https://atcoder.jp/contests/{contest}/tasks/{raw}'
         if platform == 'nowcoder':

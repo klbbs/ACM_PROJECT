@@ -9,6 +9,7 @@ type Props = {
   revision: number
   provider: string
   model: string
+  aiReady?: boolean
   aiPicker: React.ReactNode
   onError: (s: string) => void
   onNotice: (s: string) => void
@@ -19,6 +20,7 @@ export function DailyTasksPage({
   revision,
   provider,
   model,
+  aiReady = true,
   aiPicker,
   onError,
   onNotice,
@@ -405,7 +407,7 @@ export function DailyTasksPage({
           mode={trainingMode}
           disabled={busy || !formReady}
           revision={revision}
-          aiReady={!!model}
+          aiReady={!!model && aiReady}
         />
       )}
       {data?.plan && (
