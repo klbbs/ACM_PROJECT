@@ -163,6 +163,65 @@ def test_a_new_scope_saved_during_network_io_is_not_overwritten(tmp_path, monkey
     assert db.get('cf_gym_scopes') == {'demo': [700001, 700002]}
 
 
+def test_26_old_gym_contests_do_not_block_normal_sync_or_become_permanent_scopes(tmp_path, monkeypatch):
+    import asyncio
+    import acmweb.gym_submissions as gym
+    import acmweb.jobs as jobs_module
+    from acmweb.jobs import Jobs
+    from ojcrawler.storage import Store
+    db = Database(tmp_path/'db')
+    now = int(time.time())
+    with db.connect() as connection:
+        for index in range(26):
+            connection.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)',
+                ('codeforces', 'demo', str(index + 1), f'{700001 + index}-A', now - 30 * 86400, 'AC', '{}', now))
+    monkeypatch.setattr(jobs_module, 'load', lambda path: SimpleNamespace())
+    def normal_sync(config, args):
+        store = Store(config.database)
+        try:
+            store.save_run({'run_id': 'regular-sync-with-26-old-gyms', 'collected_at': now, 'accounts': [
+                {'platform': 'codeforces', 'account': 'demo', 'complete': True, 'error': None, 'warnings': []}]})
+        finally:
+            store.close()
+        return 0
+    monkeypatch.setattr(jobs_module, 'crawl', normal_sync)
+    monkeypatch.setattr(gym, 'collect_contest', lambda *args, **kwargs: pytest.fail('Inactive history must not be fetched'))
+    accounts = SimpleNamespace(effective_path=tmp_path/'accounts.toml',
+        document=lambda: {'accounts': [{'platform': 'codeforces', 'handle': 'demo'}]})
+    jobs = Jobs(db, SimpleNamespace(database=db.path, data_dir=tmp_path, isolated=True), None, accounts)
+    async def run():
+        job = jobs.start('crawl')
+        await jobs.tasks[job['id']][1]
+        return jobs.list()[0]
+    result = asyncio.run(run())
+    assert result['status'] == 'completed' and result['result']['complete']
+    assert result['result']['accounts'][0]['complete']
+    assert result['result']['gym_sync'] == []
+    assert db.get('cf_gym_scopes') == {'demo': []}
+    with db.connect() as connection:
+        assert connection.execute('SELECT COUNT(*) FROM submissions').fetchone()[0] == 26
+
+
+def test_more_than_20_scopes_rotate_without_aborting_and_prioritize_requested_contest(tmp_path, monkeypatch):
+    import acmweb.gym_submissions as gym
+    db = Database(tmp_path/'db')
+    old = list(range(700001, 700027))
+    db.set('cf_gym_scopes', {'demo': old})
+    accounts = SimpleNamespace(document=lambda: {'accounts': [{'platform': 'codeforces', 'handle': 'demo'}]})
+    monkeypatch.setattr(gym, 'Client', lambda **kwargs: SimpleNamespace(close=lambda: None))
+    calls = []
+    monkeypatch.setattr(gym, 'collect_contest', lambda client, contest, *args, **kwargs: calls.append(contest) or [])
+    first = sync_gym(db, accounts, SimpleNamespace(isolated=True))
+    assert len(calls) == 20 and calls == old[:20]
+    assert first[-1]['error_code'] == 'scope_deferred' and first[-1]['deferred_count'] == 6
+    second = sync_gym(db, accounts, SimpleNamespace(isolated=True))
+    assert calls[20:26] == old[20:]
+    assert set(calls) == set(old) and second[-1]['deferred_count'] == 6
+    sync_gym(db, accounts, SimpleNamespace(isolated=True), url='https://codeforces.com/gym/800001')
+    assert calls[40] == 800001 and len(calls[40:]) == 20
+    assert set(db.get('cf_gym_scopes')['demo']) == set(old + [800001])
+
+
 def test_crawl_endpoint_validates_scope_before_scheduling_and_keeps_existing_no_body_contract(tmp_path, monkeypatch):
     app = create_app(Settings(data_dir=tmp_path, config_path=tmp_path/'missing', enable_codex=False))
     monkeypatch.setattr(app.state.jobs, 'start', lambda kind, payload=None: {'id': 'synthetic', 'payload': payload})

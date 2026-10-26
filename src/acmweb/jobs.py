@@ -68,6 +68,7 @@ class Jobs:
                     result = await asyncio.to_thread(self.crawl, gym_url=payload.get('gym_url', ''), day=payload.get('day', ''))
                 else:
                     result=await asyncio.to_thread(self.crawl, payload['platform']) if payload.get('platform') else await asyncio.to_thread(self.crawl)
+                self.log_gym_results(job_id, kind, result)
                 self.update(job_id,"completed" if result["complete"] else "partial",result,
                     error='部分官方提交未能读取，请查看同步详情；当前榜单可能缺少未同步题目' if not result['complete'] else None)
             elif kind=="catalog":
@@ -90,6 +91,7 @@ class Jobs:
                     self.update(job_id, "running", {**result, "submission_sync": {"status": "running"}})
                     try:
                         history = await asyncio.to_thread(self.crawl, since_today=True)
+                        self.log_gym_results(job_id, kind, history)
                         result['submission_sync'] = {"status": "completed" if history['complete'] else "partial",
                             "accounts": history['accounts'], "message": "今日官方提交已同步，已验证的平台身份将用于当日榜单" if history['complete'] else "部分平台提交未能同步，请在连接与设置检查账号后重试"}
                     except Exception:
@@ -169,6 +171,23 @@ class Jobs:
             # Never persist arbitrary exception messages, which may contain secrets.
             message=str(exc) if isinstance(exc,AIError) else f"任务失败 ({type(exc).__name__})，请检查服务端环境与网络"
             self.update(job_id,"failed",error=message)
+
+    def log_gym_results(self, job_id, kind, result):
+        rows = result.get('gym_sync', []) if isinstance(result, dict) else []
+        if not isinstance(rows, list):
+            return
+        reasons = {'access_restricted', 'time_unverified', 'login_or_permission',
+                   'query_limit', 'unreadable', 'scope_deferred'}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            complete = item.get('complete') is True
+            code = item.get('error_code')
+            emit_event(self.event_log, 'gym.sync_checked', level='INFO' if complete else 'WARNING',
+                job_id=job_id, kind=kind, platform='codeforces',
+                job_status='completed' if complete else 'partial', actual_count=item.get('count', 0),
+                warning_count=item.get('deferred_count', 0),
+                **({} if complete else {'reason': 'gym_' + code if isinstance(code, str) and code in reasons else 'gym_sync_incomplete'}))
 
     def crawl(self, platform=None, *, since_today=False, gym_url='', day=''):
         config=load(self.accounts.effective_path if self.accounts else self.settings.config_path)

@@ -19,6 +19,7 @@ user_id_context = contextvars.ContextVar('acm_log_user_id', default=None)
 console = logging.getLogger('acmweb.runtime')
 
 EVENTS = {
+    'gym.sync_checked': ('platform', 'Gym 补充提交同步已检查'),
     'service.started': ('system', '服务已启动'),
     'service.stopped': ('system', '服务已停止'),
     'startup.checked': ('system', '启动配置巡检已完成'),
@@ -50,6 +51,8 @@ KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
          'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',
+           'gym_access_restricted', 'gym_time_unverified', 'gym_login_or_permission',
+           'gym_query_limit', 'gym_unreadable', 'gym_scope_deferred', 'gym_sync_incomplete',
            'identity_verified', 'qr_expired', 'identity_verification_timeout', 'identity_not_ready',
            'network_busy', 'upstream_timeout', 'upstream_connection_failed', 'upstream_http',
            'upstream_response_invalid', 'upstream_response_too_large', 'status_check_unavailable',

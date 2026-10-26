@@ -193,40 +193,54 @@ def sync_gym(database, accounts, settings, *, url='', day=''):
     requested = contest_from_url(url) if url else None
     now = int(time.time())
     since = start_of_day(day)
-    scopes = database.get('cf_gym_scopes', {})
     deadline = time.monotonic() + 180
     results = []
     for account in current:
         handle = account['handle']
         key = handle.casefold()
-        contests = set(scopes.get(key, []))
-        # Existing official history also discovers Gyms without a manual scope.
+        # Old historical contests are not active sync scopes. Discover contests
+        # only from the requested date window, most recently submitted first.
         with database.connect() as db:
-            known = db.execute("SELECT DISTINCT problem_id FROM submissions WHERE platform='codeforces' AND account=? COLLATE NOCASE", (handle,)).fetchall()
+            known = db.execute("""SELECT problem_id,MAX(submitted_at) AS newest FROM submissions
+                WHERE platform='codeforces' AND account=? COLLATE NOCASE AND submitted_at>=?
+                GROUP BY problem_id ORDER BY newest DESC,problem_id""", (handle, since)).fetchall()
+        recent = []
         for row in known:
             match = re.fullmatch(r'(?:codeforces:)?([1-9]\d{5,8})-[A-Za-z]\d?', row['problem_id'])
-            if match:
-                contests.add(int(match[1]))
-        if requested:
-            contests.add(requested)
-        if len(contests) > 20:
-            raise AIError('每个 CF 账号最多同步 20 场 Gym，请先清理历史补充范围')
+            if match and int(match[1]) not in recent:
+                recent.append(int(match[1]))
         # Persist discovery before networking, without overwriting another
         # concurrently queued catalog/crawl task's newly added contest scope.
         with database.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             saved = db.execute("SELECT value FROM web_settings WHERE key='cf_gym_scopes'").fetchone()
             latest = json.loads(saved['value']) if saved else {}
-            contests.update(latest.get(key, []))
-            if len(contests) > 20:
-                raise AIError('每个 CF 账号最多同步 20 场 Gym，请先清理历史补充范围')
-            latest[key] = sorted(contests)
+            explicit = set(latest.get(key, []))
+            if requested:
+                explicit.add(requested)
+            # Only user-added scopes persist. Automatic discovery must not turn
+            # every historic Gym into a permanently mandatory daily request.
+            latest[key] = sorted(explicit)
             db.execute("INSERT INTO web_settings VALUES('cf_gym_scopes',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(latest),))
+            candidates = recent + sorted(explicit.difference(recent))
+            cursor_row = db.execute("SELECT value FROM web_settings WHERE key='cf_gym_cursors'").fetchone()
+            cursors = json.loads(cursor_row['value']) if cursor_row else {}
+            previous = cursors.get(key, {})
+            offset = previous.get('offset', 0) if previous.get('day_start') == since else 0
+            offset = offset % len(candidates) if candidates else 0
+            rotated = candidates[offset:] + candidates[:offset]
+            ordered = ([requested] if requested else []) + [cid for cid in rotated if cid != requested]
+            selected = ordered[:20]
+            ordinary = [cid for cid in selected if cid != requested]
+            advanced = rotated.index(ordinary[-1]) + 1 if ordinary else 0
+            cursors[key] = {'day_start': since, 'offset': (offset + advanced) % len(candidates) if candidates else 0}
+            db.execute("INSERT INTO web_settings VALUES('cf_gym_cursors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (json.dumps(cursors),))
         cookie = account.get('cookie') or ('' if settings.isolated else os.environ.get(account.get('cookie_env', ''), ''))
         client = Client(cookie=cookie or None, cookie_host='codeforces.com' if cookie else None, timeout=20, retries=0)
         try:
-            for contest in sorted(contests):
+            for contest in selected:
                 try:
                     rows = collect_contest(client, contest, handle, since, deadline=deadline)
                     # Binding changes must not mix a replacement account into results.
@@ -247,4 +261,9 @@ def sync_gym(database, accounts, settings, *, url='', day=''):
                         'error_code': reason, 'error': message})
         finally:
             client.close()
+        deferred = len(candidates) - len(selected)
+        if deferred:
+            results.append({'platform': 'codeforces', 'account': handle, 'complete': False,
+                'count': 0, 'deferred_count': deferred, 'error_code': 'scope_deferred', 'warnings': [],
+                'error': f'本次有 {deferred} 场 Gym 超出单次 20 场查询预算；已完成的提交保留，下次同步将继续轮换查询。'})
     return results

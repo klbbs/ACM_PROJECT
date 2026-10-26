@@ -30,6 +30,35 @@ def events(monkeypatch):
     return store, captured
 
 
+def test_gym_budget_and_access_diagnostics_log_only_static_reasons(tmp_path, events):
+    store, captured = events
+    jobs = Jobs(Database(tmp_path / 'jobs.sqlite3'), SimpleNamespace(), None)
+    jobs.event_log = store
+    jobs.log_gym_results('a' * 32, 'crawl', {'gym_sync': [
+        {'complete': True, 'count': 2, 'account': 'PRIVATE-HANDLE'},
+        {'complete': False, 'error_code': 'scope_deferred', 'deferred_count': 6, 'error': 'PRIVATE-COOKIE'},
+        {'complete': False, 'error_code': 'access_restricted', 'error': 'PRIVATE-KEY'},
+        {'complete': False, 'error_code': 'PRIVATE-UPSTREAM', 'error': 'PRIVATE-SOURCE'},
+        None,
+        {'complete': False, 'error_code': []},
+    ]})
+    assert [item['event'] for item in captured] == ['gym.sync_checked'] * 5
+    assert captured[0]['level'] == 'INFO'
+    assert [item['details'].get('reason') for item in captured] == [
+        None, 'gym_scope_deferred', 'gym_access_restricted', 'gym_sync_incomplete', 'gym_sync_incomplete']
+    assert captured[1]['details']['warning_count'] == 6
+    assert 'PRIVATE' not in str(captured)
+    from acmweb.runtime_logs import RuntimeLogs
+    logs = RuntimeLogs(tmp_path/'logs')
+    for item in captured:
+        logs.emit(item['event'], level=item['level'], **item['details'])
+    import json
+    rows = [json.loads(line) for line in (tmp_path/'logs/runtime.jsonl').read_text().splitlines()]
+    assert rows[1]['details']['reason'] == 'gym_scope_deferred'
+    assert rows[1]['details']['warning_count'] == 6
+    assert rows[0]['details']['actual_count'] == 2
+
+
 def test_job_lifecycle_logs_queue_and_final_state_without_payload_or_result(tmp_path, events):
     store, captured = events
     jobs = Jobs(Database(tmp_path / 'jobs.sqlite3'), SimpleNamespace(), AsyncMock())
