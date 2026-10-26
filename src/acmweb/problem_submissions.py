@@ -239,7 +239,9 @@ class ProblemSubmissions:
             observed = driver.source(pid, handle, payload.submission_id)
         except SubmissionError as exc:
             reason = {'challenge':'source_challenge', 'access_restricted':'source_access_restricted', 'rate_limited':'source_rate_limited',
-                      'login_required':'source_login_required'}.get(exc.reason, 'source_read_failed')
+                      'login_required':'source_login_required', 'account_mismatch':'source_account_mismatch',
+                      'record_mismatch':'source_record_mismatch', 'record_unavailable':'source_record_unavailable',
+                      'source_unavailable':'source_unavailable'}.get(exc.reason, 'source_read_failed')
             emit_event(getattr(self.jobs, 'event_log', None), 'platform.source_failed', 'WARNING',
                        platform=platform, reason=reason)
             if exc.reason == 'challenge':

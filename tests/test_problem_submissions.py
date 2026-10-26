@@ -103,6 +103,62 @@ def test_official_source_creates_review_record_without_changing_draft(site, monk
     assert client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'}).json()['attempt_id'] == value['attempt_id']
 
 
+@pytest.mark.parametrize('allowed', [True, False])
+def test_source_route_reads_dynamic_cf_entry_without_using_editor_draft(site, monkeypatch, allowed):
+    """Real service/driver chain, synthetic upstream HTML and source only."""
+    import asyncio
+    import json
+    from acmweb.remote_judges import PlatformSession
+    client, app, service, _ = site
+    asyncio.run(service.sync('codeforces:4-A', 'demo'))
+    draft = {'language':'python3','code':'print("keep editor draft")','revision':0}
+    assert client.put('/api/workbench/problem/4-A/draft', json=draft).status_code == 200
+    calls = []
+    stamp = int(time.time())
+    def driver(*_):
+        session = PlatformSession('codeforces', 'JSESSIONID=synthetic-only')
+        def request(method, url, *, data=None, headers=None):
+            calls.append((method, url, data))
+            if '/api/' in url:
+                return 200, {}, json.dumps({'status':'OK', 'result':[{'id':12345,
+                    'problem':{'contestId':4,'index':'A'}, 'author':{'members':[{'handle':'demo'}]},
+                    'creationTimeSeconds':stamp,'verdict':'WRONG_ANSWER','programmingLanguage':'Python 3'}]})
+            if '/contest/4/submission/' in url:
+                return 403, {}, '<title>Just a moment...</title>'
+            if '/submissions/demo' in url:
+                ids = '["12345"]' if allowed else '[]'
+                return 200, {}, f'''<meta name="X-Csrf-Token" content="{'a'*32}">
+                    <div class="lang-chooser"><a href="/profile/demo">demo</a><a href="/logout">Logout</a></div>
+                    <table><tr data-submission-id="12345"><td class="id-cell"><span class="hiddenSource">12345</span></td>
+                    <td><a href="/profile/demo">demo</a></td><td><a href="/contest/4/problem/A">A</a></td></tr></table>
+                    <script>const viewableSubmissionIds = {ids};
+                    if (viewableSubmissionIds.indexOf(submissionId) != -1) {{ show = true; }}
+                    $.post('/data/submitSource', {{submissionId: id}});</script>'''
+            assert method == 'POST' and '/data/submitSource?rv=' in url
+            assert data == {'submissionId':'12345','csrf_token':'a'*32}
+            return 200, {}, json.dumps({'submissionId':12345,'source':'print("official fixture")'})
+        session._request = request
+        return session
+    monkeypatch.setattr(service.remote, '_driver', driver)
+    response = client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'})
+    assert response.status_code == (200 if allowed else 400), response.text
+    posts = [call for call in calls if call[0] == 'POST']
+    assert len(posts) == int(allowed)
+    with app.state.database.connect() as db:
+        saved = db.execute('SELECT code,revision FROM wb_drafts WHERE problem_id=?', ('codeforces:4-A',)).fetchone()
+        assert saved['code'] == draft['code'] and saved['revision'] == 1
+        assert db.execute('SELECT count(*) FROM wb_official_sources').fetchone()[0] == int(allowed)
+    if allowed:
+        result = response.json()
+        assert result['code_verified'] and result['provenance'] == 'official'
+        assert result['code'] == 'print("official fixture")'
+        assert result['code'] != draft['code']
+        assert service.listing('4-A','demo')['items'][0]['code_verified']
+    else:
+        assert '尚不可核验' in response.json()['detail']
+        assert '不一致' not in response.json()['detail']
+
+
 def test_source_upstream_rate_limit_has_retry_after_and_keeps_history(site, monkeypatch):
     import asyncio
     from acmweb.remote_judges import SubmissionError
@@ -142,6 +198,38 @@ def test_source_challenge_explains_source_block_without_requesting_resubmission(
     assert '无需重新提交' in response.json()['detail']
     assert '请到官方页面提交' not in response.json()['detail']
     assert events == [('platform.source_failed', {'level':'WARNING','platform':'codeforces','reason':'source_challenge'})]
+    assert len(service.listing('4-A','demo')['items']) == 1
+    with app.state.database.connect() as db:
+        assert db.execute('SELECT count(*) FROM wb_official_sources').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('reason', ['record_mismatch', 'record_unavailable', 'source_unavailable',
+                                   'account_mismatch', 'access_restricted'])
+def test_source_diagnostics_keep_specific_safe_reason_and_no_partial_code(site, monkeypatch, reason):
+    import asyncio
+    from acmweb.remote_judges import SubmissionError
+    from acmweb.runtime_logs import REASONS
+    client, app, service, _ = site
+    asyncio.run(service.sync('codeforces:4-A', 'demo'))
+    events = []
+    class Log:
+        def emit(self, event, **fields):
+            events.append((event, fields))
+    class Driver:
+        def source(self, *_):
+            raise SubmissionError(reason)
+        def close(self):
+            pass
+    monkeypatch.setattr(service.jobs, 'event_log', Log())
+    monkeypatch.setattr(service.remote, '_driver', lambda *_: Driver())
+    response = client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'})
+    assert response.status_code == 400
+    expected = reason if reason == 'source_unavailable' else 'source_' + reason
+    assert expected in REASONS
+    assert events == [('platform.source_failed', {'level':'WARNING','platform':'codeforces','reason':expected})]
+    if reason == 'source_unavailable':
+        assert '尚不可核验' in response.json()['detail']
+        assert '不一致' not in response.json()['detail']
     assert len(service.listing('4-A','demo')['items']) == 1
     with app.state.database.connect() as db:
         assert db.execute('SELECT count(*) FROM wb_official_sources').fetchone()[0] == 0

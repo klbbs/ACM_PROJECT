@@ -1,4 +1,5 @@
 """Bounded official CF page fallback; never infer an account, verdict or timezone."""
+import json
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,127 @@ from urllib.parse import quote
 from bs4 import BeautifulSoup
 
 from .models import CrawlError
+
+
+def _javascript_code_mask(text):
+    """Keep code positions, blank comments/strings; never interpret JavaScript."""
+    masked = list(text)
+    index = 0
+    while index < len(text):
+        start = index
+        if text.startswith('//', index):
+            index = text.find('\n', index + 2)
+            if index < 0:
+                index = len(text)
+        elif text.startswith('/*', index):
+            end = text.find('*/', index + 2)
+            index = len(text) if end < 0 else end + 2
+        elif text[index] in {'"', "'", '`'}:
+            quote = text[index]
+            index += 1
+            while index < len(text):
+                if text[index] == '\\':
+                    index += 2
+                elif text[index] == quote:
+                    index += 1
+                    break
+                else:
+                    index += 1
+            index = min(index, len(text))
+            if quote == '`' and '${' in text[start:index]:
+                # Interpolations execute code, including nested templates.
+                # Do not try to interpret them as static whitelist evidence.
+                return None
+        else:
+            index += 1
+            continue
+        for offset in range(start, index):
+            if masked[offset] not in '\r\n':
+                masked[offset] = ' '
+    return ''.join(masked)
+
+
+def _viewable_source_ids(soup):
+    declarations, assignments = [], 0
+    for script in soup.find_all('script'):
+        if script.get('src') or script.get('type', '').lower().strip() not in {
+                '', 'text/javascript', 'application/javascript', 'module'}:
+            continue
+        text = script.get_text('', strip=False)
+        if len(text) > 512 * 1024:
+            return None
+        code = _javascript_code_mask(text)
+        if code is None:
+            return None
+        assignments += len(re.findall(r'\bviewableSubmissionIds\s*=(?!=|>)', code))
+        matches = list(re.finditer(
+            r'(?m)^[ \t]*(?:const|let|var)\s+(?P<name>viewableSubmissionIds)\s*=\s*', code))
+        declaration_positions = {match.start('name') for match in matches}
+        for reference in re.finditer(r'\bviewableSubmissionIds\b', code):
+            if reference.start() not in declaration_positions and not re.match(
+                    r'\s*\.\s*(?:indexOf|includes)\s*\(', code[reference.end():]):
+                return None
+        declarations.extend((text, match.end()) for match in matches)
+    if assignments != 1 or len(declarations) != 1:
+        return None
+    text, start = declarations[0]
+    # The code mask preserves positions, but its whitespace can span a quoted
+    # array item. Locate the value using the original declaration's '='.
+    start = text.find('=', text.rfind('viewableSubmissionIds', 0, start)) + 1
+    start += len(text[start:]) - len(text[start:].lstrip())
+    try:
+        values, end = json.JSONDecoder().raw_decode(text, start)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(values, list) or len(values) > 10000 or not text[end:].lstrip().startswith(';'):
+        return None
+    ids = []
+    for value in values:
+        if type(value) not in {str, int} or not re.fullmatch(r'[1-9]\d{0,11}', str(value)):
+            return None
+        ids.append(str(value))
+    return set(ids) if len(ids) == len(set(ids)) else None
+
+
+def source_reference(row, soup, contest, sid):
+    """Whether one official row unambiguously identifies this source receipt.
+
+    Authenticated CF lists may expose sources through a modal instead of a
+    submission URL. Its pre-JavaScript hiddenSource is usable only when the
+    server-rendered strict JSON whitelist explicitly permits the exact ID.
+    This identifies an entry; it does not claim the source itself was fetched.
+    """
+    contest, sid = str(contest), str(sid)
+    if (not re.fullmatch(r'[1-9]\d{0,8}', contest) or
+            not re.fullmatch(r'[1-9]\d{0,11}', sid) or
+            row.get('data-submission-id') != sid or
+            not any(parent is soup for parent in row.parents) or
+            len(soup.select('tr[data-submission-id="' + sid + '"]')) != 1):
+        return False
+    problems = [anchor['href'] for anchor in row.select('a[href]') if re.fullmatch(
+        r'/(?:contest|gym)/[1-9]\d{0,8}/problem/[A-Za-z]\d?', anchor['href'])]
+    if len(problems) != 1 or problems[0].split('/')[2] != contest:
+        return False
+    entries = row.select('a.view-source, .hiddenSource, a[href*="/submission/"]')
+    if len(entries) != 1:
+        return False
+    entry = entries[0]
+    if entry.name == 'a':
+        href = entry.get('href', '')
+        if entry.has_attr('submissionid') and entry['submissionid'] != sid:
+            return False
+        if re.fullmatch(r'/(?:contest|gym)/' + re.escape(contest) + '/submission/' + re.escape(sid), href):
+            return True
+        return ('view-source' in entry.get('class', []) and href == '#' and
+                entry.get('submissionid') == sid)
+    if entry.name != 'span' or 'hiddenSource' not in entry.get('class', []):
+        return False
+    cell = entry.find_parent('td', class_='id-cell')
+    if (cell is None or cell.find_parent('tr') is not row or
+            cell.get_text('', strip=True) != sid or entry.get_text('', strip=True) != sid):
+        return False
+    ids = _viewable_source_ids(soup)
+    return ids is not None and sid in ids
 
 
 def timestamp(node):
@@ -61,15 +183,13 @@ def parse_submissions(html, handle):
             raise CrawlError('CF 官方列表账号不匹配或为团队提交，未导入')
         problem = next((a for a in row.select('a[href]') if re.fullmatch(
             r'/(?:contest|gym)/[1-9]\d{0,8}/problem/[A-Za-z]\d?', a['href'])), None)
-        source = next((a for a in row.select('a[href]') if re.fullmatch(
-            r'/(?:contest|gym)/[1-9]\d{0,8}/submission/' + re.escape(sid), a['href'])), None)
         state, date = row.select_one('[submissionverdict]'), row.select_one('.format-time,time,[data-timestamp]')
         cells = row.find_all('td', recursive=False)
-        if not re.fullmatch(r'[1-9]\d{0,11}', sid) or sid in seen or problem is None or source is None or state is None or date is None or len(cells) < 6:
+        if not re.fullmatch(r'[1-9]\d{0,11}', sid) or sid in seen or problem is None or state is None or date is None or len(cells) < 6:
             raise CrawlError('CF 官方列表行证据缺失或重复，未确认完整结果')
         contest, index = problem['href'].split('/')[2], problem['href'].rsplit('/', 1)[1].upper()
-        if source['href'].split('/')[2] != contest:
-            raise CrawlError('CF 官方列表提交与题目比赛不一致')
+        if not source_reference(row, soup, contest, sid):
+            raise CrawlError('CF 官方列表提交源码入口缺失、不匹配或证据重复')
         ts = timestamp(date)
         if not 0 < ts <= time.time() + 300:
             raise CrawlError('CF 官方列表提交时间无效')

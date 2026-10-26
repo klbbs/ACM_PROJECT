@@ -35,7 +35,7 @@ _MESSAGES = {
     'uncertain': '无法确认官方是否已受理本次代码，请先查看官方提交记录，勿立即重复提交。',
     'record_mismatch': '官方判题记录的账号或题号与本次提交不一致。',
     'record_unavailable': '官方尚未返回可核验的提交记录，请稍后刷新判题。',
-    'source_unavailable': '已取得该次官方判题记录，但当前登录会话无法读取源码；可能是源码未公开、权限或页面结构限制。',
+    'source_unavailable': '已取得该次官方判题记录，但源码入口或内容尚不可核验；可能是官方权限、动态页面或访问限制。不会用当前草稿替代。',
 }
 
 
@@ -497,6 +497,8 @@ class PlatformSession:
         The API record and the exact list row must both identify this submission.
         """
         from json import loads
+        from secrets import token_hex
+        from ojcrawler.codeforces_pages import source_reference
         url = self.base + '/submissions/' + quote(handle, safe='')
         soup = self._get(url)
         self._identity(soup, handle)
@@ -507,17 +509,25 @@ class PlatformSession:
         row = rows[0]
         owners = [a['href'].split('/')[-1] for a in row.select('a[href]') if re.fullmatch(r'/profile/[A-Za-z0-9_.-]+',a['href'])]
         contest, index = record['problem_id'].split('-')
-        if (len(owners) != 1 or owners[0].casefold() != handle.casefold()
-                or not row.select_one(f'a[href="/contest/{contest}/problem/{index}"]')
-                or not row.select_one(f'a[href="/contest/{contest}/submission/{sid}"]')):
+        problems = [a['href'] for a in row.select('a[href]') if re.fullmatch(
+            r'/(?:contest|gym)/[1-9]\d{0,8}/problem/[A-Za-z]\d?', a['href'])]
+        if len(owners) != 1 or len(problems) != 1:
+            raise SubmissionError('source_unavailable')
+        if (owners[0].casefold() != handle.casefold() or
+                problems[0] not in {f'/contest/{contest}/problem/{index}', f'/gym/{contest}/problem/{index}'}):
             raise SubmissionError('record_mismatch')
+        if not source_reference(row, soup, contest, sid):
+            raise SubmissionError('source_unavailable')
         meta = soup.select_one('meta[name="X-Csrf-Token"]')
         csrf = meta.get('content','') if meta else ''
         if (not re.fullmatch(r'[A-Za-z0-9]{32}', csrf) or not any('/data/submitSource' in s.get_text() for s in soup.select('script:not([src])'))):
             raise SubmissionError('source_unavailable')
-        status, _, text = self._request('POST', self.base + '/data/submitSource',
+        # The official AJAX beforeSend also adds a fresh rv to read requests.
+        status, _, text = self._request('POST', self.base + '/data/submitSource?rv=' + token_hex(5)[:9],
             data={'submissionId':sid,'csrf_token':csrf},
-            headers={'Referer':url,'X-Csrf-Token':csrf,'X-Requested-With':'XMLHttpRequest'})
+            headers={'Referer':url,'X-Csrf-Token':csrf,'X-Requested-With':'XMLHttpRequest',
+                     'Accept':'application/json, text/javascript, */*; q=0.01',
+                     'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'})
         if status in (301,302,303,307,308):
             raise SubmissionError('record_unavailable')
         self._check_page(status, text)

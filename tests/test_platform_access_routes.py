@@ -180,7 +180,8 @@ def test_remote_judge_uses_user_page_after_api_challenge(monkeypatch):
     finally:driver.close()
 
 
-@pytest.mark.parametrize('outcome',['success','wrong_sid','blocked','wrong_owner'])
+@pytest.mark.parametrize('outcome',['success','wrong_sid','blocked','wrong_owner','wrong_session','wrong_problem',
+    'hidden','modal','hidden_denied','hidden_duplicate','missing_owner','missing_problem','missing_csrf'])
 def test_source_popup_fallback_is_bound_to_exact_record_and_never_submits_code(monkeypatch,outcome):
     driver=PlatformSession('codeforces','session=synthetic-only')
     calls=[]
@@ -191,20 +192,48 @@ def test_source_popup_fallback_is_bound_to_exact_record_and_never_submits_code(m
                  'author':{'members':[{'handle':'demo'}]},'verdict':'WRONG_ANSWER','programmingLanguage':'GNU C++20'}
             return 200,{},json.dumps({'status':'OK','result':[row]})
         if '/contest/4/submission/' in url:return 403,{},'<title>Just a moment...</title>'
-        if '/submissions/demo' in url:return 200,{},listing(owner='other' if outcome=='wrong_owner' else 'demo')
-        assert url=='https://codeforces.com/data/submitSource'
+        if '/submissions/demo' in url:
+            page = listing(owner='other' if outcome=='wrong_session' else 'demo')
+            link = '<a href="/contest/4/submission/123">123</a>'
+            if outcome.startswith('hidden'):
+                page = page.replace(link, '<span class="hiddenSource">123</span>')
+                page = page.replace('<td><span class="hiddenSource">', '<td class="id-cell"><span class="hiddenSource">')
+                allowed = '["999"]' if outcome == 'hidden_denied' else '["123"]'
+                page += '<script>const viewableSubmissionIds = ' + allowed + ';</script>'
+                if outcome == 'hidden_duplicate':
+                    page += '<script>const viewableSubmissionIds = ["123"];</script>'
+            elif outcome == 'modal':
+                page = page.replace(link, '<a class="view-source" href="#" submissionId="123">123</a>')
+            elif outcome == 'missing_owner':
+                page = page.replace('<a href="/profile/demo">demo</a></td>', 'missing</td>')
+            elif outcome == 'wrong_owner':
+                page = page.replace('<a href="/profile/demo">demo</a></td>', '<a href="/profile/other">other</a></td>')
+            elif outcome == 'missing_problem':
+                page = page.replace('<a href="/contest/4/problem/A">A</a>', 'missing')
+            elif outcome == 'wrong_problem':
+                page = page.replace('/contest/4/problem/A', '/contest/4/problem/B')
+            elif outcome == 'missing_csrf':
+                page = page.replace('name="X-Csrf-Token"', 'name="other-meta"')
+            return 200,{},page
+        from urllib.parse import urlsplit, parse_qs
+        assert urlsplit(url).path == '/data/submitSource'
+        assert list(parse_qs(urlsplit(url).query)) == ['rv']
+        assert len(parse_qs(urlsplit(url).query)['rv'][0]) == 9
         assert data=={'submissionId':'123','csrf_token':'a'*32}
         assert headers['Referer'].endswith('/submissions/demo')
         if outcome=='blocked':return 403,{},'<title>Forbidden</title>'
         return 200,{},json.dumps({'submissionId':456 if outcome=='wrong_sid' else 123,'source':'int main() {}'})
     monkeypatch.setattr(driver,'_request',request)
     try:
-        if outcome=='success':assert driver.source('4-A','demo','123')['code']=='int main() {}'
+        if outcome in {'success','hidden','modal'}:assert driver.source('4-A','demo','123')['code']=='int main() {}'
         else:
-            with pytest.raises(SubmissionError):driver.source('4-A','demo','123')
+            with pytest.raises(SubmissionError) as error:driver.source('4-A','demo','123')
+            assert error.value.reason == ('access_restricted' if outcome == 'blocked' else
+                'account_mismatch' if outcome == 'wrong_session' else
+                'record_mismatch' if outcome in {'wrong_sid','wrong_owner','wrong_problem'} else 'source_unavailable')
         posts=[c for c in calls if c[0]=='POST']
-        assert len(posts)==(0 if outcome=='wrong_owner' else 1)
-        assert all(c[1].endswith('/data/submitSource') and 'source' not in c[2] and 'sourceCode' not in c[2] for c in posts)
+        assert len(posts)==(1 if outcome in {'success','hidden','modal','wrong_sid','blocked'} else 0)
+        assert all(c[1].split('?', 1)[0].endswith('/data/submitSource') and 'source' not in c[2] and 'sourceCode' not in c[2] for c in posts)
     finally:driver.close()
 
 
