@@ -9,6 +9,7 @@ type RemoteRow = {
   problem_id: string
   handle: string
   status: string
+  reason?: string
   message?: string
   submission_id?: string | number | null
   attempt_id?: string | null
@@ -194,8 +195,11 @@ export function RemoteSubmissionPanel({
         generation !== listGeneration.current
       )
         return []
-      const items = [...new Map([...(result.items || []), ...(result.blocking || [])]
-        .map((row) => [row.id, row])).values()]
+      const items = [
+        ...new Map(
+          [...(result.items || []), ...(result.blocking || [])].map((row) => [row.id, row]),
+        ).values(),
+      ]
       setRows(items)
       setListError('')
       const signature = JSON.stringify(items)
@@ -247,7 +251,9 @@ export function RemoteSubmissionPanel({
       const now = Date.now()
       for (const row of items) {
         if (row.status !== 'judging' || !row.submission_id || !row.updated_at) continue
-        if (now - row.updated_at * 1000 < 12000 || (autoRefreshAfter.current[row.id] || 0) > now)
+        if (['login_required', 'account_mismatch', 'challenge'].includes(row.reason || '')) continue
+        const delay = row.reason === 'rate_limited' ? 60000 : 12000
+        if (now - row.updated_at * 1000 < delay || (autoRefreshAfter.current[row.id] || 0) > now)
           continue
         autoRefreshAfter.current[row.id] = now + 15000
         try {
@@ -559,7 +565,9 @@ export function RemoteSubmissionPanel({
           {error}
         </p>
       )}
-      {(!handles.length || currentRows.some((row) => row.status === 'blocked') || /Cookie|登录|凭据|验证/.test(error)) && (
+      {(!handles.length ||
+        currentRows.some((row) => row.status === 'blocked') ||
+        /Cookie|登录|凭据|验证/.test(error)) && (
         <p>
           <a href="#settings">前往连接与设置，更新 Cookie 并检测登录</a>
         </p>
@@ -580,7 +588,8 @@ export function RemoteSubmissionPanel({
               (row.status === 'completed' && !ac) ||
               row.status === 'failed' ||
               row.status === 'blocked'
-            const url = allowedOfficialUrl(row) || (!row.official_url ? accountHistoryUrl(row) : undefined)
+            const url =
+              allowedOfficialUrl(row) || (!row.official_url ? accountHistoryUrl(row) : undefined)
             return (
               <article
                 key={row.id}
@@ -597,7 +606,8 @@ export function RemoteSubmissionPanel({
                   {rowTitle(row)}
                 </strong>
                 <p className="muted">
-                  {row.problem_id} · {row.handle} · {row.revision ? `已保存版本 #${row.revision} · ` : ''}
+                  {row.problem_id} · {row.handle} ·{' '}
+                  {row.revision ? `已保存版本 #${row.revision} · ` : ''}
                   {row.compiler_name ? `${row.compiler_name} · ` : ''}
                   {row.submission_id ? `官方提交 #${row.submission_id} · ` : ''}
                   {date(row.created_at)}
@@ -614,7 +624,8 @@ export function RemoteSubmissionPanel({
                   </button>
                   {url && (
                     <a href={url} target="_blank" rel="noopener noreferrer">
-                      {row.submission_id ? '官方提交记录' : '打开本人官方提交记录'} <ExternalLink size={14} />
+                      {row.submission_id ? '官方提交记录' : '打开本人官方提交记录'}{' '}
+                      <ExternalLink size={14} />
                     </a>
                   )}
                 </div>

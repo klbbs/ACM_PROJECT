@@ -66,6 +66,38 @@ type Plan = {
   rating_request?: { minimum: number; maximum: number }
   items: Item[]
 }
+type GenerationJob = {
+  id: string
+  kind: 'specialist_generate'
+  status: string
+  result?: {
+    stage?:
+      | 'queued'
+      | 'validating'
+      | 'catalog'
+      | 'method_check'
+      | 'selecting'
+      | 'reading'
+      | 'saving'
+      | 'completed'
+    requested_count?: number
+    actual_count?: number
+    plan?: Plan
+  }
+  error?: string
+}
+const generationStages: Record<string, string> = {
+  queued: '等待开始',
+  validating: '检查平台连接与训练条件',
+  catalog: '准备本专题候选题',
+  method_check: '核查细类方法适用性',
+  selecting: 'AI 正在选择题目',
+  reading: 'AI 正在读取题面并整理题目报告',
+  saving: '保存题单',
+  completed: '题单已保存',
+}
+const pendingGeneration = (job: GenerationJob | null) =>
+  !!job && ['queued', 'running', 'pending'].includes(job.status)
 type Source = {
   attempt_id?: string | null
   submission_id: string
@@ -99,6 +131,7 @@ type Review = {
   messages: { role: string; content: string; created_at?: number }[]
 }
 type Props = {
+  account?: string
   provider: string
   model: string
   aiPicker: React.ReactNode
@@ -150,7 +183,25 @@ function RichText({ children }: { children: string }) {
   )
 }
 
+function readGenerationRequest(account: string): string | null {
+  try {
+    const key = sessionStorage.getItem(`acm:specialist-generation:${account}`)
+    return key && /^[a-f0-9]{32}$/.test(key) ? key : null
+  } catch {
+    return null
+  }
+}
+function saveGenerationRequest(account: string, key: string | null) {
+  try {
+    if (key) sessionStorage.setItem(`acm:specialist-generation:${account}`, key)
+    else sessionStorage.removeItem(`acm:specialist-generation:${account}`)
+  } catch {
+    /* Current-page recovery remains available if browser storage is disabled. */
+  }
+}
+
 export function SpecialistTrainingPage({
+  account = 'local',
   provider,
   model,
   aiPicker,
@@ -177,6 +228,13 @@ export function SpecialistTrainingPage({
   const [expanded, setExpanded] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [generationJob, setGenerationJob] = useState<GenerationJob | null>(null)
+  const [checkingGeneration, setCheckingGeneration] = useState(true)
+  const [generationQueryError, setGenerationQueryError] = useState('')
+  const [generationError, setGenerationError] = useState('')
+  const [unconfirmedRequest, setUnconfirmedRequest] = useState(
+    () => !!readGenerationRequest(account),
+  )
   const [error, setError] = useState('')
   const [failed, setFailed] = useState<'load' | 'generate' | ''>('')
   const disclosureId = useId()
@@ -184,11 +242,20 @@ export function SpecialistTrainingPage({
   const generation = useRef(0)
   const writing = useRef(false)
   const alive = useRef(true)
+  const queryingGeneration = useRef(false)
+  const jobQuerySequence = useRef(0)
+  const completedJob = useRef('')
+  const completedPlan = useRef<Plan | null>(null)
+  const busyRef = useRef(false)
+  const queryGeneration = useRef<() => Promise<void>>(async () => {})
+  const generationRequestKey = useRef<string | null>(readGenerationRequest(account))
   useEffect(() => {
     alive.current = true
     return () => {
       alive.current = false
       generation.current += 1
+      jobQuerySequence.current += 1
+      queryingGeneration.current = false
     }
   }, [])
   const load = async () => {
@@ -222,10 +289,12 @@ export function SpecialistTrainingPage({
       setGroupId((old) =>
         catalog.groups.some((group) => group.id === old) ? old : catalog.groups[0]?.id || '',
       )
-      setPlans(saved.plans)
-      setSelected((old) =>
-        saved.plans.some((plan) => plan.id === old) ? old : saved.plans[0]?.id || '',
-      )
+      const restored =
+        completedPlan.current && !saved.plans.some((plan) => plan.id === completedPlan.current?.id)
+          ? [completedPlan.current, ...saved.plans]
+          : saved.plans
+      setPlans(restored)
+      setSelected((old) => (restored.some((plan) => plan.id === old) ? old : restored[0]?.id || ''))
       setError('')
       setFailed('')
     } catch (caught) {
@@ -241,6 +310,81 @@ export function SpecialistTrainingPage({
   useEffect(() => {
     void load()
   }, [revision])
+  queryGeneration.current = async () => {
+    if (queryingGeneration.current || writing.current || !alive.current) return
+    queryingGeneration.current = true
+    const token = ++jobQuerySequence.current
+    setCheckingGeneration(true)
+    try {
+      const requestKey = generationRequestKey.current
+      const response = await api<{ job: GenerationJob | null }>(
+        `/training/generation${requestKey ? `?request_key=${requestKey}` : ''}`,
+      )
+      if (!alive.current || token !== jobQuerySequence.current) return
+      const job = response.job
+      setGenerationJob(job)
+      setGenerationQueryError('')
+      setUnconfirmedRequest(!!requestKey && !job)
+      if (requestKey && job && !pendingGeneration(job)) {
+        generationRequestKey.current = null
+        saveGenerationRequest(account, null)
+      }
+      busyRef.current = pendingGeneration(job)
+      setBusy(busyRef.current)
+      if (job?.status === 'completed' && job.result?.plan) {
+        const generated = job.result.plan
+        completedPlan.current = generated
+        setPlans((old) => [generated, ...old.filter((entry) => entry.id !== generated.id)])
+        if (completedJob.current !== job.id) {
+          completedJob.current = job.id
+          setSelected(generated.id)
+          setExpanded(null)
+          setGenerationError('')
+          onNotice('专项题单已保存，可以继续练习。')
+        }
+      } else if (job?.status === 'completed') {
+        setGenerationError(
+          '后台任务已结束，但没有返回可读取的题单。已有题单保留，请重新查询状态或刷新训练列表，不会自动重新调用 AI。',
+        )
+      } else if (job && ['failed', 'partial', 'interrupted', 'cancelled'].includes(job.status)) {
+        setGenerationError(
+          job.error ||
+            '本次生成未完成，已有题单保留。不会自动重新请求 AI；请检查模型设置后再主动生成。',
+        )
+      } else if (pendingGeneration(job)) {
+        setGenerationError('')
+      } else if (!job && requestKey) {
+        setGenerationError(
+          '本次生成请求尚未被后台确认。已有题单保留，请稍后重新查询生成状态；状态确认前不会再次生成或调用 AI。',
+        )
+      } else if (!job) {
+        setGenerationError((old) =>
+          old
+            ? '未发现可恢复的专项生成任务。已有题单保留；如需重新生成，请确认模型设置后主动点击生成按钮。'
+            : '',
+        )
+      }
+    } catch (caught) {
+      if (alive.current && token === jobQuerySequence.current) {
+        setGenerationQueryError(
+          `生成状态查询失败：${message(caught)}。任务可能仍在后台处理，请重新查询，不要重复生成。`,
+        )
+      }
+    } finally {
+      if (token === jobQuerySequence.current) {
+        queryingGeneration.current = false
+        if (alive.current) setCheckingGeneration(false)
+      }
+    }
+  }
+  useEffect(() => {
+    void queryGeneration.current()
+  }, [revision])
+  useEffect(() => {
+    if (!busy || generationQueryError) return
+    const timer = window.setInterval(() => void queryGeneration.current(), 3000)
+    return () => window.clearInterval(timer)
+  }, [busy, generationQueryError])
   const group = groups.find((candidate) => candidate.id === groupId)
   const topics = group?.topics || []
   useEffect(() => {
@@ -289,40 +433,80 @@ export function SpecialistTrainingPage({
     value
   const plan = plans.find((candidate) => candidate.id === selected)
   const generate = async () => {
-    if (writing.current || !topicId || !model || !aiReady || !countValid || !ratingValid) return
+    if (
+      writing.current ||
+      queryingGeneration.current ||
+      busyRef.current ||
+      checkingGeneration ||
+      generationQueryError ||
+      unconfirmedRequest ||
+      !topicId ||
+      !model ||
+      !aiReady ||
+      !countValid ||
+      !ratingValid
+    )
+      return
     writing.current = true
-    const token = ++generation.current
+    busyRef.current = true
+    const token = ++jobQuerySequence.current
+    generation.current += 1
     setBusy(true)
     setError('')
+    setGenerationError('')
+    setGenerationQueryError('')
     setFailed('')
     setLoading(false)
+    let queryAfterWrite = true
     try {
-      const generated = await api<Plan>('/training/plans', 'POST', {
+      const requestKey = Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) =>
+        value.toString(16).padStart(2, '0'),
+      ).join('')
+      generationRequestKey.current = requestKey
+      saveGenerationRequest(account, requestKey)
+      setUnconfirmedRequest(true)
+      const job = await api<GenerationJob>('/training/plans/generate', 'POST', {
         topic_id: topicId,
         count: amount,
         mode,
         provider,
         model,
+        request_key: requestKey,
         ...(ratingSpecified ? { cf_minimum: minimum, cf_maximum: maximum } : {}),
       })
-      if (!alive.current || token !== generation.current) return
-      setPlans((old) => [generated, ...old.filter((candidate) => candidate.id !== generated.id)])
-      setSelected(generated.id)
-      setExpanded(null)
-      onNotice(
-        mode === 'learn'
-          ? '新学题单已保存，从模板题开始练习。'
-          : `${modeTitle(mode)}题单已保存，可随时继续练习。`,
-      )
+      if (!alive.current || token !== jobQuerySequence.current) return
+      if (!job?.id) throw new Error('后台未返回可识别的生成任务')
+      setGenerationJob(job)
+      setUnconfirmedRequest(false)
+      onNotice('专项生成已进入后台，离开页面后任务仍会继续；重新进入可恢复进度。')
     } catch (caught) {
-      if (alive.current && token === generation.current) {
-        setError(message(caught))
-        setFailed('generate')
+      if (alive.current && token === jobQuerySequence.current) {
+        const rejected =
+          caught instanceof Error &&
+          'status' in caught &&
+          typeof caught.status === 'number' &&
+          [400, 401, 403, 409, 422, 429].includes(caught.status)
+        if (rejected) {
+          generationRequestKey.current = null
+          saveGenerationRequest(account, null)
+          setUnconfirmedRequest(false)
+          busyRef.current = false
+          setBusy(false)
+          queryAfterWrite = false
+          setGenerationError(
+            `生成请求被拒绝：${message(caught)}。已有题单保留；请处理提示的问题后再主动生成，不会自动重试。`,
+          )
+        } else {
+          setGenerationError(
+            `生成请求未得到确认：${message(caught)}。正在查询后台状态，不会自动重新提交生成请求。`,
+          )
+        }
         onError(message(caught))
       }
     } finally {
       writing.current = false
-      if (alive.current) setBusy(false)
+      if (queryAfterWrite && alive.current && token === jobQuerySequence.current)
+        void queryGeneration.current()
     }
   }
   const modelReason = !model || !aiReady ? '请先在连接与设置中保存默认 AI 模型' : ''
@@ -331,15 +515,22 @@ export function SpecialistTrainingPage({
     ? ''
     : '请同时填写 CF rating 上下限，范围需为 800–3500 的整数，且下限不能大于上限'
   const topicTitle = topic?.title || '专项训练'
-  const generateReason = loading
-    ? '正在读取训练专题与已保存题单，读取完成后才能生成。'
-    : busy
-      ? '正在生成题单，请等待本次生成结束；重复点击不会再次请求。'
-      : failed === 'load' && !groups.length
-        ? '训练专题读取失败，请点击“刷新训练”后重试。'
-        : !topicId
-          ? '请先选择训练专题，生成按钮才可用。'
-          : modelReason || countReason || ratingReason
+  const generateReason =
+    unconfirmedRequest && !busy
+      ? '本次生成请求尚未确认，请点击“重新查询生成状态”；不会重复发送生成请求。'
+      : generationQueryError
+        ? '生成状态尚未确认，请先点击“重新查询生成状态”；查询不会再次请求 AI。'
+        : checkingGeneration && !busy
+          ? '正在恢复后台生成状态…'
+          : loading
+            ? '正在读取训练专题与已保存题单，读取完成后才能生成。'
+            : busy
+              ? '本次题单正在后台生成；可以离开页面，稍后回来继续查看进度。'
+              : failed === 'load' && !groups.length
+                ? '训练专题读取失败，请点击“刷新训练”后重试。'
+                : !topicId
+                  ? '请先选择训练专题，生成按钮才可用。'
+                  : modelReason || countReason || ratingReason
   const generateLabel = busy
     ? 'AI 正在安排训练路线…'
     : loading
@@ -539,7 +730,51 @@ export function SpecialistTrainingPage({
         AI，可能产生模型费用。选题失败时保留已有题单。 细类专题候选不足时，也会使用默认 AI
         额外读取最多 6
         道候选官方题面，核查所选方法是否可行，可能增加费用；核查结论不是官方标签或唯一解，不会自动批准为模板题。
+        慢速或思考模型会在后台继续处理，可离开页面后再回来查看。失败不会自动重试收费；如耗时过长，可在“连接与设置”调整模型的思考和输出
+        token 配置，再主动开始新任务。
       </p>
+      {(busy || checkingGeneration || generationQueryError || generationError) && (
+        <div className="specialist-generation-progress" aria-live="polite" aria-busy={busy}>
+          <strong>
+            {busy
+              ? generationStages[generationJob?.result?.stage || 'queued'] || '正在后台生成专项题单'
+              : checkingGeneration
+                ? '正在查询后台生成状态…'
+                : '专项生成状态'}
+          </strong>
+          {busy && (
+            <p className="help">
+              {generationJob?.result?.requested_count != null
+                ? `目标题量 ${generationJob.result.requested_count} 道。`
+                : ''}
+              {generationJob?.result?.stage === 'reading' &&
+              generationJob.result.actual_count != null
+                ? `已完成阅读 ${generationJob.result.actual_count}${generationJob.result.requested_count != null ? ` / ${generationJob.result.requested_count}` : ''} 道。`
+                : ''}
+              进度每 3 秒自动查询，不会重复请求 AI；旧题单仍可使用。
+            </p>
+          )}
+          {generationError && (
+            <p className="help specialist-error" role="alert">
+              {generationError}
+            </p>
+          )}
+          {generationQueryError && (
+            <p className="help specialist-error" role="alert">
+              {generationQueryError}
+            </p>
+          )}
+          {(generationQueryError || generationError) && (
+            <button
+              className="button secondary"
+              disabled={checkingGeneration}
+              onClick={() => void queryGeneration.current()}
+            >
+              <RefreshCw size={16} /> 重新查询生成状态
+            </button>
+          )}
+        </div>
+      )}
       {error && (
         <div role="alert" className="help specialist-error">
           {error}。
@@ -555,7 +790,6 @@ export function SpecialistTrainingPage({
           <select
             aria-label="已保存训练"
             value={selected}
-            disabled={busy}
             onChange={(event) => {
               setSelected(event.target.value)
               setExpanded(null)

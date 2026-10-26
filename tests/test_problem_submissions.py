@@ -103,6 +103,23 @@ def test_official_source_creates_review_record_without_changing_draft(site, monk
     assert client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'}).json()['attempt_id'] == value['attempt_id']
 
 
+def test_source_upstream_rate_limit_has_retry_after_and_keeps_history(site, monkeypatch):
+    import asyncio
+    from acmweb.remote_judges import SubmissionError
+    client, app, service, _ = site
+    asyncio.run(service.sync('codeforces:4-A', 'demo'))
+    class Driver:
+        def source(self, *_):
+            raise SubmissionError('rate_limited')
+        def close(self):
+            pass
+    monkeypatch.setattr(service.remote, '_driver', lambda *_: Driver())
+    response = client.post('/api/problem-submissions/4-A/source', json={'handle': 'demo', 'submission_id': '12345'})
+    assert response.status_code == 429 and response.headers['Retry-After'] == '60'
+    assert '官方平台限制' in response.json()['detail']
+    assert len(service.listing('4-A', 'demo')['items']) == 1
+
+
 @pytest.mark.parametrize('changed', [ {'account':'stranger'}, {'problem_id':'5-A'}, {'id':'67890'}, {'submitted_at':int(time.time())+3600} ])
 def test_official_source_rejects_wrong_evidence(site, monkeypatch, changed):
     client, app, service, plan = site
@@ -171,3 +188,34 @@ def test_cf_sync_queries_only_this_contest_and_checks_actual_owner(site,monkeypa
     assert requests[0][1]['handle'] == 'demo'
     with pytest.raises(AIError, match='账号不匹配'):
         service._collect('codeforces:4-A',{'platform':'codeforces','handle':'someone-else'})
+
+
+def test_slow_problem_collection_uses_query_start_time_and_preserves_newer_judge(site, monkeypatch):
+    """A queued response fetched before a newer AC must not win by saving later."""
+    import asyncio
+    from ojcrawler.storage import Store
+    _, app, service, _ = site
+    start = int(time.time())
+    clock = [start]
+    monkeypatch.setattr('acmweb.problem_submissions.time.time', lambda: clock[0])
+    def delayed_collection(*_args):
+        clock[0] = start + 1
+        newer = Store(app.state.database.path)
+        try:
+            newer.save('newer-official-poll', clock[0], Collection('codeforces', 'demo', submissions=[
+                Submission('12345','4-A',start,'AC',raw={'verdict':'OK','creationTimeSeconds':start})]),
+                capture_snapshot=False)
+        finally:
+            newer.close()
+        clock[0] = start + 2
+        return Collection('codeforces','demo',submissions=[
+            Submission('12345','4-A',start,'PENDING',raw={'verdict':'TESTING','creationTimeSeconds':start})]), 'synthetic delayed response'
+    monkeypatch.setattr(service, '_collect', delayed_collection)
+    reconcile = AsyncMock()
+    monkeypatch.setattr(service.remote, 'reconcile_collected', reconcile)
+    result = asyncio.run(service.sync('codeforces:4-A', 'demo'))
+    assert result['count'] == 1
+    with app.state.database.connect() as db:
+        row = db.execute("SELECT verdict,updated_at FROM submissions WHERE id='12345'").fetchone()
+        assert tuple(row) == ('AC', start + 1)
+    assert reconcile.await_args.kwargs['collected_at'] == start

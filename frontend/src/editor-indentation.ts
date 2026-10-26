@@ -1,7 +1,7 @@
 import { EditorSelection, countColumn } from '@codemirror/state'
 import type { EditorView, KeyBinding } from '@codemirror/view'
 import { indentLess, indentMore, insertNewlineAndIndent } from '@codemirror/commands'
-import { indentString } from '@codemirror/language'
+import { ensureSyntaxTree, indentString, language } from '@codemirror/language'
 import {
   acceptCompletion,
   closeCompletion,
@@ -10,9 +10,8 @@ import {
 } from '@codemirror/autocomplete'
 
 /**
- * Default indentation for the workbench editor. Both values are installed as
- * editor state (`EditorState.tabSize` / `indentUnit`) so the commands below
- * always follow the configured preferences instead of assuming four spaces.
+ * Fixed workbench indentation: a new level is four spaces and an existing tab
+ * displays as four columns. Existing documents are never rewritten on load.
  */
 export const EDITOR_INDENT_UNIT = '    '
 export const EDITOR_TAB_SIZE = 4
@@ -56,13 +55,54 @@ export function indentTab(view: EditorView): boolean {
 }
 
 /**
- * Enter closes an open completion and still inserts an indentation-aware
- * newline, so the new line inherits the current indentation and gains a level
- * inside a scope. A plain `insertNewline` would drop both.
+ * One Enter path regardless of completion state. Keep a deliberately indented
+ * empty line stable; on code lines let the language decide block/continuation
+ * indentation and split bracket pairs. Only newly inserted indentation is
+ * normalized to spaces, not the pasted document or previous lines.
  */
 export function newlineWithIndent(view: EditorView): boolean {
-  if (!completionStatus(view.state)) return false
-  closeCompletion(view)
+  if (view.state.readOnly) return false
+  if (completionStatus(view.state)) closeCompletion(view)
+  const { state } = view
+  if (state.selection.ranges.every((range) => range.empty && !/\S/.test(state.doc.lineAt(range.from).text))) {
+    const changes = state.changeByRange((range) => {
+      const line = state.doc.lineAt(range.from)
+      const column = countColumn(line.text.slice(0, range.from - line.from), state.tabSize)
+      const indentation = indentString(state, column)
+      return {
+        changes: { from: range.from, to: line.to, insert: state.lineBreak + indentation },
+        range: EditorSelection.cursor(range.from + 1 + indentation.length),
+      }
+    })
+    view.dispatch(state.update(changes, { scrollIntoView: true, userEvent: 'input' }))
+    return true
+  }
+  // Catch the parser up after a paste without parsing the whole document or
+  // introducing a second formatting transaction into undo history.
+  ensureSyntaxTree(state, state.selection.main.head, 30)
+  const languageName = state.facet(language)?.name
+  if ((languageName === 'cpp' || languageName === 'java') && state.selection.ranges.every((range) => {
+    if (!range.empty) return false
+    const line = state.doc.lineAt(range.from)
+    // While a bare identifier is incomplete, the C++ parser can lose the whole
+    // surrounding function and suggest column zero. Keep the user's current
+    // level in this narrow case; braces, labels, continuations and Python's
+    // intentional block dedentation still use the language indentation engine.
+    return /^[\t ]+(?:[\p{L}_$][\p{L}\p{N}_$]*::)*[\p{L}_$][\p{L}\p{N}_$]*$/u.test(
+      line.text.slice(0, range.from - line.from),
+    ) && !/\S/.test(line.text.slice(range.from - line.from))
+  })) {
+    const changes = state.changeByRange((range) => {
+      const line = state.doc.lineAt(range.from)
+      const indentation = indentString(state, countColumn(leading(line.text), state.tabSize))
+      return {
+        changes: { from: range.from, to: line.to, insert: state.lineBreak + indentation },
+        range: EditorSelection.cursor(range.from + 1 + indentation.length),
+      }
+    })
+    view.dispatch(state.update(changes, { scrollIntoView: true, userEvent: 'input' }))
+    return true
+  }
   return insertNewlineAndIndent(view)
 }
 
@@ -89,6 +129,10 @@ export function indentKeymap(canIndent: (view: EditorView) => boolean = () => tr
         (canIndent(view) ? nextSnippetField(view) || indentTab(view) : true),
       shift: (view) => (canIndent(view) ? indentLess(view) : true),
     },
-    { key: 'Enter', run: newlineWithIndent },
+    {
+      key: 'Enter',
+      run: (view) => canIndent(view) ? newlineWithIndent(view) : false,
+      shift: (view) => canIndent(view) ? newlineWithIndent(view) : false,
+    },
   ]
 }

@@ -1,10 +1,12 @@
 import asyncio
 import json
+import hashlib
 import logging
 import time
 import threading
 import uuid
 from argparse import Namespace
+from fastapi import HTTPException
 
 from . import analytics
 from .catalog import refresh_catalog, recommendation_candidates, recommendation_status, refresh_recommendation_sessions
@@ -25,13 +27,35 @@ class Jobs:
         self.guard=None
         self.event_log=None
         self.selection_reports=None
+        with self.db.connect() as connection:
+            connection.execute('''CREATE TABLE IF NOT EXISTS web_job_requests (
+                request_key TEXT PRIMARY KEY, kind TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                job_id TEXT NOT NULL)''')
 
     def list(self):
         with self.db.connect() as db:
             rows=db.execute("SELECT * FROM web_jobs ORDER BY created_at DESC LIMIT 30").fetchall()
         return [{**dict(r),"result":json.loads(r["result"]) if r["result"] else None} for r in rows]
 
-    def start(self,kind,payload=None):
+    def start(self,kind,payload=None,*,request_key=None):
+        fingerprint = (hashlib.sha256(json.dumps(payload or {}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                       if request_key is not None else None)
+        def replay(connection):
+            if request_key is None:
+                return None
+            previous = connection.execute('SELECT * FROM web_job_requests WHERE request_key=?', (request_key,)).fetchone()
+            if previous:
+                if previous['kind'] != kind or previous['fingerprint'] != fingerprint:
+                    raise HTTPException(409, '此请求标识已用于另一份生成配置，请重新发起')
+                job = connection.execute('SELECT id,status FROM web_jobs WHERE id=?', (previous['job_id'],)).fetchone()
+                if not job:
+                    raise HTTPException(409, '原生成任务已归档，请先查看已保存题单，不会自动再次生成')
+                return dict(job)
+            return None
+        with self.db.connect() as connection:
+            previous = replay(connection)
+        if previous:
+            return previous
         if self.guard:
             self.guard()
         if sum(not task.done() for _,task in self.tasks.values()) >= 2:
@@ -41,7 +65,13 @@ class Jobs:
         job_id=uuid.uuid4().hex
         now=int(time.time())
         with self.db.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            previous = replay(db)
+            if previous:
+                return previous
             db.execute("INSERT INTO web_jobs VALUES(?,?,?,?,?,?,?)",(job_id,kind,"queued",now,now,None,None))
+            if request_key is not None:
+                db.execute('INSERT INTO web_job_requests VALUES(?,?,?,?)', (request_key,kind,fingerprint,job_id))
         emit_event(self.event_log, 'job.queued', job_id=job_id, kind=kind, job_status='queued')
         task=asyncio.create_task(self._run(job_id,kind,payload or {}))
         self.tasks[job_id]=(kind,task)
@@ -71,6 +101,10 @@ class Jobs:
                 self.log_gym_results(job_id, kind, result)
                 self.update(job_id,"completed" if result["complete"] else "partial",result,
                     error='部分官方提交未能读取，请查看同步详情；当前榜单可能缺少未同步题目' if not result['complete'] else None)
+            elif kind == 'specialist_generate':
+                result = await self.run_specialist_generate(job_id, payload)
+                self.update(job_id, 'completed', {'stage':'completed', 'plan':result,
+                    'requested_count':len(result['items']), 'actual_count':len(result['items'])})
             elif kind == 'topic_method_check':
                 result = await self.run_topic_method_check(payload)
                 self.update(job_id, 'partial' if result.get('incomplete') else 'completed', result)

@@ -246,17 +246,63 @@ class RemoteSubmissions:
                 return
             try:
                 observed = await asyncio.to_thread(driver.judge, row['problem_id'], row['handle'], row['submission_id'])
+                if self._row(rid)['status'] == 'completed':
+                    return  # A concurrent explicit problem sync already finished it.
                 result = self.record(row, observed)
                 if result['verdict'] in FINAL:
                     self.update(rid, status='completed', reason='', message='官方判题：'+result['verdict'], **result)
                     await self.after_judge(result['attempt_id'])
                     return
                 self.update(rid, status='judging', reason='', message='官方判题中，请稍候', **result)
-            except (SubmissionError, AIError, HTTPException):
+            except SubmissionError as exc:
+                if self._row(rid)['status'] == 'completed':
+                    return
+                self.update(rid, status='judging', reason=exc.reason,
+                    message='代码已提交；查询判题未完成：' + str(exc) + ' 不会重新交题。')
+                if exc.reason in {'rate_limited', 'login_required', 'account_mismatch', 'challenge'}:
+                    return
+            except (AIError, HTTPException):
+                if self._row(rid)['status'] == 'completed':
+                    return
                 self.update(rid, status='judging', reason='judge_unavailable',
                             message='代码已提交，但暂未取得可核验的官方结果；可稍后刷新判题，不会重交代码')
             if number + 1 < rounds:
                 await asyncio.sleep(4)
+
+    async def reconcile_collected(self, pid, handle, submissions, *, collected_at=None):
+        """Reuse freshly fetched official CF evidence for known sent receipts.
+
+        Never guesses a SID, uses a draft, or posts code. Incomplete/mismatched
+        records leave the existing intent unchanged.
+        """
+        if not pid.startswith('codeforces:'):
+            return
+        from .remote_judges import PlatformSession, SubmissionError
+        by_id = {str(item.id): item for item in submissions}
+        with self.db.connect() as connection:
+            intents = connection.execute("SELECT * FROM wb_remote_submissions WHERE problem_id=? AND lower(handle)=lower(?) "
+                "AND status IN ('judging','uncertain') AND submission_id IS NOT NULL", (pid, handle)).fetchall()
+        for saved in intents:
+            row = dict(saved)
+            # A concurrent poll, refresh or dismiss may have moved this intent
+            # while the collection ran. Never replay stale evidence over it.
+            current = self._row(row['id'])
+            if current['status'] not in {'judging', 'uncertain'} or (
+                    collected_at is not None and current['updated_at'] > collected_at):
+                continue
+            item = by_id.get(str(row['submission_id']))
+            if item is None or item.problem_id != pid.split(':', 1)[1] or not isinstance(item.raw, dict):
+                continue
+            try:
+                if hashlib.sha256(row['code'].encode()).hexdigest() != row['code_hash']:
+                    continue
+                observed = PlatformSession.codeforces_record(pid.split(':', 1)[1], handle, str(item.id), item.raw)
+                result = self.record(row, observed)
+            except (SubmissionError, AIError, HTTPException, ValueError, TypeError):
+                continue
+            self.update(row['id'], status='completed' if result['verdict'] in FINAL else 'judging',
+                reason='', message='已通过同步本题提交取得官方判题：' + result['verdict'], **result)
+            await self.after_judge(result['attempt_id'])
 
     def record(self, intent, observed):
         pid, platform = intent['problem_id'], intent['problem_id'].split(':')[0]
@@ -335,6 +381,12 @@ class RemoteSubmissions:
 
     def refresh(self, rid):
         row = self._row(rid)
+        if row['reason'] == 'rate_limited':
+            # Bounded manual retry: at most one refresh per minute, never a resend.
+            retry = min(60, 60 - (int(time.time()) - row['updated_at']))
+            if retry > 0:
+                raise HTTPException(429, '官方平台暂时限制判题查询频率，请等待后重试；代码不会重交',
+                                    headers={'Retry-After': str(retry)})
         if not row['submission_id']:
             if row['status'] != 'uncertain':
                 return self.public(row)

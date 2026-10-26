@@ -34,6 +34,7 @@ _MESSAGES = {
     'uncertain': '无法确认官方是否已受理本次代码，请先查看官方提交记录，勿立即重复提交。',
     'record_mismatch': '官方判题记录的账号或题号与本次提交不一致。',
     'record_unavailable': '官方尚未返回可核验的提交记录，请稍后刷新判题。',
+    'source_unavailable': '已取得该次官方判题记录，但当前登录会话无法读取源码；可能是源码未公开、权限或页面结构限制。',
 }
 
 
@@ -82,6 +83,13 @@ class PlatformSession:
 
     def _request(self, method, url, *, data=None):
         url = self._url(url)
+        if self.platform == 'codeforces' and urlsplit(url).path.startswith('/api/'):
+            # Share the collector's host pacing, including receipt discovery
+            # and automatic polling. Never retry a code POST here.
+            from ojcrawler.http import _HOST_LOCKS, _LAST_REQUEST
+            with _HOST_LOCKS[self.host]:
+                time.sleep(max(0, 2.1 - (time.monotonic() - _LAST_REQUEST[self.host])))
+                _LAST_REQUEST[self.host] = time.monotonic()
         try:
             response = self.session.request(method, url, data=data, timeout=(10, 25),
                                             allow_redirects=False, stream=True,
@@ -207,18 +215,34 @@ class PlatformSession:
     def options(self, pid, handle):
         return self._form(self._problem(pid, handle), handle)[4]
 
-    def _records(self, key, handle):
+    def _records(self, key, handle, submission_id=None):
         if self.platform == 'codeforces':
             from json import loads
-            soup_status, _, text = self._request('GET', self.base + '/api/user.status?handle=' + quote(handle, safe='') + '&from=1&count=50')
-            self._check_page(soup_status, text)
-            try:
-                result = loads(text)
-                if result['status'] != 'OK' or not isinstance(result['result'], list): raise ValueError
-                if any(not isinstance(row, dict) or not re.fullmatch(r'[1-9]\d{0,11}', str(row.get('id', ''))) for row in result['result']): raise ValueError
-                return result['result']
-            except (ValueError, KeyError, TypeError):
-                raise SubmissionError('record_unavailable') from None
+            contest = key.split('-')[0]
+            rows, seen = [], set()
+            # Same bounded contest scope as one-click problem synchronization;
+            # old submissions must not depend on the latest 50 global records.
+            for start in ((1, 201, 401) if submission_id is not None else (1,)):
+                status, _, text = self._request('GET', self.base + '/api/contest.status?contestId=' + contest
+                    + '&handle=' + quote(handle, safe='') + f'&from={start}&count=200')
+                self._check_page(status, text)
+                try:
+                    result = loads(text)
+                    if (isinstance(result, dict) and result.get('status') == 'FAILED'
+                            and re.search(r'(?:call|request) limit exceeded', str(result.get('comment', '')), re.I)):
+                        raise SubmissionError('rate_limited')
+                    if result['status'] != 'OK' or not isinstance(result['result'], list): raise ValueError
+                    page = result['result']
+                    if any(not isinstance(row, dict) or not re.fullmatch(r'[1-9]\d{0,11}', str(row.get('id', ''))) for row in page): raise ValueError
+                    ids = [str(row['id']) for row in page]
+                    if len(set(ids)) != len(ids) or seen.intersection(ids): raise ValueError
+                    seen.update(ids)
+                    rows.extend(page)
+                except (ValueError, KeyError, TypeError):
+                    raise SubmissionError('record_unavailable') from None
+                if submission_id is None or str(submission_id) in seen or len(page) < 200:
+                    break
+            return rows
         soup = self._get(f'/contests/{self._contest(key)}/submissions/me')
         self._identity(soup, handle)
         records = []
@@ -298,31 +322,37 @@ class PlatformSession:
         except SubmissionError as error:
             raise SubmissionError(error.reason if error.reason == 'challenge' else 'uncertain', uncertain=True) from None
 
+    @staticmethod
+    def codeforces_record(key, handle, sid, row):
+        if str(row.get('id')) != str(sid):
+            raise SubmissionError('record_mismatch')
+        problem, owner = row.get('problem', {}), row.get('author', {})
+        author = owner.get('members') if isinstance(owner, dict) else None
+        contest, index = key.split('-')
+        if not isinstance(problem, dict) or not isinstance(author, list) or any(not isinstance(member, dict) for member in author):
+            raise SubmissionError('record_unavailable')
+        if str(problem.get('contestId')) != contest or problem.get('index') != index or len(author) != 1 or not isinstance(author[0].get('handle'), str) or author[0]['handle'].casefold() != handle.casefold():
+            raise SubmissionError('record_mismatch')
+        allowed = ('verdict', 'passedTestCount', 'timeConsumedMillis', 'memoryConsumedBytes', 'creationTimeSeconds', 'programmingLanguage')
+        raw = {k: row.get(k) for k in allowed}
+        ts = row.get('creationTimeSeconds')
+        if type(ts) is not int or ts <= 0 or ts > time.time() + 300:
+            raise SubmissionError('record_unavailable')
+        return {'id': sid, 'account': author[0]['handle'], 'problem_id': key, 'submitted_at': ts,
+                'verdict': codeforces_judge_verdict(row.get('verdict')),
+                'language': row.get('programmingLanguage'),
+                'url': 'https://codeforces.com' + f'/contest/{contest}/submission/{sid}', 'raw': raw,
+                'time_ms': row.get('timeConsumedMillis'), 'memory_bytes': row.get('memoryConsumedBytes'), 'contest_id': contest}
+
     def judge(self, pid, handle, submission_id):
         key = self._problem(pid, handle)
         sid = str(submission_id)
         if not re.fullmatch(r'[1-9]\d{0,11}', sid):
             raise SubmissionError('invalid_input')
         if self.platform == 'codeforces':
-            row = next((r for r in self._records(key, handle) if str(r.get('id')) == sid), None)
+            row = next((r for r in self._records(key, handle, sid) if str(r.get('id')) == sid), None)
             if row is None: raise SubmissionError('record_unavailable')
-            problem, owner = row.get('problem', {}), row.get('author', {})
-            author = owner.get('members') if isinstance(owner, dict) else None
-            contest, index = key.split('-')
-            if not isinstance(problem, dict) or not isinstance(author, list) or any(not isinstance(member, dict) for member in author):
-                raise SubmissionError('record_unavailable')
-            if str(problem.get('contestId')) != contest or problem.get('index') != index or len(author) != 1 or not isinstance(author[0].get('handle'), str) or author[0]['handle'].casefold() != handle.casefold():
-                raise SubmissionError('record_mismatch')
-            allowed = ('verdict', 'passedTestCount', 'timeConsumedMillis', 'memoryConsumedBytes', 'creationTimeSeconds', 'programmingLanguage')
-            raw = {k: row.get(k) for k in allowed}
-            ts = row.get('creationTimeSeconds')
-            if not isinstance(ts, int) or ts <= 0 or ts > time.time() + 300:
-                raise SubmissionError('record_unavailable')
-            return {'id': sid, 'account': author[0]['handle'], 'problem_id': key, 'submitted_at': ts,
-                    'verdict': codeforces_judge_verdict(row.get('verdict')),
-                    'language': row.get('programmingLanguage'),
-                    'url': self.base + f'/contest/{contest}/submission/{sid}', 'raw': raw,
-                    'time_ms': row.get('timeConsumedMillis'), 'memory_bytes': row.get('memoryConsumedBytes'), 'contest_id': contest}
+            return self.codeforces_record(key, handle, sid, row)
         contest = self._contest(key)
         url = self.base + f'/contests/{contest}/submissions/{sid}'
         soup = self._get(url)
@@ -369,10 +399,10 @@ class PlatformSession:
         self._identity(soup, handle)
         node = soup.select_one('#program-source-text' if self.platform == 'codeforces' else '#submission-code')
         if node is None:
-            raise SubmissionError('record_unavailable')
+            raise SubmissionError('source_unavailable')
         code = node.get_text('', strip=False)
         if not code.strip() or len(code.encode('utf-8')) > 65536:
-            raise SubmissionError('record_unavailable')
+            raise SubmissionError('source_unavailable')
         return {**record, 'code':code}
 
     def find_receipt(self, pid, handle, sent_at, code_hash):

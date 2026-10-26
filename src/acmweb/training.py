@@ -3,6 +3,8 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import nullcontext
+from contextvars import ContextVar
 from typing import Literal
 
 from fastapi import HTTPException
@@ -103,11 +105,44 @@ class Training:
         self.guard = None
         self.active_ai = False
         self._selecting = False
+        self._budget_reserved = ContextVar('training_budget_' + uuid.uuid4().hex, default=False)
+        self._progress_callback = ContextVar('training_progress_' + uuid.uuid4().hex, default=None)
+        self._selection_configuration = ContextVar('training_configuration_' + uuid.uuid4().hex, default=None)
         with self.db.connect() as db:
             db.executescript(DDL)
 
     def _ac_ids(self):
         return completed_problem_ids(self.db)
+
+    def _progress(self, stage, count, actual=0):
+        callback = self._progress_callback.get()
+        if callable(callback):
+            try:
+                callback({'stage': stage, 'requested_count': count, 'actual_count': actual})
+            except Exception:
+                pass
+
+    def _start_ai(self):
+        self._assert_configuration()
+        if not self._budget_reserved.get():
+            if self.guard:
+                self.guard()
+            self.active_ai = True
+
+    def _stop_ai(self):
+        if not self._budget_reserved.get():
+            self.active_ai = False
+
+    def _configuration_fingerprint(self):
+        from .ai import AIProvider
+        return self.ai.configuration_fingerprint() if isinstance(self.ai, AIProvider) else None
+
+    def _assert_configuration(self):
+        if self._selection_configuration.get() != self._configuration_fingerprint():
+            error = AIError('专项选题期间 AI 配置已变化，本次题单未保存；请重新发起')
+            error.reason = 'selection_report_configuration_changed'
+            error.selection_reason = error.reason
+            raise error
 
     def _decorate(self, data, completed=None):
         result = json.loads(data)
@@ -378,7 +413,7 @@ class Training:
 
     async def select_items(self, topic_id, mode, count, provider, model,
                            excluded_ids=(), template_first=None, forbid_templates=False, difficulty_bounds=None,
-                           cf_minimum=None, cf_maximum=None):
+                           cf_minimum=None, cf_maximum=None, *, budget_reserved=False, on_progress=None):
         """Select verified progressive items for standalone or daily training.
 
         This does not persist plans or take a standalone plan lease: the caller
@@ -386,14 +421,28 @@ class Training:
         """
         if self._selecting:
             raise HTTPException(409, '专项选题正在进行，请等待后再试')
+        configuration = self._configuration_fingerprint()
+        reserved_token = self._budget_reserved.set(self._budget_reserved.get() or budget_reserved)
+        progress_token = self._progress_callback.set(on_progress if on_progress is not None else self._progress_callback.get())
+        configuration_token = self._selection_configuration.set(configuration)
         self._selecting = True
+        started = time.monotonic()
         try:
             return await asyncio.wait_for(self._select_items(topic_id, mode, count, provider, model,
                 excluded_ids, template_first, forbid_templates, difficulty_bounds, cf_minimum, cf_maximum), timeout=540)
         except asyncio.TimeoutError:
+            emit_event(self.event_log, 'training.selection_failed', 'WARNING', reason='training_selection_timeout',
+                requested_count=count, duration_ms=max(0, int((time.monotonic() - started) * 1000)))
             raise AIError('专项选题与阅读报告超时，本次未保存；请稍后手动重试') from None
+        except asyncio.CancelledError:
+            emit_event(self.event_log, 'training.selection_failed', 'WARNING', reason='training_selection_cancelled',
+                requested_count=count, duration_ms=max(0, int((time.monotonic() - started) * 1000)))
+            raise
         finally:
             self._selecting = False
+            self._progress_callback.reset(progress_token)
+            self._budget_reserved.reset(reserved_token)
+            self._selection_configuration.reset(configuration_token)
 
     @staticmethod
     def _difficulty_bounds(bounds):
@@ -436,6 +485,7 @@ class Training:
         template_first = mode == 'learn' if template_first is None else template_first
         if template_first and forbid_templates:
             raise HTTPException(422, '模板首题与排除模板不能同时设置')
+        self._progress('validating', count)
         await refresh_recommendation_sessions(self.accounts)
         excluded = set(excluded_ids)
         bounds = self._difficulty_bounds(difficulty_bounds)
@@ -449,6 +499,7 @@ class Training:
         if ((template_first and not templates) or usable_count < count) and callable(getattr(self.accounts, 'document', None)):
             # The explicit Generate/Roll action authorizes metadata discovery;
             # browsing saved plans does not trigger I/O or an AI request.
+            self._progress('catalog', count)
             refresh_result = await asyncio.to_thread(refresh_specialist_candidates, self.db, self.accounts, topic)
             refresh_notice = '。'.join(row['platform'] + ' 补充题库失败：' + row['message']
                                       for row in refresh_result if row['status'] == 'failed')
@@ -462,9 +513,8 @@ class Training:
         # Explicit paid generation may discover alternative method applications.
         # This cannot certify an ordinary task as the mandatory first template.
         if self.topic_feasibility is not None and usable_count < count and (not template_first or templates):
-            if self.guard:
-                self.guard()
-            self.active_ai = True
+            self._progress('method_check', count)
+            self._start_ai()
             try:
                 checked = await self.topic_feasibility.check(topic['id'], provider, model,
                     cf_minimum, cf_maximum, excluded_ids=excluded, difficulty_bounds=bounds)
@@ -472,7 +522,7 @@ class Training:
             except AIError:
                 refresh_notice += ('。' if refresh_notice else '') + '补充方法核查未完成，已保留原候选和训练计划'
             finally:
-                self.active_ai = False
+                self._stop_ai()
             pool = [p for p in self._pool(topic, cf_minimum=cf_minimum, cf_maximum=cf_maximum)
                     if p['id'] not in excluded and self._within_difficulty_bounds(p, bounds)]
             templates = [p['id'] for p in pool if is_template(p, topic)]
@@ -510,9 +560,8 @@ class Training:
                               if cf_minimum is not None or cf_maximum is not None else
                               '旧每日调用仅对 CF 应用全局 rating 范围；其他平台沿原生难度规则，不要求有跨平台换算')}
         learner_evidence = self._learner_evidence()
-        if self.guard:
-            self.guard()
-        self.active_ai = True
+        self._progress('selecting', count)
+        self._start_ai()
         try:
             response = await self.ai.complete('specialist_selection', provider, model,
                 {'topic': {k: topic[k] for k in ('id', 'title', 'description')},
@@ -522,6 +571,7 @@ class Training:
                  'preferences': self.db.get('training', {}), 'difficulty_bounds': bounds,
                  'rating_request': rating_request, 'learner_evidence': learner_evidence,
                  'candidates': candidates}, schema)
+            self._assert_configuration()
             try:
                 selected = schema.model_validate(response.data).selected_problems
             except ValidationError:
@@ -560,14 +610,23 @@ class Training:
                     'cf_rating_estimate': problem['cf_rating_estimate'],
                     'stage': stage, 'learning_level': choice.learning_level,
                     'reason': choice.reason, 'completed': False})
-            items = await prepare_selection_reports(self.selection_reports, items, provider, model,
-                context={'topic_id': topic['id'], 'topic_title': topic['title'], 'mode': mode,
-                         'mode_title': next(m['title'] for m in MODES if m['id'] == mode),
-                         'rating_request': rating_request, 'learner_evidence': learner_evidence})
+            self._progress('reading', count)
+            self._assert_configuration()
+            # Scope the callback per request instead of temporarily mutating a
+            # shared reader. Legacy/isolated readers keep their original API.
+            scope = getattr(self.selection_reports, 'progress_scope', None)
+            with scope(self._progress_callback.get()) if callable(scope) else nullcontext():
+                items = await prepare_selection_reports(self.selection_reports, items, provider, model,
+                    context={'topic_id': topic['id'], 'topic_title': topic['title'], 'mode': mode,
+                             'mode_title': next(m['title'] for m in MODES if m['id'] == mode),
+                             'rating_request': rating_request, 'learner_evidence': learner_evidence})
+            self._assert_configuration()
             # Reading all statements may outlive the five-minute login evidence.
             # Recheck the current account set and all constraints before a caller
             # is allowed to persist this exact set of reported problems.
+            self._progress('validating', count, count)
             await refresh_recommendation_sessions(self.accounts)
+            self._assert_configuration()
             current = {p['id']: p for p in self._pool(topic, ids, cf_minimum, cf_maximum) if self._within_difficulty_bounds(p, bounds)}
             if not set(ids) <= current.keys() or set(ids) & excluded:
                 raise AIError('候选资格在阅读报告期间已变化（登录、提交、日期或对战），本次未保存，请手动重试')
@@ -588,13 +647,15 @@ class Training:
                 candidate_count=len(candidates), template_count=len(templates), requested_count=count)
             return items
         finally:
-            self.active_ai = False
+            self._stop_ai()
 
-    async def generate(self, payload: Generate):
+    async def generate(self, payload: Generate, *, budget_reserved=False, on_progress=None):
         topic = TOPICS.get(payload.topic_id)
         if topic is None:
             raise HTTPException(422, '请选择支持的训练专题')
         token = self._lock()
+        reserved_token = self._budget_reserved.set(self._budget_reserved.get() or budget_reserved)
+        progress_token = self._progress_callback.set(on_progress if on_progress is not None else self._progress_callback.get())
         try:
             items = await self.select_items(payload.topic_id, payload.mode, payload.count,
                 payload.provider, payload.model, cf_minimum=payload.cf_minimum, cf_maximum=payload.cf_maximum)
@@ -608,6 +669,7 @@ class Training:
                 prefs = self.db.get('training', {})
                 plan['rating_request'] = {'minimum': payload.cf_minimum if payload.cf_minimum is not None else prefs.get('minimum', 800),
                     'maximum': payload.cf_maximum if payload.cf_maximum is not None else prefs.get('maximum', 3500)}
+            self._progress('saving', payload.count, len(items))
             with self.db.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 lease = db.execute('SELECT value FROM web_settings WHERE key=?', (LOCK_KEY,)).fetchone()
@@ -619,7 +681,11 @@ class Training:
                 db.execute('INSERT INTO training_plans VALUES(?,?,?,?)', (plan['id'], topic['id'], now, json.dumps(plan, ensure_ascii=False)))
             return plan
         finally:
-            self._unlock(token)
+            try:
+                self._unlock(token)
+            finally:
+                self._progress_callback.reset(progress_token)
+                self._budget_reserved.reset(reserved_token)
 
 
 def register(app, training):

@@ -1,7 +1,7 @@
 """Task policies shared by every model transport. Payloads are untrusted data."""
 import json
 
-PROMPT_VERSION = '2026-10-26.1'
+PROMPT_VERSION = '2026-10-26.2'
 INITIAL_SELECTION_POLICY = (
     '本阶段的 candidates 仅是元信息初选，不能据此宣称已经读过题目正文、理解全部约束或确认模板适用性。'
     '返回的是待逐题阅读的候选草案；服务端还必须取得每道官方完整题面并通过 selection_read_report 阅读确认，才能最终入选。'
@@ -43,6 +43,8 @@ TASK_POLICIES = {
         '结合 selection_context 中用户选择的专题、学习阶段、训练目标和初选理由，确认是否真的适合该训练；'
         '若 selection_context 提供 rating_request、learner_evidence、cf_rating_estimate，必须核对所给难度区间和真实学习材料；跨平台估计只作为带来源的不确定参考，不能声称官方等价或自造换算。'
         'suitable 仅在已有正文支持目标和选题理由时为 true，不适合或无法确认时必须为 false，不能为了凑题量通过。'
+        '本任务输出简明的阅读报告，不展开长篇题解或重复复述整段题面；确保完整 JSON 能在给定预算内结束。'
+        'selection_fit、problem_summary 各用1至3句；列表每条只讲一个要点，通常各3至6条，limitations 通常1至3条；不为达到条数虚构内容。'
         'selection_fit 简明说明本题与训练目标如何对应及初选理由是否需要修正；problem_summary 准确概括题意、输入输出和目标。'
         'constraints 列出正文确实给出的数据范围、条件和边界；正文未说明的内容明确写未提供，不得按标签或题号猜。'
         'approach 给学习者可理解的算法思路、关键依据和步骤，可以说明必要的替代方法与适用条件，不输出内部思考过程。'

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: "${ACM_IMAGE_TARGET:-runtime}"
-    image: acm-lab:0.21.2
+    image: acm-lab:0.21.3
     restart: unless-stopped
     init: true
     user: "${ACM_UID:-1000}:${ACM_GID:-1000}"

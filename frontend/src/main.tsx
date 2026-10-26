@@ -74,6 +74,7 @@ const jobNames: Record<string, string> = {
   catalog: '同步题库',
   specialist_catalog: '补充专题题库',
   topic_method_check: 'AI 核查专题方法',
+  specialist_generate: '生成专项题单',
   ai_test: 'AI 连接测试',
   wb_statement: '获取题面',
   wb_hint: '生成小提示',
@@ -1054,6 +1055,7 @@ export function App() {
               account={auth.multi_user ? String(auth.user?.id || auth.user?.username) : 'local'}
               specialist={
                 <SpecialistTrainingPage
+                  account={auth.multi_user ? String(auth.user?.id || auth.user?.username) : 'local'}
                   provider={provider}
                   model={model}
                   aiPicker={aiPicker}
@@ -2704,13 +2706,18 @@ function SettingsPage({
                   <input
                     type="number"
                     min={256}
-                    max={32768}
+                    max={config.vendor === 'deepseek' ? 131072 : 32768}
                     value={config.max_output_tokens || 8192}
                     onChange={(e) =>
                       setConfig({ ...config, max_output_tokens: Number(e.target.value) })
                     }
                   />
                 </label>
+                {config.vendor === 'deepseek' && (
+                  <p className="help">
+                    DeepSeek 思考模式会占用输出预算。若提示响应被截断，可自行提高 token 上限（例如 65536）或降低思考强度；提高上限可能增加费用，保存前不会改变现有预算，也不会自动重试请求。
+                  </p>
+                )}
                 <label>
                   超时（秒）
                   <input

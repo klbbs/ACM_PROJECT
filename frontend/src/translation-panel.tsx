@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Languages, RefreshCw, Upload } from 'lucide-react'
 import { api, date } from './api'
+import { StatementSamples } from './statement-samples'
 
 const StatementView = React.lazy(() =>
   import('./statement-view').then((m) => ({ default: m.StatementView })),
@@ -36,18 +37,7 @@ export function TranslationStatement({ statement }: { statement: Row }) {
       <React.Suspense fallback={<p>正在排版译文…</p>}>
         <StatementView statement={statement} />
       </React.Suspense>
-      {(statement.samples || []).map((sample: Row, index: number) => (
-        <div className="wb-samples" key={index}>
-          <div>
-            <h4>样例输入 {index + 1}</h4>
-            <pre>{sample.input}</pre>
-          </div>
-          <div>
-            <h4>样例输出 {index + 1}</h4>
-            <pre>{sample.output}</pre>
-          </div>
-        </div>
-      ))}
+      <StatementSamples samples={statement.samples} />
     </>
   )
 }

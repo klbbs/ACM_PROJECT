@@ -83,9 +83,8 @@ async function render(
 }
 
 const button = (host: HTMLElement, text: string) =>
-  Array.from(host.querySelectorAll('button')).find((item) =>
-    item.textContent?.includes(text),
-  ) as HTMLButtonElement | undefined
+  Array.from(host.querySelectorAll('button')).find((item) => item.textContent?.includes(text)) as
+    HTMLButtonElement | undefined
 async function click(host: HTMLElement, text: string) {
   const target = button(host, text)
   if (!target) throw new Error(`button ${text} not found`)
@@ -133,17 +132,26 @@ it('only trusts official https record links', () => {
 it('shows clear disabled reasons for AC, judging and missing source', async () => {
   request.mockImplementation(async (path) => {
     if (path.startsWith('/problem-submissions/'))
-      return listing({ items: [
-        { ...ac, submission_id: 'ac-row', analysis_available: false },
-        { ...wa, submission_id: 'pending-row', verdict: 'TESTING', analysis_available: false },
-        { ...wa, submission_id: 'source-row', attempt_id: 'att-source', analysis_available: false,
-          analysis_disabled_reason: '尚未读取并验证本次提交源码；请先获取本次代码' },
-      ] })
+      return listing({
+        items: [
+          { ...ac, submission_id: 'ac-row', analysis_available: false },
+          { ...wa, submission_id: 'pending-row', verdict: 'TESTING', analysis_available: false },
+          {
+            ...wa,
+            submission_id: 'source-row',
+            attempt_id: 'att-source',
+            analysis_available: false,
+            analysis_disabled_reason: '尚未读取并验证本次提交源码；请先获取本次代码',
+          },
+        ],
+      })
     throw new Error(`Unexpected API ${path}`)
   })
   await render(props({ aiReady: true }), async (host) => {
     const records = Array.from(host.querySelectorAll('article.problem-submission'))
-    const analyses = records.map((record) => record.querySelector('button[title]') as HTMLButtonElement)
+    const analyses = records.map(
+      (record) => record.querySelector('button[title]') as HTMLButtonElement,
+    )
     expect(analyses.every((item) => item.disabled)).toBe(true)
     expect(records[0].textContent).toContain('AC 记录无需错因分析')
     expect(records[1].textContent).toContain('判题中，结束后才能分析')
@@ -169,8 +177,11 @@ it('allows retry after an AI job fails', async () => {
   const coach = vi.fn().mockResolvedValue({ id: 'review-job' })
   request.mockImplementation(async (path) => {
     if (path.startsWith('/problem-submissions/'))
-      return listing({ items: [{ ...wa, attempt_id: 'att-wa', code_verified: true, analysis_available: true }] })
-    if (path === '/jobs') return { items: [{ id: 'review-job', status: 'failed', error: 'AI 暂时不可用' }] }
+      return listing({
+        items: [{ ...wa, attempt_id: 'att-wa', code_verified: true, analysis_available: true }],
+      })
+    if (path === '/jobs')
+      return { items: [{ id: 'review-job', status: 'failed', error: 'AI 暂时不可用' }] }
     throw new Error(`Unexpected API ${path}`)
   })
   await render(props({ coach }), async (host) => {
@@ -257,8 +268,7 @@ it('explains an empty range instead of pretending the sync failed', async () => 
   vi.useFakeTimers()
   const values = props()
   request.mockImplementation(async (path, method) => {
-    if (path.startsWith('/problem-submissions/') && method !== 'POST')
-      return listing({ items: [] })
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing({ items: [] })
     if (path.endsWith('/sync')) return { id: 'sync-2', status: 'queued' }
     if (path === '/jobs')
       return {
@@ -351,11 +361,44 @@ it('keeps judge records when the source is unavailable', async () => {
   })
 })
 
+it('keeps the judge record and honors Retry-After for a rate-limited source without automatic retries', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-10-26T08:00:00Z'))
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
+    if (path.endsWith('/source') && method === 'POST')
+      throw new ApiError('ACM Lab 的平台只读查询过于频繁', 429, 60)
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props(), async (host) => {
+    await click(host, '获取本次代码')
+    expect(host.textContent).toContain('#12345')
+    expect(host.textContent).toContain('60 秒后可重试')
+    expect(button(host, '60 秒后重试读取')?.disabled).toBe(true)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60000)
+    })
+    expect(button(host, '获取本次代码')?.disabled).toBe(false)
+    expect(request.mock.calls.filter((call) => call[1] === 'POST')).toHaveLength(1)
+  })
+})
+
 it('analyzes the linked submission directly without loading it into the editor', async () => {
   vi.useFakeTimers()
   request.mockImplementation(async (path, method) => {
     if (path.startsWith('/problem-submissions/') && method !== 'POST')
-      return listing({ items: [wa, { ...ac, verdict: 'WA', attempt_id: 'att-wa', code_verified: true, analysis_available: true }] })
+      return listing({
+        items: [
+          wa,
+          {
+            ...ac,
+            verdict: 'WA',
+            attempt_id: 'att-wa',
+            code_verified: true,
+            analysis_available: true,
+          },
+        ],
+      })
     if (path === '/jobs') return { items: [{ id: 'review-job', status: 'completed' }] }
     throw new Error(`Unexpected API ${path}`)
   })
@@ -475,17 +518,14 @@ it('a late completion for the previous account cannot overwrite the new one', as
     await tick()
     expect(host.textContent).not.toContain('已同步 2 条本题提交')
     expect(host.textContent).toContain('#77777')
-    expect(request).toHaveBeenCalledWith(
-      '/problem-submissions/codeforces%3A4-A?handle=alt',
-    )
+    expect(request).toHaveBeenCalledWith('/problem-submissions/codeforces%3A4-A?handle=alt')
   })
 })
 
 it('reports platform cooldown and blocks repeat clicks', async () => {
   request.mockImplementation(async (path, method) => {
     if (path.startsWith('/problem-submissions/') && method !== 'POST') return listing()
-    if (path.endsWith('/sync'))
-      throw new ApiError('请等待 20 秒后再次同步本题记录', 429, 20)
+    if (path.endsWith('/sync')) throw new ApiError('请等待 20 秒后再次同步本题记录', 429, 20)
     throw new Error(`Unexpected API ${path}`)
   })
   const values = props()
@@ -573,7 +613,9 @@ it('adopts an account discovered by the listing and keeps the chosen one', async
     expect(host.textContent).toContain('#77777')
     expect(host.textContent).not.toContain('#12345')
     // A parent refresh keeps the user's choice instead of falling back.
-    await act(async () => root.render(<ProblemSubmissions {...props({ handles: [], revision: 1 })} />))
+    await act(async () =>
+      root.render(<ProblemSubmissions {...props({ handles: [], revision: 1 })} />),
+    )
     await settle()
     expect((host.querySelector('select[aria-label="同步账号"]') as HTMLSelectElement).value).toBe(
       'alt',

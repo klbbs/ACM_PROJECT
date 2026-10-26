@@ -1,12 +1,33 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { basicSetup } from 'codemirror'
 import { Compartment, EditorState, Prec, Transaction } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
-import { openSearchPanel } from '@codemirror/search'
-import { redo } from '@codemirror/commands'
-import { indentUnit } from '@codemirror/language'
+import {
+  EditorView,
+  crosshairCursor,
+  drawSelection,
+  dropCursor,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  highlightSpecialChars,
+  keymap,
+  lineNumbers,
+  rectangularSelection,
+} from '@codemirror/view'
+import { highlightSelectionMatches, openSearchPanel, searchKeymap } from '@codemirror/search'
+import { defaultKeymap, history, historyKeymap, redo } from '@codemirror/commands'
+import {
+  bracketMatching,
+  defaultHighlightStyle,
+  foldGutter,
+  foldKeymap,
+  indentOnInput,
+  indentUnit,
+  syntaxHighlighting,
+} from '@codemirror/language'
 import {
   autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
   startCompletion,
   closeCompletion,
   moveCompletionSelection,
@@ -97,11 +118,40 @@ export default function CodeEditor(props: CodeEditorProps) {
               },
             }),
           ),
-          Prec.highest(keymap.of([{ key: 'Tab', run: acceptCompletionOnTab }])),
-          basicSetup,
+          Prec.highest(keymap.of([
+            { key: 'Tab', run: acceptCompletionOnTab },
+            ...indentKeymap(canIndent),
+          ])),
+          lineNumbers(),
+          highlightActiveLineGutter(),
+          highlightSpecialChars(),
+          history(),
+          foldGutter(),
+          drawSelection(),
+          dropCursor(),
+          EditorState.allowMultipleSelections.of(true),
+          indentOnInput(),
+          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          bracketMatching(),
+          closeBrackets(),
+          rectangularSelection(),
+          crosshairCursor(),
+          highlightActiveLine(),
+          highlightSelectionMatches(),
+          // Enter has exactly one insertion path, and accepts no completion.
+          keymap.of([
+            ...closeBracketsKeymap,
+            ...defaultKeymap.filter((binding) => binding.key !== 'Enter'),
+            ...searchKeymap,
+            ...historyKeymap,
+            ...foldKeymap,
+            ...completionKeymap.filter((binding) => binding.key !== 'Enter'),
+          ]),
           oneDark,
-          EditorState.tabSize.of(EDITOR_TAB_SIZE),
-          indentUnit.of(EDITOR_INDENT_UNIT),
+          Prec.highest([
+            EditorState.tabSize.of(EDITOR_TAB_SIZE),
+            indentUnit.of(EDITOR_INDENT_UNIT),
+          ]),
           Prec.high(
             keymap.of([
               { key: 'Ctrl-Space', run: startCompletion },
@@ -118,7 +168,6 @@ export default function CodeEditor(props: CodeEditorProps) {
               },
               { key: 'ArrowDown', run: moveCompletionSelection(true) },
               { key: 'ArrowUp', run: moveCompletionSelection(false) },
-              ...indentKeymap(canIndent),
               { key: 'Escape', run: closeCompletion },
             ]),
           ),

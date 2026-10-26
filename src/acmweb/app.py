@@ -129,7 +129,7 @@ def create_app(settings=None):
                 emit_event(event_log, 'service.stopped', mode='single')
 
     private_schema = settings.production or settings.isolated
-    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.21.2",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.21.3",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     app.state.settings=settings
     app.state.account_config=account_config
     app.state.event_log=event_log
@@ -143,6 +143,7 @@ def create_app(settings=None):
     register_extension(app)
     register_announcements(app, database)
     app.state.database=database;app.state.jobs=jobs;app.state.ai=ai;app.state.codex=codex
+    ai.event_log = event_log
     from .browser_login_routes import register as register_browser_login
     register_browser_login(app, account_config)
 
@@ -179,7 +180,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.21.2"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.21.3"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -357,6 +358,55 @@ def create_app(settings=None):
     app.state.specialist_training.topic_feasibility = app.state.topic_feasibility
     app.state.daily.specialist_training = app.state.specialist_training
     register_specialist_training(app, app.state.specialist_training)
+
+    from .training import Generate as SpecialistGenerate
+    class BackgroundSpecialistGenerate(SpecialistGenerate):
+        request_key: str = Field(min_length=32, max_length=32, pattern=r'^[a-f0-9]{32}$')
+
+    @app.post('/api/training/plans/generate')
+    async def queue_specialist_generation(payload: BackgroundSpecialistGenerate):
+        from .training_topics import TOPICS
+        if payload.topic_id not in TOPICS:
+            raise HTTPException(422, '请选择支持的训练专题')
+        selection = ai.selection()
+        if not selection['ready']:
+            raise HTTPException(400, '请先在连接与设置中保存可用的默认 AI 模型')
+        if (payload.provider, payload.model) != (selection['channel'], selection['model']):
+            raise HTTPException(409, '默认 AI 配置已变化，请重新读取配置后生成')
+        return jobs.start('specialist_generate', payload.model_dump(exclude={'request_key'}), request_key=payload.request_key)
+
+    @app.get('/api/training/generation')
+    def specialist_generation_status(request_key: str | None = Query(default=None, min_length=32, max_length=32, pattern=r'^[a-f0-9]{32}$')):
+        with database.connect() as connection:
+            if request_key is not None:
+                row = connection.execute("SELECT j.* FROM web_jobs j JOIN web_job_requests r ON r.job_id=j.id "
+                    "WHERE r.request_key=? AND r.kind='specialist_generate' AND j.kind='specialist_generate'", (request_key,)).fetchone()
+            else:
+                row = connection.execute("SELECT * FROM web_jobs WHERE kind='specialist_generate' "
+                    "ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,created_at DESC,rowid DESC LIMIT 1").fetchone()
+        if not row:
+            return {'job':None}
+        return {'job':{**dict(row), 'result':json.loads(row['result']) if row['result'] else None}}
+
+    async def run_specialist_generate(job_id, payload):
+        selection = ai.selection()
+        if not selection['ready'] or (selection['channel'], selection['model']) != (payload['provider'], payload['model']):
+            raise AIError('默认 AI 配置已变化或不可用，本次尚未生成，请重新发起')
+        def progress(value):
+            # Callback is request-scoped and closes before Jobs writes its final
+            # state. Never persist raw model, task statement or account values.
+            stage = value.get('stage')
+            if stage not in {'validating','catalog','method_check','selecting','reading','saving'}:
+                return
+            jobs.update(job_id, 'running', {'stage':stage,
+                'requested_count':payload['count'], 'actual_count':max(0, min(payload['count'], int(value.get('actual_count',0))))})
+        try:
+            return await app.state.specialist_training.generate(SpecialistGenerate.model_validate(payload),
+                budget_reserved=True, on_progress=progress)
+        except HTTPException as exc:
+            raise AIError(f'专项生成请求被拒绝（HTTP {exc.status_code}），请检查配置或已有训练任务；原题单保留') from None
+
+    jobs.run_specialist_generate = run_specialist_generate
 
     @app.get('/api/training/candidates')
     def training_candidates(topic_id: str = Query(min_length=1, max_length=80),

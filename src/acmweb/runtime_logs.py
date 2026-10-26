@@ -19,6 +19,8 @@ user_id_context = contextvars.ContextVar('acm_log_user_id', default=None)
 console = logging.getLogger('acmweb.runtime')
 
 EVENTS = {
+    'ai.completed': ('task', 'AI 调用已完成'),
+    'ai.failed': ('task', 'AI 调用未完成，请查看固定失败原因'),
     'gym.sync_checked': ('platform', 'Gym 补充提交同步已检查'),
     'service.started': ('system', '服务已启动'),
     'service.stopped': ('system', '服务已停止'),
@@ -48,7 +50,7 @@ EVENTS = {
 LEVELS = ('INFO', 'WARNING', 'ERROR')
 CATEGORIES = ('system', 'task', 'platform', 'security', 'request')
 KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
-         'specialist_catalog', 'topic_method_check',
+         'specialist_catalog', 'topic_method_check', 'specialist_generate',
          'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',
@@ -64,14 +66,20 @@ REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'bindi
            'model_list_timeout', 'model_list_network', 'model_list_invalid_json', 'model_list_invalid_structure',
            'daily_invalid_output', 'daily_invalid_count', 'daily_candidates_unavailable',
            'daily_provider_unavailable', 'daily_provider_configuration', 'daily_interrupted',
-           'daily_generation_failed', 'training_template_unavailable',
+           'daily_generation_failed', 'daily_output_truncated', 'training_template_unavailable',
            'training_candidates_unavailable', 'training_selection_invalid',
            'selection_statement_unavailable', 'selection_report_invalid',
-           'selection_report_rejected', 'selection_report_timeout', 'selection_report_failed'}
+           'selection_report_rejected', 'selection_report_timeout', 'selection_report_failed',
+           'selection_report_cancelled', 'selection_report_configuration_changed',
+           'training_selection_timeout', 'training_selection_cancelled',
+           'ai_output_truncated', 'ai_empty_final', 'ai_invalid_output',
+           'ai_response_incomplete', 'ai_response_refused', 'ai_upstream_http', 'ai_cancelled', 'ai_task_failed'}
 
 
 def known_failure_reason(error):
     # Exact, application-owned messages only. Never reflect an upstream body.
+    if isinstance(getattr(error, 'reason', None), str) and error.reason in REASONS:
+        return error.reason
     from .ai import (AI_TIMEOUT_ERROR, AI_NETWORK_ERROR, AI_JSON_ERROR, AI_STRUCTURE_ERROR,
                      MODEL_TIMEOUT_ERROR, MODEL_NETWORK_ERROR, MODEL_JSON_ERROR, MODEL_STRUCTURE_ERROR)
     return {
@@ -123,6 +131,18 @@ def safe_details(details):
         elif key == 'mode' and isinstance(value, str) and value in {'single', 'multi'}:
             clean[key] = value
         elif key == 'train_mode' and isinstance(value, str) and value in {'learn', 'consolidate', 'variation', 'strengthen'}:
+            clean[key] = value
+        elif key == 'ai_task' and isinstance(value, str):
+            from .prompts import TASK_POLICIES
+            if value in TASK_POLICIES:
+                clean[key] = value
+        elif key == 'ai_vendor' and isinstance(value, str) and value in {'custom','openai','deepseek','anthropic','gemini','qwen','qwen_global','moonshot','siliconflow','glm'}:
+            clean[key] = value
+        elif key == 'ai_protocol' and isinstance(value, str) and value in {'chat','responses','anthropic','codex'}:
+            clean[key] = value
+        elif key == 'finish_reason' and isinstance(value, str) and value in {'stop','length','content_filter','tool_calls','incomplete','unknown'}:
+            clean[key] = value
+        elif key in {'input_tokens','output_tokens','reasoning_tokens','max_output_tokens'} and type(value) is int and 0 <= value <= 10**9:
             clean[key] = value
         elif key == 'method' and isinstance(value, str) and value in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'}:
             clean[key] = value

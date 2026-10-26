@@ -10,6 +10,7 @@ import './editor-self-test.css'
 import { WorkbenchSplit } from './workbench-split'
 import { defaultEditorSettings, type EditorSettings } from './editor-settings'
 import { TranslationPanel } from './translation-panel'
+import { StatementSamples } from './statement-samples'
 import { ProblemRecordEditor } from './problem-records'
 import { RemoteSubmissionPanel } from './remote-submission'
 import { EditorTemplates } from './editor-templates'
@@ -462,18 +463,7 @@ export function WorkbenchPage({
                         <React.Suspense fallback={<p>正在排版题面…</p>}>
                           <StatementView statement={statement} />
                         </React.Suspense>
-                        {statement.samples.map((s: Row, i: number) => (
-                          <div key={i} className="wb-samples">
-                            <div>
-                              <h4>样例输入 {i + 1}</h4>
-                              <pre>{s.input}</pre>
-                            </div>
-                            <div>
-                              <h4>样例输出 {i + 1}</h4>
-                              <pre>{s.output}</pre>
-                            </div>
-                          </div>
-                        ))}
+                        <StatementSamples samples={statement.samples} />
                       </>
                     </TranslationPanel>
                   )}

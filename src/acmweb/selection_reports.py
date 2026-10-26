@@ -11,6 +11,8 @@ import json
 import re
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Annotated
 
 from bs4 import BeautifulSoup
@@ -19,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .codex_bridge import AIError
 from .problem_sources import normalize, source_url
-from .runtime_logs import emit_event
+from .runtime_logs import emit_event, known_failure_reason
 
 DDL = '''CREATE TABLE IF NOT EXISTS ai_selection_reports (
  id TEXT PRIMARY KEY, problem_id TEXT NOT NULL, created_at INTEGER NOT NULL,
@@ -29,6 +31,7 @@ DDL = '''CREATE TABLE IF NOT EXISTS ai_selection_reports (
 Text = Annotated[str, Field(min_length=1, max_length=2400)]
 MAX_BATCH = 50
 MAX_PREPARE_SECONDS = 540
+MAX_READING_CONCURRENCY = 2
 MAX_STATEMENT_BYTES = 512 * 1024
 STATEMENT_FIELDS = ('id', 'title', 'url', 'source', 'render_version', 'sections',
                     'body_html', 'samples', 'images', 'has_images', 'time_limit',
@@ -117,6 +120,9 @@ class SelectionReports:
         self.guard = None
         self.runtime_guard = None
         self.active_ai = False
+        self.on_progress = None
+        self._progress_callback = ContextVar('selection_report_progress_' + uuid.uuid4().hex, default=None)
+        self._batch_context = ContextVar('selection_report_batch_' + uuid.uuid4().hex, default=None)
         with self.db.connect() as connection:
             connection.executescript(DDL)
 
@@ -151,7 +157,38 @@ class SelectionReports:
                 error.selection_reason = 'selection_statement_unavailable'
                 raise
 
-    async def prepare(self, items, provider, model):
+    @contextmanager
+    def progress_scope(self, callback):
+        token = self._progress_callback.set(callback)
+        try:
+            yield
+        finally:
+            self._progress_callback.reset(token)
+
+    def _configuration_fingerprint(self):
+        from .ai import AIProvider
+        if not isinstance(self.ai, AIProvider):
+            return None
+        # This digest lives only for this batch, never in logs or the database.
+        return self.ai.configuration_fingerprint()
+
+    def _batch_progress(self):
+        batch = self._batch_context.get()
+        callback = batch.get('callback') if batch else None
+        if callable(callback):
+            try:
+                callback({'stage': 'reading', 'requested_count': batch['requested'],
+                          'actual_count': batch['completed']})
+            except Exception:
+                # A disconnected progress consumer must not restart a paid call.
+                pass
+
+    def _assert_configuration(self):
+        batch = self._batch_context.get()
+        if batch and self._configuration_fingerprint() != batch['configuration']:
+            raise _failure('阅读期间 AI 配置已变化，本次报告和题单未保存，请重新发起', 'selection_report_configuration_changed')
+
+    async def prepare(self, items, provider, model, *, on_progress=None):
         if not isinstance(items, list) or not items or len(items) > MAX_BATCH:
             raise AIError(f'逐题阅读仅支持 1 至 {MAX_BATCH} 道题，本次题单未保存')
         if provider not in {'api', 'codex'} or not isinstance(model, str) or not model.strip() or len(model.strip()) > 150:
@@ -166,61 +203,66 @@ class SelectionReports:
             raise AIError('待阅读题单包含重复题目，本次题单未保存')
         if self.guard:
             self.guard()
+        started = time.monotonic()
+        batch = {'configuration': self._configuration_fingerprint(), 'requested': len(ids), 'completed': 0,
+                 'callback': on_progress or self._progress_callback.get() or self.on_progress}
+        context_token = self._batch_context.set(batch)
         self.active_ai = True
+        self._batch_progress()
+        def details():
+            return {'requested_count': len(ids), 'actual_count': batch['completed'],
+                    'duration_ms': max(0, int((time.monotonic() - started) * 1000))}
         try:
             result = await asyncio.wait_for(self._prepare(selected, ids, provider, model.strip()), MAX_PREPARE_SECONDS)
-            emit_event(self.event_log, 'selection_reports.generated', requested_count=len(ids), actual_count=len(result))
+            emit_event(self.event_log, 'selection_reports.generated', **details())
             return result
         except asyncio.TimeoutError:
-            emit_event(self.event_log, 'selection_reports.failed', 'WARNING', reason='selection_report_timeout', requested_count=len(ids), actual_count=0)
-            raise AIError('逐题阅读耗时超过安全时限，本次题单和报告均未保存，请减少题量或稍后重试') from None
+            emit_event(self.event_log, 'selection_reports.failed', 'WARNING', reason='selection_report_timeout', **details())
+            raise _failure('逐题阅读耗时超过安全时限，本次题单和报告均未保存，请减少题量或稍后重试', 'selection_report_timeout') from None
+        except asyncio.CancelledError:
+            emit_event(self.event_log, 'selection_reports.failed', 'WARNING', reason='selection_report_cancelled', **details())
+            raise
         except AIError as error:
-            emit_event(self.event_log, 'selection_reports.failed', 'WARNING', reason=getattr(error, 'selection_reason', 'selection_report_failed'), requested_count=len(ids), actual_count=0)
+            emit_event(self.event_log, 'selection_reports.failed', 'WARNING',
+                       reason=getattr(error, 'selection_reason', None) or known_failure_reason(error) or 'selection_report_failed', **details())
             raise
         except Exception:
-            emit_event(self.event_log, 'selection_reports.failed', 'WARNING', reason='selection_report_failed', requested_count=len(ids), actual_count=0)
+            emit_event(self.event_log, 'selection_reports.failed', 'WARNING', reason='selection_report_failed', **details())
             raise AIError('逐题阅读或报告保存未完成，本次题单未保存，请重试') from None
         finally:
             self.active_ai = False
+            self._batch_context.reset(context_token)
 
     async def _prepare(self, selected, ids, provider, model):
-        prepared = []
-        # Sequential single-statement calls bound concurrent transport use
-        # and avoid pretending a truncated multi-problem prompt is complete.
-        for item, pid in zip(selected, ids):
-            if self.runtime_guard:
-                self.runtime_guard()
-            statement, fingerprint = await self._read(pid)
-            training = {key: copy.deepcopy(item[key]) for key in (
-                'reason', 'topic_id', 'topic_title', 'mode', 'mode_title', 'training_mode',
-                'stage', 'learning_level', 'difficulty', 'tags', 'template_evidence',
-                'cf_rating_estimate', 'rating_request', 'learner_evidence') if key in item}
-            try:
-                response = await self.ai.complete('selection_read_report', provider, model.strip(),
-                    {'problem_id': pid, 'selection_context': training, 'statement': statement,
-                     'statement_hash': fingerprint,
-                     'reading_limitations': ['只读已提供文字、数学公式和样例；图片地址不表示已理解图片内容；未运行代码。']},
-                    SelectionReadReport)
-                result = SelectionReadReport.model_validate(response.data).model_dump()
-            except ValidationError:
-                raise _failure(f'{pid} 的 AI 阅读报告格式无效，本次题单未保存，请重试', 'selection_report_invalid') from None
-            except AIError:
-                raise
-            except Exception:
-                raise AIError(f'{pid} 的 AI 阅读未完成，本次题单未保存，请重试') from None
-            if result['problem_id'] != pid:
-                raise _failure(f'{pid} 的 AI 阅读报告题号不匹配，本次题单未保存', 'selection_report_invalid')
-            if not result['suitable']:
-                raise _failure(f'{pid} 经完整题面阅读后未确认适合当前训练，本次题单未保存，请重新选题', 'selection_report_rejected')
-            if re.search(r'\b(?:int|void)\s+main\s*\(|public\s+static\s+void\s+main\s*\(|\bfunc\s+main\s*\(|if\s+__name__\s*==', json.dumps(result)):
-                raise _failure(f'{pid} 的 AI 阅读报告包含疑似完整可提交程序，未保存，请重试', 'selection_report_invalid')
-            report_id = uuid.uuid4().hex
-            provenance = {key: value for key, value in getattr(response, 'provenance', {}).items()
-                          if key in {'channel', 'provider', 'vendor', 'protocol', 'model', 'task', 'prompt_version'}
-                          and isinstance(value, str) and len(value) <= 200}
-            prepared.append((report_id, pid, int(time.time()), provider, model.strip(), fingerprint,
-                             json.dumps(result, ensure_ascii=False), json.dumps(provenance, ensure_ascii=False)))
-            item['ai_report_id'] = report_id
+        semaphore = asyncio.Semaphore(MAX_READING_CONCURRENCY)
+        failure = []
+
+        async def read_one(item, pid):
+            async with semaphore:
+                # A released slot must not start another paid call while the
+                # failing sibling is waking the gather/cancellation handler.
+                if failure:
+                    raise failure[0]
+                try:
+                    return await self._prepare_one(item, pid, provider, model)
+                except BaseException as error:
+                    if not failure:
+                        failure.append(error)
+                    raise
+
+        # One full official statement per request, with only two requests in
+        # flight. gather preserves the original selection order.
+        tasks = [asyncio.create_task(read_one(item, pid)) for item, pid in zip(selected, ids)]
+        try:
+            prepared = await asyncio.gather(*tasks)
+        finally:
+            # gather alone does not cancel siblings after one request fails.
+            # Drain all tasks before releasing the batch's active/config scope.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._assert_configuration()
         if self.runtime_guard:
             self.runtime_guard()
         with self.db.connect() as connection:
@@ -229,8 +271,52 @@ class SelectionReports:
                 _, current_hash = self._cached(report[1], connection)
                 if current_hash != report[5]:
                     raise AIError('阅读期间官方题面已变化，本次报告和题单未保存，请重试')
+            self._assert_configuration()
             connection.executemany('INSERT INTO ai_selection_reports VALUES(?,?,?,?,?,?,?,?)', prepared)
         return selected
+
+    async def _prepare_one(self, item, pid, provider, model):
+        self._assert_configuration()
+        if self.runtime_guard:
+            self.runtime_guard()
+        statement, fingerprint = await self._read(pid)
+        self._assert_configuration()
+        training = {key: copy.deepcopy(item[key]) for key in (
+            'reason', 'topic_id', 'topic_title', 'mode', 'mode_title', 'training_mode',
+            'stage', 'learning_level', 'difficulty', 'tags', 'template_evidence',
+            'cf_rating_estimate', 'rating_request', 'learner_evidence') if key in item}
+        try:
+            response = await self.ai.complete('selection_read_report', provider, model.strip(),
+                {'problem_id': pid, 'selection_context': training, 'statement': statement,
+                 'statement_hash': fingerprint,
+                 'reading_limitations': ['只读已提供文字、数学公式和样例；图片地址不表示已理解图片内容；未运行代码。']},
+                SelectionReadReport)
+            result = SelectionReadReport.model_validate(response.data).model_dump()
+        except ValidationError:
+            raise _failure(f'{pid} 的 AI 阅读报告格式无效，本次题单未保存，请重试', 'selection_report_invalid') from None
+        except AIError:
+            raise
+        except Exception:
+            raise AIError(f'{pid} 的 AI 阅读未完成，本次题单未保存，请重试') from None
+        self._assert_configuration()
+        if result['problem_id'] != pid:
+            raise _failure(f'{pid} 的 AI 阅读报告题号不匹配，本次题单未保存', 'selection_report_invalid')
+        if not result['suitable']:
+            raise _failure(f'{pid} 经完整题面阅读后未确认适合当前训练，本次题单未保存，请重新选题', 'selection_report_rejected')
+        if re.search(r'\b(?:int|void)\s+main\s*\(|public\s+static\s+void\s+main\s*\(|\bfunc\s+main\s*\(|if\s+__name__\s*==', json.dumps(result)):
+            raise _failure(f'{pid} 的 AI 阅读报告包含疑似完整可提交程序，未保存，请重试', 'selection_report_invalid')
+        report_id = uuid.uuid4().hex
+        provenance = {key: value for key, value in getattr(response, 'provenance', {}).items()
+                      if key in {'channel', 'provider', 'vendor', 'protocol', 'model', 'task', 'prompt_version'}
+                      and isinstance(value, str) and len(value) <= 200}
+        prepared = (report_id, pid, int(time.time()), provider, model.strip(), fingerprint,
+                    json.dumps(result, ensure_ascii=False), json.dumps(provenance, ensure_ascii=False))
+        item['ai_report_id'] = report_id
+        batch = self._batch_context.get()
+        if batch:
+            batch['completed'] += 1
+            self._batch_progress()
+        return prepared
 
     def get(self, report_id):
         if not isinstance(report_id, str) or not re.fullmatch(r'[0-9a-f]{32}', report_id):

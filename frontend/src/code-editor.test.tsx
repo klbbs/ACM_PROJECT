@@ -284,6 +284,87 @@ const openCompletion = async (view: EditorView) => {
 }
 
 describe('indentation', () => {
+  it.each(['Enter', 'ShiftEnter'])(
+    '%s uses one newline path with or without an open completion and remains undoable',
+    async (key) => {
+      const view = await render({ value: '' })
+      await waitForLanguage(view)
+      const initial = 'int main() {\n    ret'
+      await setDoc(view, initial)
+      await openCompletion(view)
+      await press(view, 'Enter', { shiftKey: key === 'ShiftEnter' })
+      expect(view.state.doc.toString()).toBe(initial + '\n    ')
+      expect(completionStatus(view.state)).toBeNull()
+      await act(async () => { expect(undo(view)).toBe(true) })
+      expect(view.state.doc.toString()).toBe(initial)
+      await press(view, 'Enter', { shiftKey: key === 'ShiftEnter' })
+      expect(view.state.doc.toString()).toBe(initial + '\n    ')
+    },
+  )
+
+  it('preserves deliberately indented blank lines without changing an imported draft', async () => {
+    const original = '\tint x;\n        '
+    const view = await render({ value: original })
+    await waitForLanguage(view)
+    expect(view.state.doc.toString()).toBe(original)
+    await act(async () => view.dispatch({ selection: { anchor: original.length } }))
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe(original + '\n        ')
+    await press(view, 'Enter', { shiftKey: true })
+    expect(view.state.doc.toString()).toBe(original + '\n        \n        ')
+    await setDoc(view, '        ', 4)
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('    \n    ')
+    expect(view.state.selection.main.head).toBe(9)
+  })
+
+  it.each([
+    ['cpp20', 'cpp', 'int main() {\n\tif (ok) {', '        '],
+    ['cpp20', 'cpp', 'int main() {\n\t    if (ok) {', '            '],
+    ['java17', 'java', 'class Main {\n\tvoid run() {', '        '],
+    ['python3', 'python', 'def solve():\n\tif ok:', '        '],
+  ])('normalizes only new %s indentation after mixed whitespace paste', async (id, name, original, expected) => {
+    const view = await render({ value: '', language: id })
+    await waitForLanguage(view, name)
+    await setDoc(view, original)
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe(original + '\n' + expected)
+    expect(view.state.doc.line(view.state.doc.lines).text).not.toContain('\t')
+    await act(async () => { expect(undo(view)).toBe(true) })
+    expect(view.state.doc.toString()).toBe(original)
+  })
+
+  it.each([
+    ['cpp20', 'cpp', 'int main() {\n    std::cou'],
+    ['java17', 'java', 'class Main {\n    ret'],
+  ])('inherits a partially typed identifier in %s', async (id, name, original) => {
+    const view = await render({ value: original, language: id })
+    await waitForLanguage(view, name)
+    await act(async () => view.dispatch({ selection: { anchor: original.length } }))
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe(original + '\n    ')
+  })
+
+  it('retains language-directed dedentation after a closing brace', async () => {
+    const original = 'int main() {\n    if (ok) {\n    }'
+    const view = await render({ value: original })
+    await waitForLanguage(view)
+    await act(async () => view.dispatch({ selection: { anchor: original.length } }))
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe(original + '\n    ')
+  })
+
+  it('keeps read-only code unchanged when Enter or Tab is pressed', async () => {
+    const original = 'int main() {}'
+    const view = await render({ value: original, readOnly: true })
+    await waitForLanguage(view)
+    await press(view, 'Enter')
+    await press(view, 'Enter', { shiftKey: true })
+    await press(view, 'Tab')
+    expect(view.state.doc.toString()).toBe(original)
+    expect(props.onChange).not.toHaveBeenCalled()
+  })
+
   it('inherits the previous indentation and adds a level inside scopes', async () => {
     const view = await render({ value: '' })
     await waitForLanguage(view)
@@ -373,6 +454,44 @@ describe('indentation', () => {
     await openCompletion(view)
     await press(view, 'Tab')
     expect(view.state.doc.toString()).toBe('vector')
+  })
+
+  it('uses four-space Enter and Shift-Enter in Vim insert mode without accepting a completion', async () => {
+    const view = await render({ value: '', settings: { ...defaultEditorSettings, keymap: 'vim' } })
+    await waitForLanguage(view)
+    await act(async () => { await vi.waitFor(() => expect(host.textContent).toContain('NORMAL')) })
+    await press(view, 'i')
+    await setDoc(view, 'int main() {}', 12)
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe('int main() {\n    \n}')
+    expect(view.state.selection.main.head).toBe(17)
+    await setDoc(view, 'int main() {\n    ret')
+    await openCompletion(view)
+    await press(view, 'Enter', { shiftKey: true })
+    expect(view.state.doc.toString()).toBe('int main() {\n    ret\n    ')
+    expect(completionStatus(view.state)).toBeNull()
+  })
+
+  it('does not insert indentation in Vim normal or visual mode and preserves visual editing', async () => {
+    const original = 'alpha\nbeta'
+    const view = await render({ value: original, settings: { ...defaultEditorSettings, keymap: 'vim' } })
+    await waitForLanguage(view)
+    await act(async () => { await vi.waitFor(() => expect(host.textContent).toContain('NORMAL')) })
+    await press(view, 'Enter')
+    expect(view.state.doc.toString()).toBe(original)
+    await press(view, 'v')
+    expect(host.textContent).toContain('VISUAL')
+    await press(view, 'Tab')
+    await press(view, 'Tab', { shiftKey: true })
+    expect(view.state.doc.toString()).toBe(original)
+    await press(view, 'Escape')
+    await press(view, '0')
+    await press(view, 'v')
+    await press(view, 'l')
+    await press(view, 'x')
+    expect(view.state.doc.toString()).toBe('alpha\nta')
+    await press(view, 'u')
+    expect(view.state.doc.toString()).toBe(original)
   })
 
   it('follows the configured indentation unit and tab size', () => {

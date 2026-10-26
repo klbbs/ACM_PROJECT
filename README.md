@@ -1,6 +1,6 @@
 # ACM Lab
 
-当前版本为 0.21.2。扩充四平台专项候选，支持 AI 阅读题面核查缺少标签的细类方法，完善 CF Gym/虚拟参赛提交同步与当日排行榜，修复部分 AtCoder 题集链接。保留模板、登录、日期和难度要求；真实平台可用性与模型判断准确性仍需结合实际使用确认。
+当前版本为 0.21.3。样例输入/输出可独立复制，编辑器统一四空格缩进，专项 AI 生成支持后台进度与刷新恢复，完善 CF 判题、源码读取和限流提示。保留既有跨平台训练与 Gym 榜单同步；真实平台权限和模型效果仍需实际使用确认。
 
 支持个人训练与受邀成员协作的算法工作台：连接 Codeforces、洛谷、牛客和 AtCoder，聚合提交记录，调用 AI 生成能力分析与训练计划，再从真实题库中选择合适的练习。
 
@@ -151,7 +151,7 @@ AI 选题先根据候选元信息初选，再逐题读取官方题面、交给�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.21.2.zip
+python3 scripts/verify_release.py releases/acm-lab-0.21.3.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

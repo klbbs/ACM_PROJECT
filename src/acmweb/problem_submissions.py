@@ -146,6 +146,7 @@ class ProblemSubmissions:
         status = {**self.db.get(key, {}), 'status':'running'}
         self.db.set(key, status)
         try:
+            collected_at = int(time.time())
             out, coverage = await asyncio.to_thread(self._collect, pid, account)
             # Account edits/removal during collection cannot import into a new binding.
             if self.account(pid, handle) != account:
@@ -162,7 +163,7 @@ class ProblemSubmissions:
             out.complete = False
             store = Store(self.db.path)
             try:
-                store.save('problem-'+uuid.uuid4().hex, int(time.time()), out, capture_snapshot=False)
+                store.save('problem-'+uuid.uuid4().hex, collected_at, out, capture_snapshot=False)
             finally:
                 store.db.close()
             result = {'problem_id':pid, 'handle':handle, 'count':len(out.submissions), 'complete':complete,
@@ -175,6 +176,15 @@ class ProblemSubmissions:
                     self.db.set(key, {**status, **result, 'status':'failed', 'finished_at':int(time.time())})
                     raise AIError('本题提交记录未能读取：'+out.error+'；原记录已保留')
             self.db.set(key, {**status, **result, 'status':'completed' if complete else 'partial', 'finished_at':int(time.time())})
+            # The explicit problem-sync path may succeed while a polling API
+            # request failed. Reconcile only exact, already known receipts.
+            try:
+                await self.remote.reconcile_collected(pid, handle, out.submissions, collected_at=collected_at)
+            except Exception:
+                # Optional intent reconciliation cannot erase successful judge
+                # collection. Cancellation still propagates to the outer guard.
+                result['warnings'] = [*result['warnings'], '判题已同步，远程任务状态未完成对齐；原任务保留，可稍后刷新']
+                self.db.set(key, {**status, **result, 'status':'completed' if complete else 'partial', 'finished_at':int(time.time())})
             # Judge results from the local send path can now be reviewed without
             # associating the editor's current text with an unrelated submission.
             for item in self.listing(pid, handle)['items']:
@@ -217,7 +227,10 @@ class ProblemSubmissions:
         try:
             observed = driver.source(pid, handle, payload.submission_id)
         except SubmissionError as exc:
-            raise HTTPException(400, '判题记录保留；官方源码暂不可读：'+str(exc)) from None
+            if exc.reason == 'rate_limited':
+                raise HTTPException(429, '官方平台限制源码读取频率；判题记录已保留，请稍后重试',
+                                    headers={'Retry-After':'60'}) from None
+            raise HTTPException(400, str(exc)) from None
         finally:
             driver.close()
         # Same owner/problem/time validation as actual workbench submissions.

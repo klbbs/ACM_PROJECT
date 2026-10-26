@@ -57,6 +57,7 @@ def remote_site(tmp_path, monkeypatch):
 
     monkeypatch.setattr(RemoteSubmissions, '_driver', staticmethod(lambda *_: SyntheticDriver()))
     watch = RemoteSubmissions.watch
+    plan['original_watch'] = watch
 
     async def single_judge(self, rid, driver, **kwargs):
         return await watch(self, rid, driver, rounds=1)
@@ -120,6 +121,188 @@ def assert_public(response):
     assert SOURCE not in response.text and COOKIE not in response.text
     if isinstance(response.json(), dict):
         assert 'code' not in response.json() and 'account_revision' not in response.json()
+
+
+def test_problem_sync_reconciles_known_receipt_without_reading_or_resending_code(remote_site, monkeypatch):
+    from ojcrawler.models import Collection, Submission
+    from test_remote_judges import cf_record
+    request, owner, _, child, plan = remote_site
+    plan['verdict'] = 'PENDING'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'judging')
+    # Let the fixture's one-round poll finish, then the independent synchronization
+    # obtains a final official record for that exact already accepted SID.
+    for _ in range(100):
+        if not child.state.jobs.tasks:
+            break
+        time.sleep(.01)
+    raw = cf_record(12345)
+    item = Submission('12345', '4-A', raw['creationTimeSeconds'], 'WA', language='GNU C++20', raw=raw)
+    monkeypatch.setattr(child.state.problem_submissions, '_collect',
+        lambda *_: (Collection('codeforces', 'demo', submissions=[item], complete=True), 'synthetic official contest'))
+    result = asyncio.run(child.state.problem_submissions.sync('codeforces:4-A', 'demo'))
+    assert result['complete']
+    completed = request(owner, 'GET', '/api/remote-submissions/' + rid).json()
+    assert completed['status'] == 'completed' and completed['verdict'] == 'WA'
+    attempt = child.state.workbench.attempt(completed['attempt_id'])
+    assert attempt['code'] == SOURCE and attempt['code_verified']
+    assert len(plan['sent']) == 1  # No second send or unrelated current draft.
+
+
+def test_read_only_platform_budget_is_separate_from_ai_send_budget(remote_site):
+    request, owner, _, _, _ = remote_site
+    # Successful options requests used to exhaust the shared six-per-minute
+    # cost allowance before reading code or sending once.
+    for _ in range(7):
+        assert request(owner, 'POST', '/api/remote-submissions/options',
+            {'problem_id': '4-A', 'handle': 'demo'}).status_code == 200
+    queued = request(owner, 'POST', '/api/remote-submissions', payload())
+    assert queued.status_code == 200
+    for _ in range(13):
+        assert request(owner, 'POST', '/api/remote-submissions/options',
+            {'problem_id': '4-A', 'handle': 'demo'}).status_code == 200
+    limited = request(owner, 'POST', '/api/remote-submissions/options',
+        {'problem_id': '4-A', 'handle': 'demo'})
+    assert limited.status_code == 429 and '只读查询' in limited.json()['detail']
+    assert int(limited.headers['Retry-After']) > 0
+
+
+@pytest.mark.parametrize('late_error', [False, True])
+def test_late_watch_cannot_undo_a_final_result_from_explicit_problem_sync(remote_site, late_error):
+    from ojcrawler.models import Submission
+    from test_remote_judges import cf_record
+    request, owner, _, child, plan = remote_site
+    plan['verdict'] = 'PENDING'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'judging')
+    for _ in range(100):
+        if not child.state.jobs.tasks:
+            break
+        time.sleep(.01)
+    entered, release = threading.Event(), threading.Event()
+    class SlowJudge:
+        def judge(self, *_):
+            entered.set()
+            assert release.wait(5)
+            if late_error:
+                raise SubmissionError('network')
+            return {'id': '12345', 'account': 'demo', 'problem_id': '4-A',
+                'submitted_at': int(time.time()), 'verdict': 'PENDING'}
+    async def race():
+        watcher = asyncio.create_task(child.state.remote_submissions.watch(rid, SlowJudge()))
+        while not entered.is_set():
+            await asyncio.sleep(.001)
+        try:
+            raw = cf_record(12345)
+            await child.state.remote_submissions.reconcile_collected('codeforces:4-A', 'demo',
+                [Submission('12345', '4-A', raw['creationTimeSeconds'], 'WA', raw=raw)])
+        finally:
+            release.set()
+        await watcher
+    asyncio.run(race())
+    row = request(owner, 'GET', '/api/remote-submissions/' + rid).json()
+    assert row['status'] == 'completed' and row['verdict'] == 'WA'
+    assert child.state.workbench.attempt(row['attempt_id'])['verdict'] == 'WA'
+    assert len(plan['sent']) == 1
+
+
+def test_upstream_judge_limit_stops_polling_and_enforces_manual_cooldown(remote_site):
+    request, owner, _, child, plan = remote_site
+    plan['verdict'] = 'PENDING'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'judging')
+    for _ in range(100):
+        if not child.state.jobs.tasks:
+            break
+        time.sleep(.01)
+    class LimitedJudge:
+        calls = 0
+        def judge(self, *_):
+            self.calls += 1
+            raise SubmissionError('rate_limited')
+    judge = LimitedJudge()
+    asyncio.run(plan['original_watch'](child.state.remote_submissions, rid, judge, rounds=3))
+    row = request(owner, 'GET', '/api/remote-submissions/' + rid).json()
+    assert row['reason'] == 'rate_limited' and judge.calls == 1
+    response = request(owner, 'POST', '/api/remote-submissions/' + rid + '/refresh', {})
+    assert response.status_code == 429 and int(response.headers['Retry-After']) > 0
+    assert len(plan['sent']) == 1
+
+
+@pytest.mark.parametrize('evidence', ['unknown_sid', 'other_problem', 'other_author'])
+def test_problem_sync_reconciliation_never_guesses_a_receipt(remote_site, evidence):
+    """Only the exact already-sent sid for this account/problem may complete it."""
+    from ojcrawler.models import Submission
+    from test_remote_judges import cf_record
+    request, owner, _, child, plan = remote_site
+    plan['verdict'] = 'PENDING'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'judging')
+    for _ in range(150):
+        if not child.state.jobs.tasks:
+            break
+        time.sleep(.01)
+    before = request(owner, 'GET', '/api/remote-submissions/' + rid).json()
+    assert before['status'] == 'judging' and before['verdict'] == 'PENDING'
+    raw = {'unknown_sid': lambda: cf_record(98765),
+           'other_problem': lambda: cf_record(12345, problem={'contestId': 5, 'index': 'A'}),
+           'other_author': lambda: cf_record(12345, author={'members': [{'handle': 'stranger'}]}),
+           }[evidence]()
+    item = Submission(str(raw['id']), '4-A', raw['creationTimeSeconds'], 'WA', raw=raw)
+    asyncio.run(child.state.remote_submissions.reconcile_collected('codeforces:4-A', 'demo', [item]))
+    after = request(owner, 'GET', '/api/remote-submissions/' + rid).json()
+    assert after['status'] == 'judging' and after['verdict'] == before['verdict']
+    assert after['attempt_id'] == before['attempt_id']
+    assert child.state.workbench.attempt(after['attempt_id'])['verdict'] == 'PENDING'
+    assert len(plan['sent']) == 1
+
+
+def test_late_problem_sync_does_not_replay_a_completed_receipt(remote_site, monkeypatch):
+    from ojcrawler.models import Collection, Submission
+    from test_remote_judges import cf_record
+    request, owner, _, child, plan = remote_site
+    completions = []
+    monkeypatch.setattr(child.state.daily, 'complete', lambda payload: completions.append(payload.problem_id))
+    plan['verdict'] = 'AC'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    done = wait_intent(request, owner, rid, 'completed')
+    assert done['verdict'] == 'AC' and completions == ['codeforces:4-A']
+    raw = cf_record(12345)
+    item = Submission('12345', '4-A', raw['creationTimeSeconds'], 'AC', language='GNU C++20', raw=raw)
+    monkeypatch.setattr(child.state.problem_submissions, '_collect',
+        lambda *_: (Collection('codeforces', 'demo', submissions=[item], complete=True), 'synthetic late sync'))
+    result = asyncio.run(child.state.problem_submissions.sync('codeforces:4-A', 'demo'))
+    assert result['count'] == 1
+    row = request(owner, 'GET', '/api/remote-submissions/' + rid).json()
+    assert row['status'] == 'completed' and row['verdict'] == 'AC' and row['attempt_id'] == done['attempt_id']
+    assert child.state.workbench.attempt(row['attempt_id'])['code_verified']
+    assert completions == ['codeforces:4-A']  # The finished receipt is not replayed.
+    with child.state.database.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM wb_attempts').fetchone()[0] == 1
+    assert len(plan['sent']) == 1
+
+
+def test_upstream_limit_cooldown_expires_without_resending_code(remote_site):
+    request, owner, _, child, plan = remote_site
+    plan['verdict'] = 'PENDING'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'judging')
+    for _ in range(100):
+        if not child.state.jobs.tasks:
+            break
+        time.sleep(.01)
+    class LimitedJudge:
+        def judge(self, *_):
+            raise SubmissionError('rate_limited')
+    asyncio.run(plan['original_watch'](child.state.remote_submissions, rid, LimitedJudge(), rounds=3))
+    assert request(owner, 'POST', '/api/remote-submissions/' + rid + '/refresh', {}).status_code == 429
+    with child.state.database.connect() as conn:
+        conn.execute('UPDATE wb_remote_submissions SET updated_at=? WHERE id=?', (int(time.time()) - 61, rid))
+    plan['verdict'] = 'WA'
+    assert request(owner, 'POST', '/api/remote-submissions/' + rid + '/refresh', {}).status_code == 200
+    done = wait_intent(request, owner, rid, 'completed')
+    assert done['verdict'] == 'WA'
+    assert len(plan['sent']) == 1
 
 
 def test_real_dispatch_csrf_owner_isolation_and_request_key_idempotency(remote_site):

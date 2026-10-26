@@ -193,16 +193,17 @@ def test_timeout_does_not_persist_partial_reports_or_leave_busy_flag(setup, monk
     assert count(db) == 0 and not service.active_ai
 
 
-def test_concurrent_prepare_is_rejected_and_batch_calls_remain_sequential(setup):
+def test_concurrent_prepare_is_rejected_while_two_batch_calls_are_in_flight(setup):
     service, db, ai, _, _ = setup
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
-        active = 0
+        active, peak = 0, 0
         async def pending(task, provider, model, payload, schema):
-            nonlocal active
+            nonlocal active, peak
             active += 1
-            assert active == 1
-            entered.set()
+            peak = max(peak, active)
+            if active == 2:
+                entered.set()
             await release.wait()
             active -= 1
             return SimpleNamespace(data=report(payload['problem_id']), provenance={})
@@ -212,7 +213,9 @@ def test_concurrent_prepare_is_rejected_and_batch_calls_remain_sequential(setup)
         with pytest.raises(AIError, match='正在逐题阅读'):
             await service.prepare([{'id': PID}], 'api', 'model')
         release.set()
-        return await first
+        result = await first
+        assert peak == 2 and active == 0
+        return result
     assert len(asyncio.run(scenario())) == 2 and count(db) == 2
 
 

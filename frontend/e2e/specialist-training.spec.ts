@@ -124,6 +124,9 @@ async function install(page: Page, initiallySaved = true) {
   const state = {
     plans: initiallySaved ? [savedPlan] : ([] as (typeof savedPlan)[]),
     generation: [] as any[],
+    job: null as any,
+    requestKey: '',
+    autoComplete: true,
     assessments: [] as any[],
     chats: [] as any[],
     failGeneration: false,
@@ -131,35 +134,67 @@ async function install(page: Page, initiallySaved = true) {
     reviews: new Map<number, any>(),
   }
   await page.route('**/api/ai/settings', (route) =>
-    route.fulfill({ json: { channel: 'api', has_key: true, codex_enabled: false, model: 'synthetic-coach', ready: true } }),
+    route.fulfill({
+      json: {
+        channel: 'api',
+        has_key: true,
+        codex_enabled: false,
+        model: 'synthetic-coach',
+        ready: true,
+      },
+    }),
   )
   await page.route('**/api/training/topics', (route) => route.fulfill({ json: topics }))
+  await page.route('**/api/training/generation*', (route) => {
+    const key = new URL(route.request().url()).searchParams.get('request_key')
+    return route.fulfill({ json: { job: key && key !== state.requestKey ? null : state.job } })
+  })
   await page.route('**/api/training/plans**', async (route) => {
     const request = route.request(),
       path = new URL(request.url()).pathname
-    if (path === '/api/training/plans') {
+    if (path === '/api/training/plans/generate') {
       if (request.method() === 'POST') {
         state.generation.push(request.postDataJSON())
-        if (state.failGeneration)
-          return route.fulfill({
-            status: 502,
-            json: { detail: '隔离模拟 AI 无法生成有效递进题单' },
-          })
+        state.requestKey = request.postDataJSON().request_key
+        if (state.failGeneration) {
+          state.job = {
+            id: 'failed-background',
+            kind: 'specialist_generate',
+            status: 'failed',
+            error: '隔离模拟 AI 无法生成有效递进题单',
+            result: { stage: 'reading' },
+          }
+          return route.fulfill({ json: state.job })
+        }
         const body = request.postDataJSON()
         const generated = {
           ...savedPlan,
           mode: body.mode,
-          rating_request: body.cf_minimum != null ? { minimum: body.cf_minimum, maximum: body.cf_maximum } : undefined,
+          rating_request:
+            body.cf_minimum != null
+              ? { minimum: body.cf_minimum, maximum: body.cf_maximum }
+              : undefined,
           items: Array.from({ length: body.count }, (_, position) => ({
             ...savedPlan.items[Math.min(position, savedPlan.items.length - 1)],
             position,
           })),
         }
-        state.plans = [generated]
-        return route.fulfill({ json: generated })
+        state.job = {
+          id: 'synthetic-background',
+          kind: 'specialist_generate',
+          status: state.autoComplete ? 'completed' : 'running',
+          result: {
+            stage: state.autoComplete ? 'completed' : 'reading',
+            requested_count: body.count,
+            actual_count: state.autoComplete ? body.count : 1,
+            ...(state.autoComplete ? { plan: generated } : {}),
+          },
+        }
+        if (state.autoComplete) state.plans = [generated]
+        return route.fulfill({ json: state.job })
       }
-      return route.fulfill({ json: { plans: state.plans } })
     }
+    if (path === '/api/training/plans') return route.fulfill({ json: { plans: state.plans } })
     const match = path.match(/\/items\/(\d+)\/(assessment|chat)$/)
     if (!match) return route.fulfill({ json: savedPlan })
     const position = Number(match[1])
@@ -262,6 +297,7 @@ test('training hub generates an explicit progressive plan, opens its first probl
       model: 'synthetic-coach',
       cf_minimum: 1000,
       cf_maximum: 2000,
+      request_key: expect.stringMatching(/^[a-f0-9]{32}$/),
     },
   ])
   await expect(panel.locator('.specialist-step').first()).toContainText('模板入门')
@@ -357,7 +393,7 @@ test('failed generation retains saved training and late item results cannot leak
   state.failGeneration = true
   await action.click()
   await expect(panel.getByRole('alert')).toContainText('隔离模拟 AI 无法生成有效递进题单')
-  await expect(panel.getByRole('alert')).toContainText('失败请求不会自动重试')
+  await expect(panel).toContainText('失败不会自动重试收费')
   await expect(panel.getByRole('heading', { name: savedPlan.title, exact: true })).toBeVisible()
   const first = panel.locator('.specialist-step').nth(0),
     second = panel.locator('.specialist-step').nth(1)
@@ -382,4 +418,90 @@ test('failed generation retains saved training and late item results cannot leak
   } finally {
     release()
   }
+})
+
+test('slow background reading survives navigation and reload and polls without generating again', async ({
+  page,
+}) => {
+  const state = await install(page)
+  state.autoComplete = false
+  await page.goto('/')
+  await openTraining(page)
+  const panel = page.locator('.specialist-training')
+  await generateAction(panel).click()
+  await expect(panel.locator('.specialist-generation-progress')).toContainText(
+    'AI 正在读取题面并整理题目报告',
+  )
+  await expect(panel.locator('.specialist-generation-progress')).toContainText(
+    '已完成阅读 1 / 4 道',
+  )
+  await expect(panel.getByRole('heading', { name: savedPlan.title, exact: true })).toBeVisible()
+  await expect(generateAction(panel)).toBeDisabled()
+  await page.getByRole('tab', { name: '每日训练', exact: true }).click()
+  await page.getByRole('tab', { name: '专项训练', exact: true }).click()
+  await expect(panel.locator('.specialist-generation-progress')).toContainText(
+    '已完成阅读 1 / 4 道',
+  )
+  await page.reload()
+  await openTraining(page)
+  await expect(panel.locator('.specialist-generation-progress')).toContainText(
+    '已完成阅读 1 / 4 道',
+  )
+  const next = { ...savedPlan, id: 'slow-finished', title: '隔离慢模型后台题单' }
+  state.plans = [next, savedPlan]
+  state.job = {
+    ...state.job,
+    status: 'completed',
+    result: { stage: 'completed', requested_count: 4, actual_count: 4, plan: next },
+  }
+  await expect(panel.getByRole('heading', { name: next.title, exact: true })).toBeVisible({
+    timeout: 7000,
+  })
+  await expect(generateAction(panel)).toBeEnabled()
+  expect(state.generation).toHaveLength(1)
+  expect(state.generation[0].request_key).toMatch(/^[a-f0-9]{32}$/)
+})
+
+test('an interrupted POST recovers its own request key after reload and never accepts an older completed plan', async ({
+  page,
+}) => {
+  const state = await install(page)
+  state.requestKey = 'a'.repeat(32)
+  state.job = {
+    id: 'older',
+    kind: 'specialist_generate',
+    status: 'completed',
+    result: { plan: savedPlan },
+  }
+  await page.route('**/api/training/plans/generate', async (route) => {
+    state.generation.push(route.request().postDataJSON())
+    await route.abort('failed')
+  })
+  await page.goto('/')
+  await openTraining(page)
+  const panel = page.locator('.specialist-training')
+  await generateAction(panel).click()
+  await expect(panel.getByRole('alert')).toContainText('本次生成请求尚未被后台确认')
+  await expect(generateAction(panel)).toBeDisabled()
+  expect(state.generation).toHaveLength(1)
+  const key = state.generation[0].request_key
+  expect(key).toMatch(/^[a-f0-9]{32}$/)
+  expect(key).not.toBe(state.requestKey)
+  await page.reload()
+  await openTraining(page)
+  await expect(panel.getByRole('alert')).toContainText('本次生成请求尚未被后台确认')
+  await expect(generateAction(panel)).toBeDisabled()
+  const next = { ...savedPlan, id: 'exact-request', title: '隔离本次请求对应题单' }
+  state.requestKey = key
+  state.job = {
+    id: 'confirmed',
+    kind: 'specialist_generate',
+    status: 'completed',
+    result: { plan: next },
+  }
+  state.plans = [next, savedPlan]
+  await panel.getByRole('button', { name: '重新查询生成状态', exact: true }).click()
+  await expect(panel.getByRole('heading', { name: next.title, exact: true })).toBeVisible()
+  await expect(generateAction(panel)).toBeEnabled()
+  expect(state.generation).toHaveLength(1)
 })

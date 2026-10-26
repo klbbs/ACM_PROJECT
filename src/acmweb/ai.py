@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import tempfile
@@ -10,11 +11,12 @@ from urllib.parse import urlsplit
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .codex_bridge import AIError
 from .providers import PRESETS
 from .prompts import build_prompt, PROMPT_VERSION
+from .runtime_logs import emit_event
 
 AI_TIMEOUT_ERROR = 'AI 请求超时；未自动重试，请检查网络或调整超时设置'
 AI_NETWORK_ERROR = 'AI 网络连接失败；未自动重试，请检查提供方地址和服务器网络'
@@ -24,6 +26,16 @@ MODEL_TIMEOUT_ERROR = '模型列表请求超时；请稍后重试或手动填写
 MODEL_NETWORK_ERROR = '模型列表网络连接失败；请检查提供方地址和服务器网络'
 MODEL_JSON_ERROR = '模型列表响应不是有效 JSON；请检查提供方 API 地址'
 MODEL_STRUCTURE_ERROR = '模型列表 JSON 响应结构无效；请检查提供方协议或手动填写模型 ID'
+AI_TRUNCATED_ERROR = ('AI 响应达到输出 token 上限而被截断，未保存；思考模型的预算可能同时包含思考与最终回答。'
+                      '请在连接与设置中自行调整 token 上限或思考强度后重试；不会自动增加预算或重试')
+
+
+def _ai_failure(message, reason):
+    error = AIError(message)
+    # Locally-owned codes only, shared by task logs and selection-report logs.
+    error.reason = reason
+    error.selection_reason = reason
+    return error
 
 
 @dataclass(frozen=True)
@@ -81,10 +93,16 @@ class ProviderConfig(BaseModel):
     output_mode: Literal['auto','schema','json','prompt'] = 'auto'
     thinking: Literal['auto','enabled','disabled'] = 'auto'
     reasoning_effort: Literal['auto','low','medium','high','max'] = 'auto'
-    max_output_tokens: int = Field(default=8192,ge=256,le=32768)
+    max_output_tokens: int = Field(default=8192,ge=256,le=131072)
     timeout: int = Field(default=180,ge=30,le=240)
     temperature: float | None = Field(default=None,ge=0,le=2)
     api_key: str | None = Field(default=None,repr=False,max_length=1000)
+
+    @model_validator(mode='after')
+    def output_budget_for_provider(self):
+        if self.max_output_tokens > 32768 and self.vendor != 'deepseek':
+            raise ValueError('当前提供方的输出 token 上限为 32768；DeepSeek 可自行设置至 131072')
+        return self
 
 
 class AIProvider:
@@ -94,10 +112,19 @@ class AIProvider:
         self.config_lock=threading.Lock()
         self._request_config = ContextVar('acm_ai_config', default=None)
         self._request_key = ContextVar('acm_ai_key', default=None)
+        self._request_metrics = ContextVar('acm_ai_metrics', default=None)
+        self.event_log = None
 
     @staticmethod
     def scope(config):
         return hashlib.sha256(config['base_url'].rstrip('/').encode()).hexdigest()
+
+    def configuration_fingerprint(self):
+        """Request-local change detector; never persist or log this digest."""
+        with self.config_lock:
+            config = self.config()
+            key = self.key(config)
+        return hashlib.sha256(json.dumps({'config': config, 'key': key}, sort_keys=True).encode()).hexdigest()
 
     def key(self, config=None):
         config = config or self.config()
@@ -303,6 +330,11 @@ class AIProvider:
         provenance.update(task=task, prompt_version=PROMPT_VERSION)
         config_token = self._request_config.set(config)
         key_token = self._request_key.set(key)
+        metrics = {'ai_task': task, 'ai_vendor': provenance['vendor'], 'ai_protocol': provenance['protocol']}
+        if config is not None:
+            metrics['max_output_tokens'] = config['max_output_tokens']
+        metrics_token = self._request_metrics.set(metrics)
+        started = time.monotonic()
         try:
             if provider == 'codex':
                 if self.codex is None or not getattr(self.codex, 'enabled', True):
@@ -317,11 +349,50 @@ class AIProvider:
                     clean = clean.split('\n', 1)[1].rsplit('```', 1)[0]
                 data = schema.model_validate_json(clean).model_dump()
             except (ValueError, TypeError, AttributeError, IndexError):
-                raise AIError('AI 输出格式不符合任务约束，请换用支持 JSON 输出的模型后重试') from None
+                raise _ai_failure('AI 输出格式不符合任务约束，请检查 JSON 输出模式或换用支持 JSON 输出的模型后重试',
+                                  'ai_invalid_output') from None
+            emit_event(self.event_log, 'ai.completed', duration_ms=round((time.monotonic()-started)*1000), **metrics)
             return AIResult(data=data, provenance=provenance)
+        except BaseException as error:
+            reason = (getattr(error, 'reason', None) if isinstance(error, AIError) else None)
+            if reason is None:
+                reason = 'ai_cancelled' if isinstance(error, asyncio.CancelledError) else 'ai_task_failed'
+            if isinstance(error, AIError):
+                error.reason = reason
+                error.selection_reason = reason
+                error.ai_task = task
+            emit_event(self.event_log, 'ai.failed', 'WARNING', reason=reason,
+                       duration_ms=round((time.monotonic()-started)*1000), **metrics)
+            raise
         finally:
+            self._request_metrics.reset(metrics_token)
             self._request_key.reset(key_token)
             self._request_config.reset(config_token)
+
+    def _capture_response_metrics(self, body):
+        """Copy only bounded numeric usage; never retain upstream strings or content."""
+        metrics = self._request_metrics.get()
+        if metrics is None or not isinstance(body, dict):
+            return
+        usage = body.get('usage')
+        if not isinstance(usage, dict):
+            return
+        for destination, sources in {
+            'input_tokens': ('input_tokens', 'prompt_tokens'),
+            'output_tokens': ('output_tokens', 'completion_tokens'),
+        }.items():
+            for source in sources:
+                value = usage.get(source)
+                if type(value) is int and 0 <= value <= 10**9:
+                    metrics[destination] = value
+                    break
+        for field in ('output_tokens_details', 'completion_tokens_details'):
+            details = usage.get(field)
+            if isinstance(details, dict):
+                value = details.get('reasoning_tokens')
+                if type(value) is int and 0 <= value <= 10**9:
+                    metrics['reasoning_tokens'] = value
+                    break
 
     async def generate(self, provider, model, context, candidates=None, goal="", task='analysis'):
         if not model or len(model)>150:
@@ -367,7 +438,7 @@ class AIProvider:
 
     async def _api_generate(self, model, prompt, schema):
         config=self._request_config.get() or self.config()
-        if not self.key(config):raise AIError('尚未为当前 API 地址配置 Key，请保存该提供方的密钥')
+        if not self.key(config):raise _ai_failure('尚未为当前 API 地址配置 Key，请保存该提供方的密钥', 'ai_key_missing')
         instruction='Return only a JSON object matching this schema: '+json.dumps(schema)
         mode=config['output_mode']
         if mode=='auto':mode='schema' if config['protocol']=='responses' else 'prompt' if config['protocol']=='anthropic' else 'json'
@@ -391,37 +462,64 @@ class AIProvider:
             if config['vendor'] in {'qwen','qwen_global'} and config['thinking']!='auto':payload['enable_thinking']=config['thinking']=='enabled'
             if config['vendor'] in {'openai','deepseek','moonshot','gemini'} and config['reasoning_effort']!='auto':payload['reasoning_effort']=config['reasoning_effort']
         if config['temperature'] is not None:payload['temperature']=config['temperature']
+        metrics = self._request_metrics.get()
+        if metrics is None:
+            metrics = {}
         try:
             async with httpx.AsyncClient(timeout=config['timeout'],follow_redirects=False) as client:
                 self.authorize_host(config)
                 response=await client.post(self.validate_url(config['base_url'])+path,json=payload,headers=self.headers(config))
+            if type(response.status_code) is int and 100 <= response.status_code <= 599:
+                metrics['upstream_status'] = response.status_code
             if response.status_code!=200:
                 reasons={401:'密钥无效或区域不匹配',403:'账号或模型权限不足',404:'地址或模型不存在',429:'额度不足或触发限流',400:'模型不支持当前参数，请检查输出模式、思考设置和 token 上限'}
-                raise AIError(f"AI 请求失败，HTTP {response.status_code}：{reasons.get(response.status_code,'服务暂不可用')}（未自动重试）")
+                raise _ai_failure(f"AI 请求失败，HTTP {response.status_code}：{reasons.get(response.status_code,'服务暂不可用')}（未自动重试）", 'ai_upstream_http')
             body=response.json()
             if not isinstance(body,dict):raise ValueError('invalid response')
+            self._capture_response_metrics(body)
             if path=='/responses':
-                if body.get('status') not in {None,'completed'}:raise AIError('AI 响应未完成，未保存报告')
+                if body.get('status') not in {None,'completed'}:
+                    metrics['finish_reason'] = 'incomplete'
+                    details = body.get('incomplete_details')
+                    if isinstance(details, dict) and details.get('reason') == 'max_output_tokens':
+                        metrics['finish_reason'] = 'length'
+                        raise _ai_failure(AI_TRUNCATED_ERROR, 'ai_output_truncated')
+                    raise _ai_failure('AI 响应未完成，未保存报告；请检查提供方状态后手动重试', 'ai_response_incomplete')
+                metrics['finish_reason'] = 'stop'
                 text=''.join(c.get('text','') for item in body.get('output',[]) for c in item.get('content',[]) if c.get('type')=='output_text')
             elif path=='/messages':
-                if body.get('stop_reason')!='end_turn':raise AIError('Claude 响应被截断或未正常结束')
+                if body.get('stop_reason')!='end_turn':
+                    if body.get('stop_reason') == 'max_tokens':
+                        metrics['finish_reason'] = 'length'
+                        raise _ai_failure(AI_TRUNCATED_ERROR, 'ai_output_truncated')
+                    metrics['finish_reason'] = 'incomplete'
+                    raise _ai_failure('Claude 响应未正常结束，未保存报告；请检查输出设置后手动重试', 'ai_response_incomplete')
+                metrics['finish_reason'] = 'stop'
                 text=''.join(c.get('text','') for c in body.get('content',[]) if c.get('type')=='text')
             else:
                 choice=body['choices'][0]
-                if choice.get('finish_reason') not in {None,'stop'}:raise AIError('AI 响应被截断，未保存报告')
+                finish = choice.get('finish_reason')
+                metrics['finish_reason'] = finish if finish in {'stop', 'length', 'content_filter', 'tool_calls'} else 'unknown'
+                if finish == 'length':
+                    raise _ai_failure(AI_TRUNCATED_ERROR, 'ai_output_truncated')
+                if finish == 'content_filter':
+                    raise _ai_failure('AI 提供方拒绝生成此次内容，未保存报告；请检查题面材料或联系提供方', 'ai_response_refused')
+                if finish not in {None,'stop'}:
+                    raise _ai_failure('AI 未返回正常结束的最终回答，未保存报告；当前任务需要直接返回 JSON，不支持工具调用', 'ai_response_incomplete')
                 text=choice['message'].get('content')
                 if isinstance(text,list):text=''.join(c.get('text','') for c in text if c.get('type')=='text')
-            if not isinstance(text,str) or not text.strip():raise AIError('模型没有返回最终文本（思考内容不会作为答案）')
+            if not isinstance(text,str) or not text.strip():
+                raise _ai_failure('模型没有返回最终文本，未保存报告（思考内容不会作为答案）；请检查输出 token 上限、思考设置和模型输出模式', 'ai_empty_final')
             clean=text.strip()
             if clean.startswith('```'):clean=clean.split('\n',1)[1].rsplit('```',1)[0]
             parsed=json.loads(clean)
-            if not isinstance(parsed,dict):raise AIError('AI 输出必须为 JSON 对象')
+            if not isinstance(parsed,dict):raise _ai_failure('AI 输出必须为 JSON 对象；请检查 JSON 输出模式后重试', 'ai_invalid_output')
             return json.dumps(parsed,ensure_ascii=False)
         except httpx.TimeoutException:
-            raise AIError(AI_TIMEOUT_ERROR) from None
+            raise _ai_failure(AI_TIMEOUT_ERROR, 'ai_timeout') from None
         except httpx.HTTPError:
-            raise AIError(AI_NETWORK_ERROR) from None
+            raise _ai_failure(AI_NETWORK_ERROR, 'ai_network') from None
         except json.JSONDecodeError:
-            raise AIError(AI_JSON_ERROR) from None
+            raise _ai_failure(AI_JSON_ERROR, 'ai_invalid_json') from None
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            raise AIError(AI_STRUCTURE_ERROR) from None
+            raise _ai_failure(AI_STRUCTURE_ERROR, 'ai_invalid_structure') from None

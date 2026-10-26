@@ -256,6 +256,23 @@ test('statement renders readable math and images with usable links on failure', 
   await expect(page.locator('.statement-check summary')).toContainText('1 张图片')
 })
 
+test('sample input and output have independent copy buttons without changing the editor', async ({ page }) => {
+  await reset(page)
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{
+      writeText: async (text: string) => { (window as any).__sampleCopied = text },
+    }})
+  })
+  await open(page)
+  await page.getByLabel('源代码', {exact:true}).fill('int keep_my_draft = 1;')
+  await page.getByRole('button', {name:'复制样例输入 1',exact:true}).click()
+  await expect.poll(() => page.evaluate(() => (window as any).__sampleCopied)).toBe('1\n2')
+  await expect(page.getByRole('button', {name:'复制样例输入 1',exact:true})).toContainText('已复制')
+  await page.getByRole('button', {name:'复制样例输出 1',exact:true}).click()
+  await expect.poll(() => page.evaluate(() => (window as any).__sampleCopied)).toBe('3')
+  await expect(page.getByLabel('源代码', {exact:true})).toHaveText('int keep_my_draft = 1;')
+})
+
 test('Enter closes completion and inserts a newline without accepting its keyword', async ({
   page,
 }) => {
@@ -276,6 +293,74 @@ test('Enter closes completion and inserts a newline without accepting its keywor
   await editor.fill('')
   await editor.press('Tab')
   await expect.poll(() => editor.textContent()).toBe('    ')
+})
+
+test('four-space indentation survives incomplete words, brace splitting, mixed paste and language changes', async ({ page }) => {
+  await open(page)
+  const editor = page.getByLabel('源代码', { exact: true })
+  const savedCode = async () => {
+    await editor.press('Control+s')
+    return (await (await page.request.get('/api/workbench/problem/4-A')).json()).draft.code
+  }
+  await editor.fill('int main() {\n    ret')
+  await editor.press('Control+Space')
+  await expect(page.getByRole('option').filter({ hasText: /^return/ })).toBeVisible()
+  await editor.press('Enter')
+  await expect.poll(savedCode).toBe('int main() {\n    ret\n    ')
+  await expect(page.locator('.cm-tooltip-autocomplete')).toBeHidden()
+  await editor.press('Shift+Enter')
+  await expect.poll(savedCode).toBe('int main() {\n    ret\n    \n    ')
+  await editor.fill('int main() {}')
+  await editor.press('ArrowLeft')
+  await editor.press('Enter')
+  await expect.poll(savedCode).toBe('int main() {\n    \n}')
+  await editor.press('Control+z')
+  await expect.poll(savedCode).toBe('int main() {}')
+  for (const [language, original] of [
+    ['cpp20', 'int main() {\n\tif (ok) {'],
+    ['java17', 'class Main {\n\tvoid run() {'],
+    ['python3', 'def solve():\n\tif ok:'],
+  ]) {
+    await page.getByLabel('代码语言').selectOption(language)
+    await expect(page.getByLabel('代码语言')).toBeEnabled()
+    // fill models importing/pasting a draft: existing tabs must stay untouched.
+    await editor.fill(original)
+    await editor.press('Enter')
+    await expect.poll(savedCode).toBe(original + '\n        ')
+  }
+})
+
+test('Vim insert keeps four-space indentation while normal and visual editing remain intact', async ({ page }) => {
+  await open(page)
+  const editor = page.getByLabel('源代码', { exact: true })
+  await page.getByLabel('编辑器键位').selectOption('vim')
+  await expect(page.locator('.cm-position')).toContainText('NORMAL')
+  await editor.click()
+  await editor.press('i')
+  await expect(page.locator('.cm-position')).toContainText('INSERT')
+  await editor.fill('int main() {\n    ret')
+  await editor.press('Control+Space')
+  await expect(page.getByRole('option').filter({ hasText: /^return/ })).toBeVisible()
+  await editor.press('Shift+Enter')
+  await editor.press('Control+s')
+  await expect.poll(async () => (await (await page.request.get('/api/workbench/problem/4-A')).json()).draft.code)
+    .toBe('int main() {\n    ret\n    ')
+  await editor.fill('vec')
+  await editor.press('Control+Space')
+  await expect(page.getByRole('option').filter({ hasText: /^vector/ }).first()).toBeVisible()
+  await editor.press('Tab')
+  await expect(editor).toHaveText('vector')
+  await editor.press('Escape')
+  await expect(page.locator('.cm-position')).toContainText('NORMAL')
+  await page.keyboard.type('0vll')
+  await expect(page.locator('.cm-position')).toContainText('VISUAL')
+  await editor.press('Tab')
+  await editor.press('Shift+Tab')
+  await expect(editor).toHaveText('vector')
+  await page.keyboard.type('x')
+  await expect(editor).toHaveText('tor')
+  await page.keyboard.type('u')
+  await expect(editor).toHaveText('vector')
 })
 
 test('AI presets expose dedicated fields and preserve secrets per endpoint', async ({ page }) => {

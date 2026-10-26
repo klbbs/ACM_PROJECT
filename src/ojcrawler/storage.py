@@ -127,11 +127,27 @@ class Store:
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             account = self.account_key(result.platform, result.account)
+            has_workbench = result.platform == 'codeforces' and self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='wb_attempts'"
+            ).fetchone() is not None
             for row in result.submissions:
                 data = asdict(row)
                 collation = " COLLATE NOCASE" if result.platform == "codeforces" else ""
-                old = self.db.execute("SELECT data,account FROM submissions WHERE platform=? AND account=?" + collation + " AND id=? ORDER BY account=? DESC,account LIMIT 1",
+                old = self.db.execute("SELECT data,account,updated_at FROM submissions WHERE platform=? AND account=?" + collation + " AND id=? ORDER BY account=? DESC,account LIMIT 1",
                                       (result.platform, account, row.id, account)).fetchone()
+                # A collection can finish after a newer polling response was
+                # persisted. Compare the observation timestamp, not transaction
+                # order; newer official rejudgements (including pending ones)
+                # remain valid. Equal timestamps retain existing rejudge semantics.
+                if old and old[2] > collected_at:
+                    continue
+                if has_workbench:
+                    newer_attempt = self.db.execute(
+                        "SELECT 1 FROM wb_attempts WHERE handle=? COLLATE NOCASE "
+                        "AND submission_id=? AND problem_id=? AND last_synced>? LIMIT 1",
+                        (result.account, row.id, 'codeforces:' + row.problem_id, collected_at)).fetchone()
+                    if newer_attempt:
+                        continue
                 if old:
                     previous_problem = json.loads(old[0]).get("problem", {})
                     # Replayed submissions may omit previously enriched metadata.

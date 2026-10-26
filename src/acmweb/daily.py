@@ -305,6 +305,15 @@ class Daily:
         # Messages are chosen locally so a provider cannot persist secrets in its errors.
         if isinstance(error, DailyCountError):
             return {"code": "invalid_count", "message": str(error)}
+        reason = getattr(error, 'reason', None)
+        if reason == 'ai_output_truncated':
+            return {"code": "output_truncated", "message": "模型输出被截断，未保存题单；思考内容也可能占用输出预算，请在连接与设置中自行调整 token 上限或思考强度，再手动重试。"}
+        if reason in {'ai_empty_final', 'ai_invalid_output', 'ai_response_incomplete', 'ai_response_refused'}:
+            return {"code": "invalid_output", "message": "模型未返回完整、可解析的最终报告，未保存题单；不会用思考过程替代答案，也不会自动重试收费请求。"}
+        if reason in {'ai_timeout', 'ai_network', 'ai_upstream_http'}:
+            return {"code": "provider_unavailable", "message": "AI 服务连接失败、超时或拒绝请求，未保存题单；请检查提供方设置后手动重试。"}
+        if reason == 'selection_report_configuration_changed' or getattr(error, 'selection_reason', None) == 'selection_report_configuration_changed':
+            return {"code": "provider_configuration", "message": "生成期间 AI 配置已变化，未保存题单；请确认当前默认模型和提供方后重新发起。"}
         text = str(error) if isinstance(error, (AIError, HTTPException)) else ''
         if isinstance(error, ValidationError) or '格式' in text or 'JSON' in text or '结构' in text:
             return {"code": "invalid_output", "message": "AI 返回格式或题目数量不符合每日任务要求，未保存题单；请检查模型后手动重试。"}

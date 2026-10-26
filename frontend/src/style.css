@@ -2955,6 +2955,12 @@ td small {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.wb-sample-block { min-width: 0; }
+.wb-sample-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wb-sample-heading h4 { margin: 12px 0; }
+.wb-sample-heading button { flex-shrink: 0; padding: 6px 10px; font-size: 12px; }
+.wb-sample-copy-status { display: block; color: var(--muted); font-size: 12px; }
+.wb-sample-copy-status:empty { display: none; }
 .wb-samples pre,
 .wb-snapshot {
   white-space: pre-wrap;

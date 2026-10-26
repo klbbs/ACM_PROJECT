@@ -102,13 +102,7 @@ export function allowedRecordUrl(problemId: string, value?: string | null): stri
   if (!value) return undefined
   try {
     const url = new URL(value)
-    if (
-      url.protocol !== 'https:' ||
-      url.username ||
-      url.password ||
-      url.port ||
-      url.hash
-    )
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash)
       return undefined
     const platform = problemId.split(':')[0]
     return OFFICIAL_HOSTS[platform]?.includes(url.hostname) ? url.href : undefined
@@ -151,6 +145,7 @@ export function ProblemSubmissions({
   const [codes, setCodes] = useState<Record<string, CodeState>>({})
   const [codeBusy, setCodeBusy] = useState('')
   const [codeErrors, setCodeErrors] = useState<Record<string, string>>({})
+  const [codeRetryUntil, setCodeRetryUntil] = useState(0)
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({})
   const [loaded, setLoaded] = useState<Record<string, string>>({})
   const [analysisBusy, setAnalysisBusy] = useState<Record<string, boolean>>({})
@@ -193,11 +188,12 @@ export function ProblemSubmissions({
     }
   }, [])
   useEffect(() => {
-    if (cooldown <= Date.now()) return
+    if (Math.max(cooldown, codeRetryUntil) <= Date.now()) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [cooldown])
+  }, [cooldown, codeRetryUntil])
   const cooldownLeft = Math.max(0, Math.ceil((cooldown - now) / 1000))
+  const codeCooldownLeft = Math.max(0, Math.ceil((codeRetryUntil - now) / 1000))
 
   const load = useCallback(async (target: string, account: string) => {
     const generation = ++listingGeneration.current
@@ -398,7 +394,7 @@ export function ProblemSubmissions({
   }
 
   async function fetchCode(item: ProblemSubmission) {
-    if (codeBusy || !item.submission_id) return
+    if (codeBusy || codeCooldownLeft > 0 || !item.submission_id) return
     const target = problemId
     const account = handle
     const submission = item.submission_id
@@ -451,7 +447,9 @@ export function ProblemSubmissions({
                 has_local_code: true,
                 code_verified: state.verified,
                 analysis_available: state.verified,
-                analysis_disabled_reason: state.verified ? '' : '源码未与本次平台提交核验，不能用于分析',
+                analysis_disabled_reason: state.verified
+                  ? ''
+                  : '源码未与本次平台提交核验，不能用于分析',
                 language: state.language || row.language,
               }
             : row,
@@ -465,11 +463,20 @@ export function ProblemSubmissions({
         /* Reading the record succeeded; a background refresh failure is not fatal. */
       }
     } catch (error) {
-      if (stillCurrent())
+      if (stillCurrent()) {
+        const retry =
+          error instanceof ApiError && error.status === 429
+            ? Math.max(1, error.retryAfterSeconds ?? 60)
+            : undefined
+        if (retry) {
+          setNow(Date.now())
+          setCodeRetryUntil(Date.now() + retry * 1000)
+        }
         setCodeErrors((previous) => ({
           ...previous,
-          [submission]: `判题已同步，源码暂不可读：${text(error)}`,
+          [submission]: `判题已同步，源码暂不可读：${text(error)}${retry ? `（${retry} 秒后可重试）` : ''}`,
         }))
+      }
     } finally {
       if (generation === codeGeneration.current) setCodeBusy('')
     }
@@ -482,7 +489,8 @@ export function ProblemSubmissions({
     const reviewKey = `${target}\u0000${account}\u0000${submission}\u0000${attemptId}`
     if (analysisRunning.current.has(reviewKey)) return
     analysisRunning.current.add(reviewKey)
-    const stillCurrent = () => mounted.current && currentProblem.current === target && currentHandle.current === account
+    const stillCurrent = () =>
+      mounted.current && currentProblem.current === target && currentHandle.current === account
     setAnalysisBusy((previous) => ({ ...previous, [reviewKey]: true }))
     setAnalysisErrors((previous) => ({ ...previous, [reviewKey]: '' }))
     try {
@@ -507,7 +515,8 @@ export function ProblemSubmissions({
       }
       if (stillCurrent() && !finished) throw new Error('AI 分析仍在后台处理，请稍后重试查看记录')
     } catch (error) {
-      if (stillCurrent()) setAnalysisErrors((previous) => ({ ...previous, [reviewKey]: text(error) }))
+      if (stillCurrent())
+        setAnalysisErrors((previous) => ({ ...previous, [reviewKey]: text(error) }))
     } finally {
       analysisRunning.current.delete(reviewKey)
       if (stillCurrent()) setAnalysisBusy((previous) => ({ ...previous, [reviewKey]: false }))
@@ -646,7 +655,8 @@ export function ProblemSubmissions({
       {loading && !count && <p className="muted">正在读取本题记录…</p>}
       {!loading && !count && !listError && (
         <p className="muted">
-          还没有本题的提交记录。如果刚在 {platformName} 官方页面提交，请点击上方「同步本题提交」。同步显示没有记录时，
+          还没有本题的提交记录。如果刚在 {platformName}{' '}
+          官方页面提交，请点击上方「同步本题提交」。同步显示没有记录时，
           通常是本次查询范围未覆盖到这条提交，或该账号没有提交过这道题；原有记录不会被删除。
         </p>
       )}
@@ -679,7 +689,8 @@ export function ProblemSubmissions({
                       : !attemptId
                         ? '缺少已核验的本次提交源码，请先获取本次代码'
                         : (state ? !state.verified : item.analysis_available !== true)
-                          ? item.analysis_disabled_reason || '源码未与本次平台提交核验，请先获取本次代码'
+                          ? item.analysis_disabled_reason ||
+                            '源码未与本次平台提交核验，请先获取本次代码'
                           : ''
             const replacing =
               !!state && !!editorCode.trim() && editorCode.trim() !== state.code.trim()
@@ -691,16 +702,13 @@ export function ProblemSubmissions({
               >
                 <div className="problem-submission-head">
                   <strong className="problem-submission-verdict" role="status">
-                    {accepted ? (
-                      <CheckCircle2 size={18} />
-                    ) : errored ? (
-                      <XCircle size={18} />
-                    ) : null}
+                    {accepted ? <CheckCircle2 size={18} /> : errored ? <XCircle size={18} /> : null}
                     {verdict || '判题中'}
                   </strong>
                   <span className="muted">
                     {item.submission_id ? `#${item.submission_id}` : '本地代码记录（无官方提交号）'}
-                    {item.account ? ` · ${item.account}` : ''} · {date(item.submitted_at || undefined)}
+                    {item.account ? ` · ${item.account}` : ''} ·{' '}
+                    {date(item.submitted_at || undefined)}
                     {item.language ? ` · ${item.language}` : ' · 语言未记录'}
                   </span>
                 </div>
@@ -714,17 +722,19 @@ export function ProblemSubmissions({
                     <button
                       type="button"
                       className="secondary"
-                      disabled={!!codeBusy || loading}
+                      disabled={!!codeBusy || loading || codeCooldownLeft > 0}
                       onClick={() => void fetchCode(item)}
                     >
                       <FileCode2 size={14} />
-                      {codeBusy === submission
-                        ? '正在读取代码…'
-                        : state
-                          ? '重新读取代码'
-                          : item.has_local_code
-                            ? '查看当次代码'
-                            : '获取本次代码'}
+                      {codeCooldownLeft > 0
+                        ? `${codeCooldownLeft} 秒后重试读取`
+                        : codeBusy === submission
+                          ? '正在读取代码…'
+                          : state
+                            ? '重新读取代码'
+                            : item.has_local_code
+                              ? '查看当次代码'
+                              : '获取本次代码'}
                     </button>
                   )}
                   <button
@@ -734,8 +744,16 @@ export function ProblemSubmissions({
                     title={analysisDisabledReason || undefined}
                     onClick={() => attemptId && void review(item, attemptId)}
                   >
-                    {analysisBusy[reviewKey] ? <LoaderCircle size={14} className="problem-submission-spin" /> : <Sparkles size={14} />}
-                    {analysisBusy[reviewKey] ? 'AI 分析中…' : analysisErrors[reviewKey] ? '重试 AI 分析' : 'AI 分析'}
+                    {analysisBusy[reviewKey] ? (
+                      <LoaderCircle size={14} className="problem-submission-spin" />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}
+                    {analysisBusy[reviewKey]
+                      ? 'AI 分析中…'
+                      : analysisErrors[reviewKey]
+                        ? '重试 AI 分析'
+                        : 'AI 分析'}
                   </button>
                 </div>
                 {analysisDisabledReason && (
@@ -744,17 +762,58 @@ export function ProblemSubmissions({
                   </p>
                 )}
                 {analysisErrors[reviewKey] && (
-                  <p className="problem-submission-error" role="alert">{analysisErrors[reviewKey]}</p>
+                  <p className="problem-submission-error" role="alert">
+                    {analysisErrors[reviewKey]}
+                  </p>
                 )}
                 {report && (
                   <div className="problem-submission-review" aria-label="本次提交的 AI 分析">
-                    <strong>AI 推测 · {report.confidence === 'high' ? '较高' : report.confidence === 'medium' ? '中等' : '较低'}把握</strong>
-                    <p className="muted">这是基于当前题面、当次源码和判题信息的推测，不等同于官方解释。</p>
-                    <p><b>判题现象：</b>{report.phenomenon}</p>
-                    <p><b>主要错误类型：</b>{report.categories.map((category: string) => REVIEW_CATEGORY_NAMES[category] || category).join('、')}</p>
-                    <div><b>结合题面与代码的证据：</b><ul>{report.evidence.map((evidence: string, evidenceIndex: number) => <li key={evidenceIndex}>{evidence}</li>)}</ul></div>
-                    <div><b>建议检查方向：</b><ul>{report.check_directions.map((direction: string, directionIndex: number) => <li key={directionIndex}>{direction}</li>)}</ul></div>
-                    {report.minimal_change_idea && <p><b>最小修改思路：</b>{report.minimal_change_idea}</p>}
+                    <strong>
+                      AI 推测 ·{' '}
+                      {report.confidence === 'high'
+                        ? '较高'
+                        : report.confidence === 'medium'
+                          ? '中等'
+                          : '较低'}
+                      把握
+                    </strong>
+                    <p className="muted">
+                      这是基于当前题面、当次源码和判题信息的推测，不等同于官方解释。
+                    </p>
+                    <p>
+                      <b>判题现象：</b>
+                      {report.phenomenon}
+                    </p>
+                    <p>
+                      <b>主要错误类型：</b>
+                      {report.categories
+                        .map((category: string) => REVIEW_CATEGORY_NAMES[category] || category)
+                        .join('、')}
+                    </p>
+                    <div>
+                      <b>结合题面与代码的证据：</b>
+                      <ul>
+                        {report.evidence.map((evidence: string, evidenceIndex: number) => (
+                          <li key={evidenceIndex}>{evidence}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <b>建议检查方向：</b>
+                      <ul>
+                        {report.check_directions.map(
+                          (direction: string, directionIndex: number) => (
+                            <li key={directionIndex}>{direction}</li>
+                          ),
+                        )}
+                      </ul>
+                    </div>
+                    {report.minimal_change_idea && (
+                      <p>
+                        <b>最小修改思路：</b>
+                        {report.minimal_change_idea}
+                      </p>
+                    )}
                   </div>
                 )}
                 {note && (

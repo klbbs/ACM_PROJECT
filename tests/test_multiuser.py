@@ -76,6 +76,25 @@ def test_private_workspace_isolation_and_no_global_credentials(site):
     assert 'legacy=PRIVATE' in settings.config_path.read_text()
 
 
+def test_background_specialist_job_status_is_private_and_queue_requires_csrf(site):
+    request, admin, member, app, settings, client = site
+    assert request(admin, 'GET', '/api/training/generation').json() == {'job': None}
+    child = app.state.workspaces.apps[admin['user']['id']][0]
+    key, job_id = 'a'*32, 'b'*32
+    with child.state.database.connect() as db:
+        db.execute('INSERT INTO web_jobs VALUES(?,?,?,?,?,?,?)',
+                   (job_id, 'specialist_generate', 'completed', 1, 1, '{"plan":{"id":"private"}}', None))
+        db.execute('INSERT INTO web_job_requests VALUES(?,?,?,?)', (key, 'specialist_generate', 'fixture', job_id))
+    assert request(admin, 'GET', '/api/training/generation?request_key='+key).json()['job']['id'] == job_id
+    assert request(member, 'GET', '/api/training/generation').json() == {'job': None}
+    assert request(member, 'GET', '/api/training/generation?request_key='+key).json() == {'job': None}
+    assert request(None, 'GET', '/api/training/generation').status_code == 401
+    response = request(admin, 'POST', '/api/training/plans/generate',
+                       {'topic_id':'dsu', 'provider':'api', 'model':'fixture', 'request_key':'c'*32},
+                       extra={'X-CSRF-Token':''})
+    assert response.status_code == 403
+
+
 def test_shared_acl_revisions_and_recycle_bin(site):
     request,admin,member,*_ = site
     payload = {'title':'Private draft','body':'<script>alert(1)</script>','visibility':'private'}

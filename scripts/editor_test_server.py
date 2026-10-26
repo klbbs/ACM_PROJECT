@@ -64,6 +64,16 @@ def main():
         remote_sources = {}
         submission_reviews = []
         selection_readings = []
+        source_mode = {'value': 'normal'}
+
+        @app.post('/_fixture/source-mode/{mode}')
+        def fixture_source_mode(mode: str):
+            from fastapi import HTTPException
+            if mode not in {'normal', 'unavailable', 'rate_limited'}:
+                raise HTTPException(422, 'Unknown synthetic source mode')
+            source_mode['value'] = mode
+            return {'mode': mode}
+
         class FixtureRemoteJudge:
             before_send = None
 
@@ -88,6 +98,8 @@ def main():
 
             def source(self, pid, handle, sid):
                 from acmweb.remote_judges import SubmissionError
+                if source_mode['value'] != 'normal':
+                    raise SubmissionError('source_unavailable' if source_mode['value'] == 'unavailable' else 'rate_limited')
                 if sid in remote_receipts:
                     record = remote_receipts[sid]
                 elif sid in {'920001','920002','920003'} and pid == 'codeforces:4-A':
@@ -201,6 +213,7 @@ def main():
             remote_receipts.clear()
             remote_sources.clear()
             submission_reviews.clear()
+            source_mode['value'] = 'normal'
             return {'ok': True}
 
         uvicorn.run(app, host='127.0.0.1', port=int(os.getenv('ACM_EDITOR_TEST_PORT', '18766')), access_log=False)

@@ -249,6 +249,36 @@ it('restores pending, polls by GET and stops after AC', async () => {
     expect(request.mock.calls.every((call) => call[1] === undefined)).toBe(true)
   })
 })
+
+it('waits a full minute before automatically refreshing an upstream rate-limited judge', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-10-26T08:00:00Z'))
+  const row = {
+    ...queued,
+    status: 'judging',
+    submission_id: '123',
+    reason: 'rate_limited',
+    updated_at: Date.now() / 1000,
+  }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?')) return { items: [row] }
+    if (path.endsWith('/refresh') && method === 'POST')
+      return { ...row, updated_at: Date.now() / 1000 }
+    throw new Error(`Unexpected API ${path}`)
+  })
+  await render(props(), async () => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(57000)
+    })
+    expect(request.mock.calls.filter((call) => call[1] === 'POST')).toHaveLength(0)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    const posts = request.mock.calls.filter((call) => call[1] === 'POST')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]).toEqual(['/remote-submissions/remote-1/refresh', 'POST', {}])
+  })
+})
 it('keeps polling after temporary list failure and shows WA in red', async () => {
   vi.useFakeTimers()
   let reads = 0
@@ -276,7 +306,12 @@ it('automatically refreshes an old judging result and shows the official verdict
   request.mockImplementation(async (path, method) => {
     if (path.startsWith('/remote-submissions?')) return { items: [staleJudging] }
     if (path === '/remote-submissions/remote-1/refresh' && method === 'POST')
-      return { ...staleJudging, status: 'completed', verdict: 'AC', updated_at: Math.floor(Date.now() / 1000) }
+      return {
+        ...staleJudging,
+        status: 'completed',
+        verdict: 'AC',
+        updated_at: Math.floor(Date.now() / 1000),
+      }
     throw new Error(`Unexpected API ${path}`)
   })
   await render(props(), async (host) => {
@@ -285,7 +320,11 @@ it('automatically refreshes an old judging result and shows the official verdict
     })
     expect(host.textContent).toContain('AC · 通过！')
     expect(request).toHaveBeenCalledWith('/remote-submissions/remote-1/refresh', 'POST', {})
-    expect(request.mock.calls.some(([path, method]) => path === '/remote-submissions' && method === 'POST')).toBe(false)
+    expect(
+      request.mock.calls.some(
+        ([path, method]) => path === '/remote-submissions' && method === 'POST',
+      ),
+    ).toBe(false)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(9000)
     })
@@ -430,7 +469,8 @@ it('shows the actual other-problem blocker and does not claim a rejected request
   let rejected = false
   const old = { ...queued, id: 'old-task', problem_id: 'codeforces:5-A', status: 'uncertain' }
   request.mockImplementation(async (path, method) => {
-    if (path.startsWith('/remote-submissions?')) return { items: [], blocking: rejected ? [old] : [] }
+    if (path.startsWith('/remote-submissions?'))
+      return { items: [], blocking: rejected ? [old] : [] }
     if (path === '/remote-submissions/options') return compilers
     if (path === '/remote-submissions' && method === 'POST') {
       rejected = true

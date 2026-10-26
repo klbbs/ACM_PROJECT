@@ -119,11 +119,96 @@ def test_ambiguous_new_records_are_uncertain_not_latest(session,monkeypatch):
     assert e.value.uncertain and e.value.reason=='uncertain'
 
 
-@pytest.mark.parametrize('changes',[{'problem':{'contestId':4,'index':'B'}},{'author':{'members':[{'handle':'other'}]}},{'author':{'members':[{'handle':'demo'},{'handle':'team'}]}}])
+@pytest.mark.parametrize('changes',[{'problem':{'contestId':4,'index':'B'}},{'problem':{'contestId':5,'index':'A'}},{'author':{'members':[{'handle':'other'}]}},{'author':{'members':[{'handle':'demo'},{'handle':'team'}]}}])
 def test_cf_judge_checks_actual_author_and_problem(session,monkeypatch,changes):
+    """A record from another contest scope or another account is never reused."""
     s=session();script(monkeypatch,s,[(200,{},json.dumps({'status':'OK','result':[cf_record(**changes)]}))])
     with pytest.raises(SubmissionError) as e:s.judge('4-A','demo',123)
     assert e.value.reason=='record_mismatch'
+
+
+def test_old_cf_source_uses_contest_pages_instead_of_global_latest_fifty(session, monkeypatch):
+    s = session()
+    first_page = [cf_record(1000 + index) for index in range(200)]
+    calls = script(monkeypatch, s, [
+        (200, {}, json.dumps({'status': 'OK', 'result': first_page})),
+        (200, {}, json.dumps({'status': 'OK', 'result': [cf_record(123)]})),
+        (200, {}, cf_form() + '<pre id="program-source-text">exact old submission source</pre>'),
+    ])
+    observed = s.source('4-A', 'demo', '123')
+    assert observed['id'] == '123' and observed['code'] == 'exact old submission source'
+    assert '/api/contest.status?contestId=4&handle=demo&from=1&count=200' in calls[0][1]
+    assert '&from=201&count=200' in calls[1][1]
+    assert '/contest/4/submission/123' in calls[2][1]
+    assert all('user.status' not in url and method == 'GET' for method, url, _ in calls)
+
+
+def test_cf_pagination_stops_on_repeated_page_without_using_other_record(session, monkeypatch):
+    s = session()
+    page = [cf_record(1000 + index) for index in range(200)]
+    calls = script(monkeypatch, s, [(200, {}, json.dumps({'status': 'OK', 'result': page}))] * 2)
+    with pytest.raises(SubmissionError) as error:
+        s.judge('4-A', 'demo', '123')
+    assert error.value.reason == 'record_unavailable' and len(calls) == 2
+
+
+def test_cf_pagination_reaches_the_third_page_only_when_the_sid_is_there(session, monkeypatch):
+    """Bounded to 600 contest rows: page 3 is reachable, page 4 never requested."""
+    s = session()
+    pages = [[cf_record(1000 + start + index) for index in range(200)] for start in (0, 200, 400)]
+    calls = script(monkeypatch, s, [(200, {}, json.dumps({'status': 'OK', 'result': page})) for page in pages])
+    assert s.judge('4-A', 'demo', '1500')['id'] == '1500'
+    assert [call[1].split('from=')[1].split('&')[0] for call in calls] == ['1', '201', '401']
+
+
+def test_cf_absent_sid_stops_after_three_full_pages(session, monkeypatch):
+    s = session()
+    pages = [[cf_record(1000 + start + index) for index in range(200)] for start in (0, 200, 400)]
+    calls = script(monkeypatch, s, [(200, {}, json.dumps({'status': 'OK', 'result': page})) for page in pages])
+    with pytest.raises(SubmissionError) as error:
+        s.judge('4-A', 'demo', '9999')
+    assert error.value.reason == 'record_unavailable' and len(calls) == 3
+    assert 'from=601' not in ''.join(call[1] for call in calls)
+
+def test_cf_json_api_limit_is_reported_as_rate_limit(session, monkeypatch):
+    s = session()
+    calls = script(monkeypatch, s, [(200, {}, json.dumps({'status': 'FAILED',
+        'comment': 'Call limit exceeded. PRIVATE upstream diagnostics'}))])
+    with pytest.raises(SubmissionError) as error:
+        s.judge('4-A', 'demo', '123')
+    assert error.value.reason == 'rate_limited' and 'PRIVATE' not in str(error.value)
+    assert len(calls) == 1
+
+
+def test_cf_polling_shares_collector_pacing_but_never_retries_post(session, monkeypatch):
+    from ojcrawler.http import _LAST_REQUEST
+    s = session()
+    slept, sent = [], []
+    monkeypatch.setitem(_LAST_REQUEST, 'codeforces.com', 9.0)
+    monkeypatch.setattr('acmweb.remote_judges.time.monotonic', lambda: 10.0)
+    monkeypatch.setattr('acmweb.remote_judges.time.sleep', slept.append)
+    class Response:
+        status_code, headers, encoding = 200, {}, 'utf-8'
+        def iter_content(self, *_):
+            yield b'{}'
+        def close(self):
+            pass
+    def request(method, url, **kwargs):
+        sent.append(method)
+        return Response()
+    monkeypatch.setattr(s.session, 'request', request)
+    s._request('GET', '/api/contest.status?contestId=4')
+    s._request('POST', '/problemset/submit', data={'source': 'synthetic source'})
+    assert slept == [pytest.approx(1.1)] and sent == ['GET', 'POST']
+
+
+def test_readable_judge_without_source_has_a_distinct_reason(session, monkeypatch):
+    s = session()
+    script(monkeypatch, s, [(200, {}, json.dumps({'status': 'OK', 'result': [cf_record()]})),
+                           (200, {}, cf_form())])
+    with pytest.raises(SubmissionError) as error:
+        s.source('4-A', 'demo', '123')
+    assert error.value.reason == 'source_unavailable'
 
 
 def test_atcoder_official_judge_does_not_wait_for_mirror(session,monkeypatch):
@@ -153,8 +238,21 @@ def test_source_never_follows_other_record_redirect(session,monkeypatch):
     calls = script(monkeypatch,s,[(302,{'Location':'/contest/4/submission/456'},'')])
     with pytest.raises(SubmissionError) as error:
         s.source('4-A','demo','123')
-    assert error.value.reason == 'record_unavailable'
+    assert error.value.reason=='record_unavailable'
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('location,reason', [('/contests/abs/submissions/456','record_unavailable'),
+                                             ('/enter','login_required')])
+def test_atcoder_source_keeps_its_sid_and_session(session,monkeypatch,location,reason):
+    """The page must belong to this sid; a login hop is named, not followed."""
+    s = session('atcoder')
+    calls = script(monkeypatch,s,[(200,{},ac_record()),(302,{'Location':location},'')])
+    with pytest.raises(SubmissionError) as error:
+        s.source('atcoder:practice_1','demo','123')
+    assert error.value.reason == reason
+    assert calls[0][1] == 'https://atcoder.jp/contests/abs/submissions/123'
+    assert len(calls) == 2 and all(call[0] == 'GET' for call in calls)
 
 
 @pytest.mark.parametrize('copies,correct',[(1,True),(2,True),(1,False)])
