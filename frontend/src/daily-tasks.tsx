@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { RefreshCw, Sparkles, ExternalLink, Code2 } from 'lucide-react'
 import { SelectionReportButton } from './selection-report'
+import { TrainingCandidates } from './training-candidates'
 
 type Row = Record<string, any>
 type Props = {
@@ -396,6 +397,15 @@ export function DailyTasksPage({
             </div>
           )}
         </div>
+      )}
+      {selectionType === 'specialist' && (
+        <TrainingCandidates
+          topicId={topicId}
+          topicTitle={topics.find((topic) => topic.id === topicId)?.title}
+          mode={trainingMode}
+          disabled={busy || !formReady}
+          revision={revision}
+        />
       )}
       {data?.plan && (
         <p className="help">
