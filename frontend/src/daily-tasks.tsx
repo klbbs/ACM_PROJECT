@@ -405,6 +405,7 @@ export function DailyTasksPage({
           mode={trainingMode}
           disabled={busy || !formReady}
           revision={revision}
+          aiReady={!!model}
         />
       )}
       {data?.plan && (
@@ -479,6 +480,8 @@ export function DailyTasksPage({
         点击“AI 生成”或“Roll ·
         换这道题”会将训练偏好、每日目标、练习用时资料和公开候选题信息发送给所选 AI，可能产生 API
         费用。 查看题单、修改偏好和刷新进度不会触发 AI 选题。
+        {selectionType === 'specialist' &&
+          '专项细类候选不足时，生成或换题还可能用默认 AI 额外读取最多 6 道候选官方题面，核查所选方法是否可行，可能增加费用；核查不等于官方标签或唯一解，也不能替代可信模板证据。'}
       </p>
       {data?.plan?.status === 'failed' && (
         <p className="help" role="alert">

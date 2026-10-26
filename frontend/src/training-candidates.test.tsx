@@ -210,3 +210,63 @@ it('disables checks until a topic and valid independent rating bounds are select
   expect(host.textContent).toContain('有效的 CF rating')
   expect(apiMock).not.toHaveBeenCalled()
 })
+
+it('discloses bounded paid method checks and disables them when the saved default model is unavailable', async () => {
+  await render({ aiReady: false })
+  expect(button('AI 核查细类候选').disabled).toBe(true)
+  expect(host.textContent).toContain('读取最多 6 道候选官方题面')
+  expect(host.textContent).toContain('可能产生额外费用')
+  expect(host.textContent).toContain('不会改变 AC / 签到')
+  expect(host.textContent).toContain('不会把 AI 核查通过当作模板')
+  expect(host.querySelector('a[href="#settings"]')).not.toBeNull()
+  expect(apiMock).not.toHaveBeenCalled()
+})
+it('checks method suitability once on explicit click using only topic and bounds, then restores isolated persisted counts', async () => {
+  const summary = { checked_count: 6, accepted_count: 2, uncertain_count: 3, rejected_count: 1 }
+  const queued = deferred<{ id: string; status: string }>()
+  apiMock.mockImplementation((path: string, method?: string) =>
+    method === 'POST'
+      ? queued.promise
+      : path === '/jobs'
+        ? Promise.resolve({ items: [{ id: 'method-job', status: 'completed', result: summary }] })
+        : Promise.resolve({ ...coverage(), method_check_summary: summary }),
+  )
+  await render({ minimum: 1000, maximum: 1800 })
+  await act(async () => {
+    button('AI 核查细类候选').click()
+    button('AI 核查细类候选').click()
+  })
+  expect(apiMock.mock.calls.filter((call) => call[1] === 'POST')).toEqual([
+    ['/training/method-check', 'POST', { topic_id: 'dp', cf_minimum: 1000, cf_maximum: 1800 }],
+  ])
+  expect(button('AI 正在核查方法').disabled).toBe(true)
+  expect(button('补抓本专题题库').disabled).toBe(true)
+  await act(async () => queued.resolve({ id: 'method-job', status: 'queued' }))
+  expect(host.textContent).toContain(
+    '已核查 6 题 · 方法可行 2 题 · 无法确定 3 题 · 未通过核查 1 题',
+  )
+  expect(host.textContent).toContain('当前缓存可选 8 题')
+  await render({ minimum: 1000, maximum: 1800, revision: 1 })
+  expect(host.textContent).toContain('方法可行 2 题')
+  expect(apiMock.mock.calls.filter((call) => call[1] === 'POST')).toHaveLength(1)
+})
+it('preserves method-check failure and settings guidance without retrying the paid request automatically', async () => {
+  apiMock.mockRejectedValueOnce(new Error('默认 AI 模型未配置，请在连接与设置保存'))
+  await render()
+  await click('AI 核查细类候选')
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('默认 AI 模型未配置')
+  expect(host.querySelector('[role=alert] a')?.getAttribute('href')).toBe('#settings')
+  expect(button('AI 核查细类候选').disabled).toBe(false)
+  expect(apiMock).toHaveBeenCalledTimes(1)
+})
+it('drops a late paid-method receipt after topic changes and does not poll or replace current evidence', async () => {
+  const pending = deferred<{ id: string; status: string }>()
+  apiMock.mockReturnValue(pending.promise)
+  await render()
+  await click('AI 核查细类候选')
+  await render({ topicId: 'bfs' })
+  await act(async () => pending.resolve({ id: 'old-method-job', status: 'queued' }))
+  expect(apiMock).toHaveBeenCalledTimes(1)
+  expect(host.textContent).not.toContain('本次 AI 核查')
+  expect(button('AI 核查细类候选').disabled).toBe(false)
+})

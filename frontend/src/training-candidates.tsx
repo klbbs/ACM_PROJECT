@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Search } from 'lucide-react'
+import React, { useEffect, useId, useRef, useState } from 'react'
+import { RefreshCw, Search, Sparkles } from 'lucide-react'
 import { api } from './api'
 import './training-candidates.css'
 
@@ -10,6 +10,7 @@ type PlatformCoverage = {
   topic_count: number
   eligible_count: number
   template_count: number
+  ai_eligible_count?: number
   unknown_topic_count: number
   conditions: { code: string; count: number; message: string }[]
   discovery?: { status: string; message?: string }
@@ -20,6 +21,13 @@ type Coverage = {
   eligible_count: number
   template_count: number
   notice?: string
+  method_check_summary?: MethodSummary
+}
+type MethodSummary = {
+  checked_count: number
+  accepted_count: number
+  uncertain_count: number
+  rejected_count: number
 }
 type Job = {
   id: string
@@ -29,7 +37,7 @@ type Job = {
     completed_platforms?: number
     total_platforms?: number
     platforms?: { platform: string; status: string; count?: number; message?: string }[]
-  }
+  } & Partial<MethodSummary>
 }
 type Props = {
   topicId: string
@@ -40,6 +48,7 @@ type Props = {
   disabled?: boolean
   mode?: string
   revision?: number
+  aiReady?: boolean
 }
 const names: Record<string, string> = {
   codeforces: 'Codeforces',
@@ -72,8 +81,10 @@ export function TrainingCandidates({
   disabled = false,
   mode = 'learn',
   revision = 0,
+  aiReady = true,
 }: Props) {
   const scope = JSON.stringify([topicId, minimum, maximum, revision])
+  const methodDisclosure = useId()
   const current = useRef(scope)
   current.current = scope
   const alive = useRef(true)
@@ -86,6 +97,8 @@ export function TrainingCandidates({
     scope: string
     loading?: boolean
     refreshing?: boolean
+    checking?: boolean
+    action?: 'refresh' | 'method'
     error?: string
     coverage?: Coverage
     job?: Job
@@ -125,7 +138,7 @@ export function TrainingCandidates({
     }
   }, [scope])
   const visible = state.scope === scope ? state : { scope }
-  const active = !!visible.loading || !!visible.refreshing
+  const active = !!visible.loading || !!visible.refreshing || !!visible.checking
   const canRead = !!topicId && valid && !disabled && !active
   const isCurrent = (token: number, selected: string) =>
     alive.current && token === operation.current && current.current === selected
@@ -154,15 +167,33 @@ export function TrainingCandidates({
       if (isCurrent(token, selected)) pending.current = ''
     }
   }
-  const refresh = async () => {
-    if (!canRead || pending.current === scope) return
+  const start = async (action: 'refresh' | 'method') => {
+    if (!canRead || pending.current === scope || (action === 'method' && !aiReady)) return
     participated.current = true
     pending.current = scope
     const selected = scope,
       token = ++operation.current
-    setState((old) => ({ ...old, scope, refreshing: true, error: '', message: '', job: undefined }))
+    setState((old) => ({
+      ...old,
+      scope,
+      action,
+      refreshing: action === 'refresh',
+      checking: action === 'method',
+      error: '',
+      message: '',
+      job: undefined,
+    }))
     try {
-      const created = await api<Job>('/training/catalog/refresh', 'POST', { topic_id: topicId })
+      const created = await api<Job>(
+        action === 'method' ? '/training/method-check' : '/training/catalog/refresh',
+        'POST',
+        {
+          topic_id: topicId,
+          ...(action === 'method' && minimum != null && maximum != null
+            ? { cf_minimum: minimum, cf_maximum: maximum }
+            : {}),
+        },
+      )
       if (!isCurrent(token, selected)) return
       setState((old) => ({ ...old, job: created }))
       let polls = 0
@@ -180,20 +211,29 @@ export function TrainingCandidates({
               scope,
               coverage,
               job,
-              message: '补抓已结束，已重新读取本专题候选。请检查下方条件，再自行点击 AI 生成题单。',
+              action,
+              message:
+                action === 'method'
+                  ? 'AI 方法核查已结束，已重新读取本专题候选；核查不等于生成题单，也不会改变通过或签到记录。'
+                  : '补抓已结束，已重新读取本专题候选。请检查下方条件，再自行点击 AI 生成题单。',
             })
             pending.current = ''
             return
           }
-          if (++polls >= 200)
+          if (++polls >= (action === 'method' ? 360 : 200))
             throw new Error(
-              '等待补抓进度超时；后台任务可能仍在运行，请稍后重新查看候选，不会自动重发任务',
+              `等待${action === 'method' ? 'AI 核查' : '补抓'}进度超时；后台任务可能仍在运行，请稍后重新查看候选，不会自动重发任务`,
             )
           timer.current = setTimeout(() => void poll(), 1800)
         } catch (error) {
           if (isCurrent(token, selected)) {
             pending.current = ''
-            setState((old) => ({ ...old, refreshing: false, error: explain(error) }))
+            setState((old) => ({
+              ...old,
+              refreshing: false,
+              checking: false,
+              error: explain(error),
+            }))
           }
         }
       }
@@ -201,11 +241,15 @@ export function TrainingCandidates({
     } catch (error) {
       if (isCurrent(token, selected)) {
         pending.current = ''
-        setState((old) => ({ ...old, refreshing: false, error: explain(error) }))
+        setState((old) => ({ ...old, refreshing: false, checking: false, error: explain(error) }))
       }
     }
   }
   const coverage = visible.coverage
+  const methodSummary =
+    visible.action === 'method' && visible.job?.result?.checked_count != null
+      ? visible.job.result
+      : coverage?.method_check_summary
   return (
     <section className="training-candidates" aria-label="专项候选诊断" aria-busy={active}>
       <div className="training-candidates-heading">
@@ -224,7 +268,7 @@ export function TrainingCandidates({
             type="button"
             className="button secondary"
             disabled={!canRead}
-            onClick={() => void refresh()}
+            onClick={() => void start('refresh')}
           >
             <RefreshCw
               size={15}
@@ -232,16 +276,46 @@ export function TrainingCandidates({
             />
             {visible.refreshing ? '正在补抓本专题…' : '补抓本专题题库'}
           </button>
+          <button
+            type="button"
+            className="button secondary"
+            disabled={!canRead || !aiReady}
+            aria-describedby={methodDisclosure}
+            onClick={() => void start('method')}
+          >
+            <Sparkles size={15} />
+            {visible.checking ? 'AI 正在核查方法…' : 'AI 核查细类候选'}
+          </button>
         </div>
       </div>
       <p className="help">
         将你本人已验证登录平台的专题候选合并筛选。“查看”只检查本地缓存；“补抓”按专题读取有界的公开题库，不调用
         AI，也不会自动生成或替换题单。
       </p>
+      <p className="help" id={methodDisclosure}>
+        “AI 核查细类候选”会用已保存默认 AI 读取最多 6
+        道候选官方题面，分析当前方法是否满足约束，可能产生额外费用。结论仅为 AI
+        推测，并非官方标签或唯一解，不会改变 AC /
+        签到；其他方法也可能可行。“新学”首题仍需可信模板证据，不会把 AI 核查通过当作模板。
+      </p>
+      {!aiReady && (
+        <p className="help">
+          AI 核查尚不可用：请先<a href="#settings">在连接与设置保存默认 AI 模型</a>。
+        </p>
+      )}
       {!topicId && <p className="help">请先选择训练专题。</p>}
       {!valid && <p className="help">请先填写有效的 CF rating 上下限。</p>}
       {visible.error && (
-        <p role="alert">候选检查或补抓未完成：{visible.error}。可重新查看候选，或手动重试补抓。</p>
+        <p role="alert">
+          候选检查、补抓或 AI 核查未完成：{visible.error}。可重新查看候选，或手动重试相应操作。
+          <a href="#settings">检查平台与 AI 设置</a>。
+        </p>
+      )}
+      {visible.checking && (
+        <p role="status">
+          AI
+          正在使用已保存默认模型核查当前专题的方法可行性。请等待本次核查，重复点击不会再次请求；切换专题会停止本页等待，后台任务仍可能继续且产生费用。
+        </p>
       )}
       {visible.refreshing && (
         <p role="status">
@@ -253,7 +327,10 @@ export function TrainingCandidates({
       {visible.job && (
         <div className="training-candidates-progress">
           <p role="status">
-            本次补抓：{statuses[visible.job.status] || '状态未知'}
+            {visible.action === 'method' ? '本次 AI 核查' : '本次补抓'}：
+            {visible.action === 'method' && visible.job.status === 'running'
+              ? '核查中'
+              : statuses[visible.job.status] || '状态未知'}
             {visible.job.result?.total_platforms != null &&
               ` · ${visible.job.result.completed_platforms ?? 0}/${visible.job.result.total_platforms} 个平台已处理`}
           </p>
@@ -269,6 +346,19 @@ export function TrainingCandidates({
               ))}
             </ul>
           )}
+        </div>
+      )}
+      {methodSummary && (
+        <div className="training-method-summary" role="status">
+          <strong>AI 方法核查结果</strong>
+          <p>
+            已核查 {methodSummary.checked_count ?? 0} 题 · 方法可行{' '}
+            {methodSummary.accepted_count ?? 0} 题 · 无法确定 {methodSummary.uncertain_count ?? 0}{' '}
+            题 · 未通过核查 {methodSummary.rejected_count ?? 0} 题
+          </p>
+          <p className="help">
+            仅有证据支持的方法可行候选会参与后续筛选，仍需满足日期、难度等要求；无法确定时不会强行归类。这不是官方标签、标准解法或判题结果。
+          </p>
         </div>
       )}
       {visible.message && <p role="status">{visible.message}</p>}
@@ -300,6 +390,12 @@ export function TrainingCandidates({
                   缓存 {item.cached_count} 题 · 专题匹配 {item.topic_count} 题 · 可选{' '}
                   {item.eligible_count} 题 · 模板 {item.template_count} 题
                 </p>
+                {item.ai_eligible_count != null && (
+                  <p>
+                    其中 {item.ai_eligible_count} 题由 AI
+                    方法可行性证据支持；其余仍按原始题目证据筛选。
+                  </p>
+                )}
                 {!!item.unknown_topic_count && (
                   <p>
                     其中 {item.unknown_topic_count} 题缺少可靠专题标签；不会把未知标签当作匹配。

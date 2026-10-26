@@ -515,6 +515,7 @@ export function SpecialistTrainingPage({
         mode={mode}
         disabled={loading || busy}
         revision={revision}
+        aiReady={!!model && aiReady}
       />
       <div className="ai-controls specialist-generate">
         {aiPicker}
@@ -535,7 +536,9 @@ export function SpecialistTrainingPage({
       </p>
       <p className="help specialist-ai-note" id={disclosureId}>
         点击生成会将训练偏好、专题及公开候选题信息发送给所选
-        AI，可能产生模型费用。选题失败时保留已有题单。
+        AI，可能产生模型费用。选题失败时保留已有题单。 细类专题候选不足时，也会使用默认 AI
+        额外读取最多 6
+        道候选官方题面，核查所选方法是否可行，可能增加费用；核查结论不是官方标签或唯一解，不会自动批准为模板题。
       </p>
       {error && (
         <div role="alert" className="help specialist-error">
