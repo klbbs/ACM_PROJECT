@@ -1,4 +1,5 @@
 from ..models import Collection, CrawlError
+from ..access import PlatformAccessError
 
 
 class Adapter:
@@ -22,6 +23,8 @@ class Adapter:
         try:
             return fn()
         except (CrawlError, KeyError, TypeError, ValueError, IndexError) as exc:
+            if isinstance(exc, PlatformAccessError) and exc.reason == 'rate_limited':
+                raise
             detail = str(exc) if isinstance(exc, CrawlError) else type(exc).__name__
             result.warnings.append(f"{label}: {detail}")
             return None

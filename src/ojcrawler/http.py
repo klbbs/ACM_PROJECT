@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 import requests
 
 from .models import CrawlError
+from .access import PlatformAccessError, protection_reason
 
 log = logging.getLogger(__name__)
 _LAST_REQUEST = defaultdict(float)
@@ -61,11 +62,18 @@ class Client:
                     raise CrawlError(f"{host}: 网络请求失败 ({type(exc).__name__})") from exc
                 self._backoff(attempt)
                 continue
+            reason = protection_reason(response.text, response.status_code)
+            if reason in {'challenge', 'access_restricted'}:
+                # A 200 or 503 challenge is not content or a transient outage.
+                # Let the caller choose a distinct, known public representation.
+                raise PlatformAccessError(host, reason, response.status_code)
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt < self.retries:
                     self._backoff(attempt, response.headers.get("Retry-After"))
                     continue
             if response.status_code != 200:
+                if reason == 'rate_limited':
+                    raise PlatformAccessError(host, reason, response.status_code)
                 raise CrawlError(f"{host}: HTTP {response.status_code}，请检查账号、访问权限或 Cookie")
             response.encoding = response.apparent_encoding if not response.encoding else response.encoding
             return response.text

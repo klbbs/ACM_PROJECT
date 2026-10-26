@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 
 from .base import Adapter
 from ..models import CrawlError, Submission, verdict, rating_event
+from ..access import PlatformAccessError
 
 
 class AtCoder(Adapter):
@@ -31,7 +32,16 @@ class AtCoder(Adapter):
                 if th and td:
                     fields[th.get_text(' ', strip=True)] = td.get_text(' ', strip=True)
             return {"handle": self.account, "url": f"https://atcoder.jp/users/{user}", "fields": fields}
-        out.profile = profile()
+        try:
+            out.profile = profile()
+        except PlatformAccessError as exc:
+            if exc.reason == 'rate_limited':
+                raise
+            # The already supported public AtCoder Problems submission index
+            # is independent of the official profile page. It is not login proof.
+            out.profile = {'handle':self.account, 'url':f'https://atcoder.jp/users/{user}',
+                           'profile_unavailable':True}
+            out.warnings.append('AtCoder 官方主页受限；继续读取公开提交索引，未确认主页字段或登录身份')
         problems, models = {}, {}
         if self.enrich:
             rows = self.optional(out, "problem_metadata", lambda: self.client.json("https://kenkoooo.com/atcoder/resources/problems.json"))
@@ -46,6 +56,8 @@ class AtCoder(Adapter):
                 raise CrawlError("AtCoder Problems 提交接口结构不兼容")
             fresh = [r for r in rows if str(r["id"]) not in seen]
             for row in fresh:
+                if row.get('user_id') is not None and row['user_id'] != self.account:
+                    raise CrawlError('AtCoder 公开索引返回账号不匹配，未导入')
                 seen.add(str(row["id"]))
                 pid = row["problem_id"]
                 p = problems.get(pid, {})

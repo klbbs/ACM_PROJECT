@@ -19,6 +19,7 @@ user_id_context = contextvars.ContextVar('acm_log_user_id', default=None)
 console = logging.getLogger('acmweb.runtime')
 
 EVENTS = {
+    'platform.source_failed': ('platform', '官方提交源码读取未完成，请查看固定失败原因'),
     'ai.completed': ('task', 'AI 调用已完成'),
     'ai.failed': ('task', 'AI 调用未完成，请查看固定失败原因'),
     'gym.sync_checked': ('platform', 'Gym 补充提交同步已检查'),
@@ -53,7 +54,8 @@ KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
          'specialist_catalog', 'topic_method_check', 'specialist_generate',
          'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
-REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',
+REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited', 'source_login_required', 'source_read_failed',
+           'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',
            'gym_access_restricted', 'gym_time_unverified', 'gym_login_or_permission',
            'gym_query_limit', 'gym_unreadable', 'gym_scope_deferred', 'gym_sync_incomplete',
            'identity_verified', 'qr_expired', 'identity_verification_timeout', 'identity_not_ready',

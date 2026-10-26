@@ -251,7 +251,7 @@ export function RemoteSubmissionPanel({
       const now = Date.now()
       for (const row of items) {
         if (row.status !== 'judging' || !row.submission_id || !row.updated_at) continue
-        if (['login_required', 'account_mismatch', 'challenge'].includes(row.reason || '')) continue
+        if (['login_required', 'account_mismatch', 'challenge', 'access_restricted'].includes(row.reason || '')) continue
         const delay = row.reason === 'rate_limited' ? 60000 : 12000
         if (now - row.updated_at * 1000 < delay || (autoRefreshAfter.current[row.id] || 0) > now)
           continue

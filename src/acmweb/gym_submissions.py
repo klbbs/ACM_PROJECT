@@ -84,7 +84,8 @@ def parse_page(html, contest, handle):
     if not isinstance(html, str) or len(html.encode('utf-8')) > 2 * 1024 * 1024:
         raise CrawlError('Gym 页面超出安全读取范围')
     soup = BeautifulSoup(html, 'html.parser')
-    if soup.select_one('#challenge-form, #challenge-running, .cf-turnstile') or any(s in html.lower() for s in ('cf-chl-', 'just a moment...', 'checking your browser')):
+    from ojcrawler.access import protection_reason
+    if protection_reason(html) == 'challenge':
         raise CrawlError('Gym 官方页面要求浏览器安全验证，尚未同步；请在官方浏览器处理后更新凭据重试')
     if soup.select_one('input[type=password]'):
         raise CrawlError('Gym 官方页面要求登录，请检查此账号的 Cookie 和比赛访问权限')
@@ -130,6 +131,9 @@ def collect_contest(client, contest, handle, since, *, deadline=None):
             budget()
             payload = client.json('https://codeforces.com/api/contest.status',
                 params={'contestId': contest, 'handle': handle, 'from': page * 200 + 1, 'count': 200})
+            if isinstance(payload,dict) and payload.get('status') == 'FAILED' and re.search(r'(?:call|request) limit exceeded',str(payload.get('comment','')),re.I):
+                from ojcrawler.access import PlatformAccessError
+                raise PlatformAccessError('codeforces.com','rate_limited',429)
             if not isinstance(payload, dict) or payload.get('status') != 'OK' or not isinstance(payload.get('result'), list):
                 raise CrawlError('Gym API 不可用')
             batch = payload['result']
@@ -154,7 +158,10 @@ def collect_contest(client, contest, handle, since, *, deadline=None):
             if len(batch) < 200 or batch and all(type(r.get('creationTimeSeconds')) is int and r['creationTimeSeconds'] < since for r in batch):
                 return rows
         raise CrawlError('Gym 提交超过 1000 条安全查询范围，未确认完整结果')
-    except (CrawlError, AttributeError, KeyError, TypeError, ValueError):
+    except (CrawlError, AttributeError, KeyError, TypeError, ValueError) as error:
+        from ojcrawler.access import PlatformAccessError
+        if isinstance(error,PlatformAccessError) and error.reason == 'rate_limited':
+            raise
         # Do not send code or request source; only read this account's status.
         rows, seen = [], set()
         for page in range(1, 6):
@@ -175,6 +182,8 @@ def collect_contest(client, contest, handle, since, *, deadline=None):
 def _failure(error):
     # Only static messages can reach task results/UI, never upstream contents.
     text = str(error)
+    if getattr(error,'reason',None) in {'challenge','access_restricted'}:
+        return 'access_restricted', 'Gym 官方读取入口受验证或权限限制；已有提交保留，未当作零条成功'
     if '时区' in text or '时间格式' in text or '时间无效' in text:
         return 'time_unverified', 'Gym 官方提交时间或时区无法核验，未猜测日期；历史记录保留。'
     if '安全验证' in text or 'HTTP 403' in text:

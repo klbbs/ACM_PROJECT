@@ -120,6 +120,33 @@ def test_source_upstream_rate_limit_has_retry_after_and_keeps_history(site, monk
     assert len(service.listing('4-A', 'demo')['items']) == 1
 
 
+def test_source_challenge_explains_source_block_without_requesting_resubmission(site, monkeypatch):
+    import asyncio
+    from acmweb.remote_judges import SubmissionError
+    client, app, service, _ = site
+    asyncio.run(service.sync('codeforces:4-A', 'demo'))
+    class Log:
+        def emit(self, event, **fields):
+            events.append((event, fields))
+    class Driver:
+        def source(self, *_):
+            raise SubmissionError('challenge')
+        def close(self):
+            pass
+    events = []
+    monkeypatch.setattr(service.jobs, 'event_log', Log())
+    monkeypatch.setattr(service.remote, '_driver', lambda *_: Driver())
+    response = client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'})
+    assert response.status_code == 400
+    assert '登录正常时也可能发生' in response.json()['detail']
+    assert '无需重新提交' in response.json()['detail']
+    assert '请到官方页面提交' not in response.json()['detail']
+    assert events == [('platform.source_failed', {'level':'WARNING','platform':'codeforces','reason':'source_challenge'})]
+    assert len(service.listing('4-A','demo')['items']) == 1
+    with app.state.database.connect() as db:
+        assert db.execute('SELECT count(*) FROM wb_official_sources').fetchone()[0] == 0
+
+
 @pytest.mark.parametrize('changed', [ {'account':'stranger'}, {'problem_id':'5-A'}, {'id':'67890'}, {'submitted_at':int(time.time())+3600} ])
 def test_official_source_rejects_wrong_evidence(site, monkeypatch, changed):
     client, app, service, plan = site

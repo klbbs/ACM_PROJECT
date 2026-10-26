@@ -75,6 +75,12 @@ PROTECTED = re.compile(r'```[^\n]*\n.*?```|~~~[^\n]*\n.*?~~~|\$\$\$.*?\$\$\$|\$\
 TOKEN = re.compile(r'ACMPROTECT_[a-f0-9]{16}_\d+_END')
 AI_BATCH_CHAR_LIMIT = 4000
 AI_BATCH_BLOCK_LIMIT = 48
+PROTECTED_HTML_CLASSES = frozenset({
+    'katex', 'katex-display', 'katex-html', 'katex-mathml',
+    'MathJax', 'MathJax_Display', 'MathJax_Preview',
+    'sample-tests', 'sample-test', 'sample-input', 'sample-output',
+    'sample-data', 'sampledata',
+})
 
 
 def fragment_blocks(blocks, limit=AI_BATCH_CHAR_LIMIT):
@@ -117,7 +123,10 @@ class Document:
         self.add(statement.get('title', ''), ('title', None))
         if statement.get('body_html'):
             for node in list(self.soup.find_all(string=True)):
-                if isinstance(node, Comment) or any(p.name in {'pre', 'code', 'script', 'style', 'math', 'svg'} for p in node.parents):
+                if isinstance(node, Comment) or any(
+                        p.name in {'pre', 'code', 'script', 'style', 'math', 'svg'} or
+                        PROTECTED_HTML_CLASSES.intersection(p.get('class', []))
+                        for p in node.parents):
                     continue
                 self.add(str(node), ('node', node))
         else:
@@ -135,7 +144,7 @@ class Document:
             return token
         masked = PROTECTED.sub(hide, text)
         # Entirely mathematical text needs no translation.
-        if not TOKEN.sub('', masked).strip():
+        if not any(char.isalpha() for char in TOKEN.sub('', masked)):
             return
         self.blocks.append({'id': str(len(self.blocks)), 'text': masked})
         self.locations.append(location)
@@ -402,8 +411,48 @@ class Translations:
         self._remember(item)
         return {'translation_id': tid, 'reused': False}
 
-    async def translate_ai(self, payload, blocks):
+    async def _translate_protected_prose(self, payload, blocks):
+        """Translate prose once; keep protected bytes and positions on the server.
+
+        Models need not echo long random markers. Formula/code/link segments,
+        whitespace and punctuation are reassembled from the original document,
+        never guessed from model output. The usual batch limit still applies;
+        this is the initial translation, with no paid recovery requests.
+        """
+        prose, layouts = [], {}
+        for block in blocks:
+            layout, start = [], 0
+            for match in TOKEN.finditer(block['text']):
+                layout.append(('prose', block['text'][start:match.start()]))
+                layout.append(('literal', match.group()))
+                start = match.end()
+            layout.append(('prose', block['text'][start:]))
+            pieces = []
+            for kind, text in layout:
+                if kind == 'literal' or not any(char.isalpha() for char in text):
+                    pieces.append(('literal', text))
+                    continue
+                core = text.strip()
+                prefix = text[:len(text) - len(text.lstrip())]
+                suffix = text[len(text.rstrip()):]
+                bid = str(len(prose))
+                prose.append({'id': bid, 'text': core})
+                pieces.append(('translated', (bid, prefix, suffix)))
+            layouts[block['id']] = pieces
+        if not prose:
+            raise AIError('题面没有可翻译的自然语言')
+        result, provenance = await self.translate_ai(payload, prose, _prose_only=True)
+        values = {block['id']: block['text'].strip() for block in result['blocks']}
+        rebuilt = {}
+        for bid, pieces in layouts.items():
+            rebuilt[bid] = ''.join(value if kind == 'literal' else
+                value[1] + values[value[0]] + value[2] for kind, value in pieces)
+        return {'blocks': [{'id': block['id'], 'text': rebuilt[block['id']]} for block in blocks]}, provenance
+
+    async def translate_ai(self, payload, blocks, *, _prose_only=False):
         """Bound structured output size so long statements do not truncate as one response."""
+        if not _prose_only and any(TOKEN.search(block['text']) for block in blocks):
+            return await self._translate_protected_prose(payload, blocks)
         char_limit, block_limit = AI_BATCH_CHAR_LIMIT, AI_BATCH_BLOCK_LIMIT
         if payload.provider == 'api':
             with self.ai.config_lock:
@@ -443,6 +492,10 @@ class Translations:
                             TOKEN.findall(block['text']) != TOKEN.findall(result_block.text) or
                             'ACMPROTECT_' in TOKEN.sub('', result_block.text)):
                         raise AIError('翻译改变了段落或公式占位符，未保存')
+                    if _prose_only and (PROTECTED.search(result_block.text) or any(
+                            result_block.text.count(delimiter) != block['text'].count(delimiter)
+                            for delimiter in ('$', '`', r'\(', r'\)', r'\[', r'\]'))):
+                        raise AIError('翻译加入了原文没有的公式、代码或链接，未保存')
                     translated[block['source_id']] = translated.get(block['source_id'], '') + result_block.text
                 if provenance is None:
                     provenance = result.provenance

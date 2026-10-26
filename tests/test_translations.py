@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from acmweb.ai import AIResult, ProviderConfig
 from acmweb.app import create_app
 from acmweb.settings import Settings
-from acmweb.translations import Document, fingerprint, Translations, Translate, fragment_blocks, model_identity
+from acmweb.translations import Document, fingerprint, Translations, Translate, fragment_blocks, model_identity, TOKEN
 from acmweb.statement_markdown import RENDER_VERSION, html_markdown
 from acmweb.codex_bridge import AIError
 from fastapi import HTTPException
@@ -386,8 +386,8 @@ def test_ai_translation_splits_oversized_single_text_block_and_reassembles(works
     monkeypatch.setattr(app.state.ai, 'complete', complete)
     result = asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
     assert len(calls) > 1
-    masked = ''.join(block['text'] for block in calls)
-    assert 'ACMPROTECT_' in masked and masked.count('ACMPROTECT_') == 1
+    sent = ''.join(block['text'] for block in calls)
+    assert 'ACMPROTECT_' not in sent and '$x + 1$' not in sent
     translated = app.state.translations.get(result['translation_id'])['statement']['sections'][0]
     assert translated == original
 
@@ -434,7 +434,7 @@ def test_prose_relation_symbols_and_bare_tex_commands_are_protected_from_transla
     assert translated['sections'] == [source.replace('Read', '读取')]
 
 
-def test_bad_batch_stops_before_more_calls_and_does_not_persist(workspace, monkeypatch):
+def test_bad_prose_batch_stops_without_paid_retry_and_does_not_persist(workspace, monkeypatch):
     app, _, statement = workspace
     app.state.workbench.store_statement('codeforces:4-A', {**statement, 'body_html': '',
         'sections': [('Explain $x$ carefully. ' * 60)] * 3})
@@ -442,7 +442,9 @@ def test_bad_batch_stops_before_more_calls_and_does_not_persist(workspace, monke
 
     async def complete(task, provider, model, payload, schema):
         calls.append(payload)
-        return AIResult(data={'blocks': [{'id': block['id'], 'text': '译文已丢失公式'} for block in payload['blocks']]},
+        return AIResult(data={'blocks': [{'id': block['id'], 'text':
+            'ACMPROTECT_broken'}
+            for block in payload['blocks']]},
                         provenance={'channel': 'api', 'model': model})
 
     monkeypatch.setattr(app.state.ai, 'complete', complete)
@@ -450,6 +452,147 @@ def test_bad_batch_stops_before_more_calls_and_does_not_persist(workspace, monke
         asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture-model', consent=True)))
     assert len(calls) == 1
     assert app.state.translations.ephemeral == {}
+
+
+@pytest.mark.parametrize('damage', ['delete', 'escape', 'reorder', 'duplicate'])
+def test_gym_translation_never_sends_markers_to_models_that_would_damage_them(workspace, monkeypatch, damage):
+    app = workspace[0]
+    statement = parse_statement('''<div class="problem-statement"><div class="header"><div class="title">A. Synthetic Gym</div></div>
+        <p>Compute $$$a \\neq b$$$ and $$$c \\leq d$$$ carefully.</p>
+        <p>Use <code>x != y</code> and <a href="https://example.test/gym">the diagram</a>.</p>
+        <pre>int x = 1; // Never translate</pre>
+        <div class="sample-tests"><div class="sample-test"><div class="input"><pre>1  2\n3</pre></div><div class="output"><pre>4</pre></div></div></div></div>''', 'codeforces:100001-A')
+    statement['source'] = 'official'
+    app.state.workbench.store_statement(statement['id'], statement)
+    calls = []
+    async def complete(task, provider, model, payload, schema):
+        calls.append(copy.deepcopy(payload))
+        output = []
+        for block in payload['blocks']:
+            text = block['text']
+            markers = TOKEN.findall(text)
+            if markers:
+                if damage == 'delete': text = TOKEN.sub('', text)
+                elif damage == 'escape': text = text.replace('_', r'\_')
+                elif damage == 'duplicate': text += markers[0]
+                elif damage == 'reorder':
+                    text = text.replace(markers[0], 'SWAP').replace(markers[-1], markers[0]).replace('SWAP', markers[-1])
+            text = text.replace('Compute', '计算').replace('carefully.', '小心处理。')
+            output.append({'id': block['id'], 'text': text})
+        return AIResult(data={'blocks': output}, provenance={'channel': 'api', 'model': model})
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    result = asyncio.run(app.state.translations.generate(statement['id'], Translate(model='fixture', consent=True)))
+    translated = app.state.translations.get(result['translation_id'])['statement']
+    assert len(calls) == 1  # Initial translation only, no automatic paid retry.
+    assert all('ACMPROTECT_' not in block['text'] and '$$$' not in block['text']
+               for call in calls for block in call['blocks'])
+    assert '$$$a \\neq b$$$' in translated['body_html']
+    assert '$$$c \\leq d$$$' in translated['body_html']
+    assert translated['body_html'].index('a \\neq b') < translated['body_html'].index('c \\leq d')
+    assert '计算' in translated['body_html']
+    assert '<code>x != y</code>' in translated['body_html']
+    assert 'int x = 1; // Never translate' in translated['body_html']
+    assert translated['samples'] == statement['samples']
+    assert translated['images'] == statement['images']
+
+
+@pytest.mark.parametrize('failure', ['new_formula', 'new_code', 'new_link', 'new_delimiter', 'config_change', 'network', 'wrong_id', 'empty'])
+def test_server_assembled_protected_translation_fails_closed(workspace, monkeypatch, failure):
+    app = workspace[0]
+    app.state.workbench.store_statement('codeforces:4-A', {**workspace[2], 'body_html': '',
+        'sections': ['Compute $x + 1$ carefully.']})
+    if failure == 'config_change':
+        monkeypatch.setattr('acmweb.translations.AI_BATCH_BLOCK_LIMIT', 1)
+    calls = []
+    async def complete(task, provider, model, payload, schema):
+        calls.append(payload)
+        if failure == 'network':
+            raise AIError('AI 网络请求失败')
+        values = [{'id': block['id'], 'text': block['text']} for block in payload['blocks']]
+        if failure == 'new_formula': values[0]['text'] += ' $x + 2$'
+        elif failure == 'new_code': values[0]['text'] += ' `x = 2`'
+        elif failure == 'new_link': values[0]['text'] += ' https://example.test/invented'
+        elif failure == 'new_delimiter': values[0]['text'] += ' $'
+        elif failure == 'wrong_id': values[0]['id'] = 'unknown'
+        elif failure == 'empty': values[0]['text'] = ''
+        return AIResult(data={'blocks': values}, provenance={'channel': 'api',
+            'model': 'changed' if len(calls) == 2 and failure == 'config_change' else model})
+    monkeypatch.setattr(app.state.ai, 'complete', complete)
+    with pytest.raises(AIError):
+        asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture', consent=True)))
+    assert len(calls) == (2 if failure == 'config_change' else 1)
+    assert app.state.translations.ephemeral == {}
+
+
+def test_protected_prose_batches_keep_existing_preflight_call_limit(workspace, monkeypatch):
+    app = workspace[0]
+    monkeypatch.setattr('acmweb.translations.AI_BATCH_BLOCK_LIMIT', 1)
+    app.state.workbench.store_statement('codeforces:4-A', {**workspace[2], 'title': '', 'body_html': '',
+        'sections': ['Compute $x$ carefully. ' * 70]})
+    async def should_not_call(*args, **kwargs):
+        raise AssertionError('Batch limit must be checked before any paid request')
+    monkeypatch.setattr(app.state.ai, 'complete', should_not_call)
+    with pytest.raises(AIError, match='超过 64 批翻译'):
+        asyncio.run(app.state.translations.generate('4-A', Translate(model='fixture', consent=True)))
+    assert app.state.translations.ephemeral == {}
+
+
+def test_numeric_and_symbol_only_formula_nodes_are_not_sent_for_translation():
+    doc = Document({'title': 'Numbers', 'body_html': '<p>  123 ; $$$a + b$$$ (42). </p>'})
+    assert doc.blocks == [{'id': '0', 'text': 'Numbers'}]
+    result = doc.apply({'blocks': [{'id': '0', 'text': '数字'}]})
+    assert result['body_html'] == '<p>  123 ; $$$a + b$$$ (42). </p>'
+
+
+def test_protected_prose_reassembly_preserves_spaces_and_newlines(workspace, monkeypatch):
+    service = workspace[0].state.translations
+    original = '  Read\n  $x$ \t and\n $y$.  '
+    doc = Document({'title': 'Spaced', 'sections': [original]})
+    calls = []
+    async def complete(task, provider, model, payload, schema):
+        calls.append(payload)
+        return AIResult(data={'blocks': [{**block, 'text': block['text'].replace('Read', '读取').replace('and', '以及')}
+            for block in payload['blocks']]}, provenance={'channel': 'api', 'model': model})
+    monkeypatch.setattr(service.ai, 'complete', complete)
+    data, _ = asyncio.run(service.translate_ai(Translate(model='fixture', consent=True), doc.blocks))
+    assert len(calls) == 1
+    assert doc.apply(data)['sections'] == [original.replace('Read', '读取').replace('and', '以及')]
+
+
+def test_legacy_rendered_math_and_non_pre_samples_never_become_translation_blocks():
+    html = ('<p>Read <span class="katex"><span class="katex-html">x = y</span></span>.</p>'
+            '<div class="sample-tests"><div class="sample-test">'
+            '<div class="input">SAMPLE_INPUT Alpha</div><div class="output">SAMPLE_OUTPUT Beta</div>'
+            '</div></div><p class="input">Ordinary input description.</p>'
+            '<p class="output">Ordinary output description.</p>')
+    doc = Document({'title': 'Legacy', 'body_html': html})
+    sent = '\n'.join(block['text'] for block in doc.blocks)
+    assert 'x = y' not in sent
+    assert 'SAMPLE_INPUT' not in sent and 'SAMPLE_OUTPUT' not in sent
+    assert 'Ordinary input description.' in sent and 'Ordinary output description.' in sent
+    result = doc.apply({'blocks': [{**block, 'text': block['text'].replace('Read', '读取').replace('Ordinary', '普通')}
+        for block in doc.blocks]})
+    assert '<span class="katex-html">x = y</span>' in result['body_html']
+    assert '<div class="input">SAMPLE_INPUT Alpha</div>' in result['body_html']
+    assert '<div class="output">SAMPLE_OUTPUT Beta</div>' in result['body_html']
+    assert '普通 input description.' in result['body_html']
+
+
+def test_dense_gym_formula_prose_uses_bounded_initial_batches(workspace, monkeypatch):
+    service = workspace[0].state.translations
+    original = 'Compute $x_i$ carefully.\n' * 75
+    doc = Document({'title': '', 'sections': [original]})
+    calls = []
+    async def complete(task, provider, model, payload, schema):
+        calls.append(payload)
+        assert len(payload['blocks']) <= 48
+        assert all('ACMPROTECT_' not in block['text'] and '$' not in block['text'] for block in payload['blocks'])
+        return AIResult(data={'blocks': [{**block, 'text': block['text'].replace('Compute', '计算')}
+            for block in payload['blocks']]}, provenance={'channel': 'api', 'model': model})
+    monkeypatch.setattr(service.ai, 'complete', complete)
+    data, _ = asyncio.run(service.translate_ai(Translate(model='fixture', consent=True), doc.blocks))
+    assert len(calls) == 2  # 76 prose strings grouped by the existing 48-item cap.
+    assert doc.apply(data)['sections'] == [original.replace('Compute', '计算')]
 
 
 def test_official_translation_requests_are_batched(monkeypatch, workspace):

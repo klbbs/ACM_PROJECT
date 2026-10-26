@@ -597,6 +597,11 @@ class Workbench:
                         result['source'] = 'official'
                         return self.store_statement(pid, result)
                     except (CrawlError, AIError) as exc:
+                        from ojcrawler.access import PlatformAccessError
+                        if isinstance(exc, PlatformAccessError) and exc.reason == 'rate_limited':
+                            error = '官方题面读取受到频率限制，已停止切换入口；请等待后重试，已有题面保留'
+                            self.db.set('statement_status:'+pid, {'status':'failed','error':error,'at':int(time.time())})
+                            raise AIError(error) from None
                         failures.append(str(exc))
             finally:
                 client.close()
@@ -636,7 +641,15 @@ class Workbench:
                 if found or len(rows) < 200 or rows[-1]['id'] < data.submission_id:
                     break
         except CrawlError as exc:
-            raise AIError('判题同步未完成：' + str(exc)) from None
+            from ojcrawler.access import PlatformAccessError
+            if not isinstance(exc, PlatformAccessError) or exc.reason == 'rate_limited':
+                raise AIError('判题同步未完成：' + str(exc)) from None
+            from ojcrawler.codeforces_pages import read_submissions
+            try:
+                rows, _ = read_submissions(client, handle, max_pages=3, contest=contest, submission_id=data.submission_id)
+                found = next((r for r in rows if r['id'] == data.submission_id), None)
+            except CrawlError as fallback_error:
+                raise AIError('官方 API 及提交列表均未完成核验：' + str(fallback_error)) from None
         finally:
             client.close()
         if not found:

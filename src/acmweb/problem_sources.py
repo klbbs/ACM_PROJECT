@@ -191,8 +191,21 @@ def fetch_statement(pid,accounts):
     for cookie in [None]+([saved_cookie] if saved_cookie else []):
         client=Client(timeout=12,retries=0,cookie=cookie,cookie_host=host if cookie else None)
         try:
-            return parse_statement(client.get(source_url(pid),params={'lang':'en'} if platform=='atcoder' else None),pid)
-        except (AIError,CrawlError) as exc: failures.append(str(exc))
+            variants = [({'lang':'en'}, None), ({'lang':'ja'}, None)] if platform == 'atcoder' else (
+                [(None,None),(None,{'Accept':'application/json'})] if platform == 'luogu' else [(None,None)])
+            for params, headers in variants:
+                try:
+                    return parse_statement(client.get(source_url(pid),params=params,headers=headers),pid)
+                except (AIError,CrawlError) as exc:
+                    from ojcrawler.access import PlatformAccessError
+                    if isinstance(exc,PlatformAccessError) and exc.reason == 'rate_limited':
+                        raise
+                    failures.append(str(exc))
+        except (AIError,CrawlError) as exc:
+            from ojcrawler.access import PlatformAccessError
+            if isinstance(exc,PlatformAccessError) and exc.reason == 'rate_limited':
+                raise AIError('官方题面读取受到频率限制，已停止切换入口；请等待后重试，已有题面保留') from None
+            failures.append(str(exc))
         finally: client.close()
     raise AIError('官方题面获取失败：'+'；'.join(failures))
 

@@ -279,6 +279,19 @@ it('waits a full minute before automatically refreshing an upstream rate-limited
     expect(posts[0]).toEqual(['/remote-submissions/remote-1/refresh', 'POST', {}])
   })
 })
+
+it.each(['challenge', 'access_restricted', 'login_required'])('does not automatically refresh or resend after %s', async (reason) => {
+  vi.useFakeTimers()
+  const row = {...queued, status:'judging', submission_id:'123', reason, updated_at:Date.now()/1000}
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method) return {items:[row]}
+    throw new Error('Protected reads must not be automatically replayed')
+  })
+  await render(props(), async () => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000) })
+    expect(request.mock.calls.filter(call => call[1] === 'POST')).toHaveLength(0)
+  })
+})
 it('keeps polling after temporary list failure and shows WA in red', async () => {
   vi.useFakeTimers()
   let reads = 0

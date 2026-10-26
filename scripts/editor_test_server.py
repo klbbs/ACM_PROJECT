@@ -69,7 +69,7 @@ def main():
         @app.post('/_fixture/source-mode/{mode}')
         def fixture_source_mode(mode: str):
             from fastapi import HTTPException
-            if mode not in {'normal', 'unavailable', 'rate_limited'}:
+            if mode not in {'normal', 'unavailable', 'rate_limited', 'challenge'}:
                 raise HTTPException(422, 'Unknown synthetic source mode')
             source_mode['value'] = mode
             return {'mode': mode}
@@ -99,7 +99,7 @@ def main():
             def source(self, pid, handle, sid):
                 from acmweb.remote_judges import SubmissionError
                 if source_mode['value'] != 'normal':
-                    raise SubmissionError('source_unavailable' if source_mode['value'] == 'unavailable' else 'rate_limited')
+                    raise SubmissionError('source_unavailable' if source_mode['value'] == 'unavailable' else source_mode['value'])
                 if sid in remote_receipts:
                     record = remote_receipts[sid]
                 elif sid in {'920001','920002','920003'} and pid == 'codeforces:4-A':

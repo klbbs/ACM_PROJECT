@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 
 from .base import Adapter
 from ..models import CrawlError, Submission, rating_event
+from ..access import PlatformAccessError
 
 
 def page_data(text):
@@ -44,8 +45,16 @@ class Luogu(Adapter):
     platform = "luogu"
 
     def data(self, path, **params):
-        return page_data(self.client.get(f"https://www.luogu.com.cn{path}", params,
-                                        {"Referer": "https://www.luogu.com.cn/"}))
+        url = f"https://www.luogu.com.cn{path}"
+        headers = {"Referer": "https://www.luogu.com.cn/"}
+        try:
+            return page_data(self.client.get(url, params, headers))
+        except PlatformAccessError as exc:
+            if exc.reason == 'rate_limited':
+                raise
+            # Ordinary content negotiation; still requires official access and
+            # the same strict page-data schema. Never execute a challenge.
+            return page_data(self.client.get(url, params, {**headers, 'Accept':'application/json'}))
 
     def fetch(self, out, since):
         profile = self.data(f"/user/{quote(self.account, safe='')}")

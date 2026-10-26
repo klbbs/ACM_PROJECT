@@ -505,6 +505,13 @@ DISCOVERY = {'codeforces': _cf, 'atcoder': _atcoder, 'luogu': _luogu, 'nowcoder'
 
 def _sync_error(exc):
     """Only structured, allowlisted upstream facts reach users; never exception text."""
+    from ojcrawler.access import PlatformAccessError
+    if isinstance(exc, PlatformAccessError):
+        if exc.reason == 'rate_limited':
+            return 'rate_limited', '官方平台限制请求频率，已停止该来源；请等待后重试，旧缓存保留'
+        if exc.reason == 'challenge':
+            return 'browser_challenge', '官方来源要求浏览器或验证码验证；该入口已停止，旧缓存保留，不将验证页当作题库'
+        return 'access_denied', '官方来源拒绝服务器读取；不据此认定 Cookie 失效，旧缓存保留'
     message = str(exc)
     http = re.search(r'\bHTTP (\d{3})\b', message)
     if http:

@@ -25,7 +25,8 @@ _MESSAGES = {
     'invalid_input': '题号、账号、提交号或代码格式无效。',
     'login_required': '平台登录已失效，请重新获取完整 Cookie 并检测登录。',
     'account_mismatch': '当前 Cookie 的平台身份与所选提交账号不一致。',
-    'challenge': '官方平台要求浏览器安全验证，服务器无法完成；请到官方页面提交。',
+    'challenge': '官方平台要求浏览器安全验证，此读取入口暂不可用；请在官方浏览器处理验证。',
+    'access_restricted': '官方平台拒绝此入口的服务器访问，不能据此认定登录失效；已有记录保留。',
     'language_unsupported': '官方当前不支持所选编译器，请刷新编译器列表重新选择。',
     'form_changed': '官方提交表单结构已变化，已停止提交，请使用官方页面。',
     'network': '连接官方平台失败，请稍后重试。',
@@ -54,6 +55,7 @@ class PlatformSession:
         if platform not in self.HOSTS:
             raise SubmissionError('unsupported')
         self.before_send = None
+        self._read_gates = {}
         self.platform = platform
         self.host = self.HOSTS[platform]
         self.base = 'https://' + self.host
@@ -81,9 +83,10 @@ class PlatformSession:
             raise SubmissionError('form_changed')
         return url
 
-    def _request(self, method, url, *, data=None):
+    def _request(self, method, url, *, data=None, headers=None):
         url = self._url(url)
-        if self.platform == 'codeforces' and urlsplit(url).path.startswith('/api/'):
+        sending_code = method == 'POST' and urlsplit(url).path != '/data/submitSource'
+        if method == 'GET':
             # Share the collector's host pacing, including receipt discovery
             # and automatic polling. Never retry a code POST here.
             from ojcrawler.http import _HOST_LOCKS, _LAST_REQUEST
@@ -93,29 +96,29 @@ class PlatformSession:
         try:
             response = self.session.request(method, url, data=data, timeout=(10, 25),
                                             allow_redirects=False, stream=True,
-                                            headers={'Referer': self.base + '/', 'Origin': self.base} if method == 'POST' else None)
+                                            headers=({**({'Referer': self.base + '/', 'Origin': self.base} if method == 'POST' else {}), **(headers or {})} or None))
             chunks = []
             size = 0
             try:
                 for chunk in response.iter_content(65536):
                     size += len(chunk)
                     if size > 2 * 1024 * 1024:
-                        raise SubmissionError('uncertain' if method == 'POST' else 'form_changed', uncertain=method == 'POST')
+                        raise SubmissionError('uncertain' if sending_code else 'form_changed', uncertain=sending_code)
                     chunks.append(chunk)
                 text = b''.join(chunks).decode(response.encoding or 'utf-8', errors='replace')
                 return response.status_code, dict(response.headers), text
             finally:
                 response.close()
         except requests.RequestException:
-            raise SubmissionError('uncertain' if method == 'POST' else 'network', uncertain=method == 'POST') from None
+            raise SubmissionError('uncertain' if sending_code else 'network', uncertain=sending_code) from None
 
     @staticmethod
     def _check_page(status, text, *, submitted=False):
+        from ojcrawler.access import protection_reason
         soup = BeautifulSoup(text, 'html.parser')
-        if soup.select_one('#challenge-running, #challenge-form, .cf-turnstile, #cf-challenge-running') or any(t in text.lower() for t in ('cf-chl-', 'just a moment...', 'checking your browser')):
-            raise SubmissionError('challenge', uncertain=submitted)
-        if status == 429:
-            raise SubmissionError('rate_limited', uncertain=submitted)
+        reason = protection_reason(text, status)
+        if reason:
+            raise SubmissionError(reason, uncertain=submitted)
         if status >= 400:
             raise SubmissionError('uncertain' if submitted else 'network', uncertain=submitted)
         return soup
@@ -216,6 +219,34 @@ class PlatformSession:
         return self._form(self._problem(pid, handle), handle)[4]
 
     def _records(self, key, handle, submission_id=None):
+        if self.platform != 'codeforces':
+            return self._api_records(key,handle,submission_id)
+        gate_key=('cf_api',key.split('-')[0],handle.casefold())
+        if gate_key not in self._read_gates:
+            try:
+                return self._api_records(key, handle, submission_id)
+            except SubmissionError as error:
+                if error.reason not in {'challenge','access_restricted','network'}:
+                    raise
+                self._read_gates[gate_key]=error.reason
+        from types import SimpleNamespace
+        from ojcrawler.codeforces_pages import read_submissions
+        from ojcrawler.models import CrawlError
+        def read(url):
+            status, _, text = self._request('GET', url)
+            self._check_page(status, text)
+            return text
+        try:
+            rows, _ = read_submissions(SimpleNamespace(get=read), handle,
+                max_pages=3 if submission_id is not None else 1,
+                contest=key.split('-')[0], submission_id=submission_id)
+            return rows
+        except CrawlError:
+            # No usable alternate evidence: stop the judge watcher on the
+            # original gate instead of repeatedly probing the blocked API.
+            raise SubmissionError(self._read_gates[gate_key]) from None
+
+    def _api_records(self, key, handle, submission_id=None):
         if self.platform == 'codeforces':
             from json import loads
             contest = key.split('-')[0]
@@ -355,7 +386,16 @@ class PlatformSession:
             return self.codeforces_record(key, handle, sid, row)
         contest = self._contest(key)
         url = self.base + f'/contests/{contest}/submissions/{sid}'
-        soup = self._get(url)
+        gate_key=('atcoder_detail',contest,sid,handle)
+        if gate_key in self._read_gates:
+            return self._atcoder_list_record(key,handle,sid,self._read_gates[gate_key])
+        try:
+            soup = self._get(url)
+        except SubmissionError as error:
+            if error.reason not in {'challenge','access_restricted'}:
+                raise
+            self._read_gates[gate_key]=error.reason
+            return self._atcoder_list_record(key, handle, sid, error.reason)
         fields = {}
         for row in soup.select('table tr'):
             th, td = row.find('th'), row.find('td')
@@ -385,9 +425,49 @@ class PlatformSession:
         return {'id': sid, 'account': ua['href'].rsplit('/', 1)[1], 'problem_id': key, 'submitted_at': ts, 'verdict': state,
                 'language': raw['programmingLanguage'], 'url': url, 'raw': raw, 'contest_id': contest}
 
+    def _atcoder_list_record(self, key, handle, sid, blocked_reason):
+        contest = self._contest(key)
+        soup = self._get(self.base + f'/contests/{contest}/submissions?f.User=' + quote(handle, safe=''))
+        labels = {'time':{'Submission Time','提出日時'},'task':{'Task','問題'},'user':{'User','ユーザ'},
+                  'language':{'Language','言語'},'status':{'Status','結果'}}
+        for table in soup.select('table'):
+            headings=[h.get_text(' ',strip=True) for h in table.select('thead th')]
+            columns={key:next((i for i,title in enumerate(headings) if title in names),None) for key,names in labels.items()}
+            if any(value is None for value in columns.values()):
+                continue
+            matches=[row for row in table.select('tbody tr') if row.select_one(f'a[href="/contests/{contest}/submissions/{sid}"]')]
+            if len(matches)!=1:
+                continue
+            cells=matches[0].find_all('td',recursive=False)
+            if len(cells)<=max(columns.values()):
+                raise SubmissionError('record_unavailable')
+            user=cells[columns['user']].select_one('a[href]')
+            task=cells[columns['task']].select_one('a[href]')
+            if user is None or user['href'] != '/users/'+handle or task is None or task['href'] != f'/contests/{contest}/tasks/{key}':
+                raise SubmissionError('record_mismatch')
+            node=cells[columns['time']].select_one('time') or cells[columns['time']]
+            try:
+                date=datetime.fromisoformat(node.get('datetime') or node.get_text(' ',strip=True))
+                if date.tzinfo is None or not 0<int(date.timestamp())<=time.time()+300:raise ValueError
+            except (ValueError,TypeError):
+                raise SubmissionError('record_unavailable') from None
+            state=cells[columns['status']].get_text(' ',strip=True)
+            state=state if state in {'AC','WA','TLE','MLE','RE','CE','OLE','IE'} else 'PENDING'
+            language=cells[columns['language']].get_text(' ',strip=True)
+            stamp=int(date.timestamp())
+            return {'id':sid,'account':handle,'problem_id':key,'submitted_at':stamp,'verdict':state,
+                'language':language,'contest_id':contest,'url':self.base+f'/contests/{contest}/submissions/{sid}',
+                'raw':{'verdict':state,'programmingLanguage':language,'creationTimeSeconds':stamp},
+                'source_block_reason':blocked_reason}
+        raise SubmissionError('record_unavailable')
+
     def source(self, pid, handle, submission_id):
         """Fetch only an independently verified owner's official source page."""
         record = self.judge(pid, handle, submission_id)
+        if record.get('source_block_reason'):
+            # The exact source/detail URL was already challenged during judge.
+            # Reusing a readable list is judge evidence, never source evidence.
+            raise SubmissionError(record['source_block_reason'])
         status, headers, text = self._request('GET', record['url'])
         # Do not silently read source from a redirected, different submission.
         if status in (301, 302, 303, 307, 308):
@@ -395,7 +475,12 @@ class PlatformSession:
             if re.match(r'^/(?:enter|login)(?:[/?]|$)', urlsplit(location).path):
                 raise SubmissionError('login_required')
             raise SubmissionError('record_unavailable')
-        soup = self._check_page(status, text)
+        try:
+            soup = self._check_page(status, text)
+        except SubmissionError as error:
+            if self.platform == 'codeforces' and error.reason in {'challenge','access_restricted'}:
+                return self._cf_source_popup(record, handle)
+            raise
         self._identity(soup, handle)
         node = soup.select_one('#program-source-text' if self.platform == 'codeforces' else '#submission-code')
         if node is None:
@@ -404,6 +489,48 @@ class PlatformSession:
         if not code.strip() or len(code.encode('utf-8')) > 65536:
             raise SubmissionError('source_unavailable')
         return {**record, 'code':code}
+
+    def _cf_source_popup(self, record, handle):
+        """Use the official user's source popup, with its normal CSRF protection.
+
+        This POST only reads source. It never includes code or sends a solution.
+        The API record and the exact list row must both identify this submission.
+        """
+        from json import loads
+        url = self.base + '/submissions/' + quote(handle, safe='')
+        soup = self._get(url)
+        self._identity(soup, handle)
+        sid = str(record['id'])
+        rows = soup.select(f'tr[data-submission-id="{sid}"]')
+        if len(rows) != 1:
+            raise SubmissionError('record_unavailable')
+        row = rows[0]
+        owners = [a['href'].split('/')[-1] for a in row.select('a[href]') if re.fullmatch(r'/profile/[A-Za-z0-9_.-]+',a['href'])]
+        contest, index = record['problem_id'].split('-')
+        if (len(owners) != 1 or owners[0].casefold() != handle.casefold()
+                or not row.select_one(f'a[href="/contest/{contest}/problem/{index}"]')
+                or not row.select_one(f'a[href="/contest/{contest}/submission/{sid}"]')):
+            raise SubmissionError('record_mismatch')
+        meta = soup.select_one('meta[name="X-Csrf-Token"]')
+        csrf = meta.get('content','') if meta else ''
+        if (not re.fullmatch(r'[A-Za-z0-9]{32}', csrf) or not any('/data/submitSource' in s.get_text() for s in soup.select('script:not([src])'))):
+            raise SubmissionError('source_unavailable')
+        status, _, text = self._request('POST', self.base + '/data/submitSource',
+            data={'submissionId':sid,'csrf_token':csrf},
+            headers={'Referer':url,'X-Csrf-Token':csrf,'X-Requested-With':'XMLHttpRequest'})
+        if status in (301,302,303,307,308):
+            raise SubmissionError('record_unavailable')
+        self._check_page(status, text)
+        try:
+            result = loads(text)
+            code = result.get('source') if isinstance(result,dict) else None
+            if isinstance(result,dict) and 'submissionId' in result and str(result['submissionId']) != sid:
+                raise SubmissionError('record_mismatch')
+            if not isinstance(code,str) or not code.strip() or len(code.encode()) > 65536:
+                raise ValueError
+        except (ValueError,TypeError):
+            raise SubmissionError('source_unavailable') from None
+        return {**record,'code':code}
 
     def find_receipt(self, pid, handle, sent_at, code_hash):
         """Read-only recovery after an ambiguous POST; never guesses the newest ID."""

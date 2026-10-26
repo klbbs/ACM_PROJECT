@@ -259,7 +259,7 @@ class RemoteSubmissions:
                     return
                 self.update(rid, status='judging', reason=exc.reason,
                     message='代码已提交；查询判题未完成：' + str(exc) + ' 不会重新交题。')
-                if exc.reason in {'rate_limited', 'login_required', 'account_mismatch', 'challenge'}:
+                if exc.reason in {'rate_limited', 'login_required', 'account_mismatch', 'challenge', 'access_restricted'}:
                     return
             except (AIError, HTTPException):
                 if self._row(rid)['status'] == 'completed':

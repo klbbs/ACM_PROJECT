@@ -15,9 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ojcrawler.http import Client
 from ojcrawler.models import Collection, Submission
+from ojcrawler.access import PlatformAccessError
 from ojcrawler.storage import Store, codeforces_judge_verdict
 from .codex_bridge import AIError
 from .problem_sources import HOSTS, normalize
+from .runtime_logs import emit_event
 
 DDL = '''CREATE TABLE IF NOT EXISTS wb_official_sources (
  attempt_id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, fetched_at INTEGER NOT NULL
@@ -137,6 +139,15 @@ class ProblemSubmissions:
                         'luogu':'公开提交列表最近 3 页',
                         'nowcoder':'公开练习提交最近 3 页；比赛未归档记录可能不可见'}[platform]
             return out, coverage
+        except PlatformAccessError as exc:
+            if platform != 'codeforces' or exc.reason == 'rate_limited':
+                raise
+            from ojcrawler.codeforces_pages import read_submissions
+            from ojcrawler.adapters.codeforces import Codeforces
+            rows, complete = read_submissions(client, account['handle'], max_pages=3, contest=key.split('-')[0])
+            return Collection(platform, account['handle'], submissions=[Codeforces.submission(r) for r in rows
+                if f"{r['problem']['contestId']}-{r['problem']['index']}" == key], complete=complete,
+                warnings=['CF API 受限，本次改用官方用户提交列表；覆盖范围与比赛 API 不相同']), '官方用户提交列表最近 3 页（账号、题号及时间核验；非本场 600 条）'
         finally:
             client.close()
 
@@ -227,6 +238,14 @@ class ProblemSubmissions:
         try:
             observed = driver.source(pid, handle, payload.submission_id)
         except SubmissionError as exc:
+            reason = {'challenge':'source_challenge', 'access_restricted':'source_access_restricted', 'rate_limited':'source_rate_limited',
+                      'login_required':'source_login_required'}.get(exc.reason, 'source_read_failed')
+            emit_event(getattr(self.jobs, 'event_log', None), 'platform.source_failed', 'WARNING',
+                       platform=platform, reason=reason)
+            if exc.reason == 'challenge':
+                raise HTTPException(400, '读取这次提交的官方源码被平台浏览器安全验证拦截；登录正常时也可能发生。'
+                                    '判题记录已保留，本站尚未取得已核验源码，暂不能 AI 分析。'
+                                    '请在官方提交详情页查看代码，无需重新提交；重复导入 Cookie 不保证解除此限制。') from None
             if exc.reason == 'rate_limited':
                 raise HTTPException(429, '官方平台限制源码读取频率；判题记录已保留，请稍后重试',
                                     headers={'Retry-After':'60'}) from None
