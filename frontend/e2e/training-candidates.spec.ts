@@ -70,6 +70,7 @@ async function install(page: Page) {
   const state = {
     reads: [] as URL[],
     refreshes: [] as unknown[],
+    methodChecks: [] as unknown[],
     paid: [] as string[],
     jobCreated: false,
     runningReads: 0,
@@ -84,6 +85,7 @@ async function install(page: Page) {
       request.method() === 'POST' &&
       (/\/api\/(recommend|analysis|daily\/roll)$/.test(path) ||
         /\/api\/training\/plans/.test(path) ||
+        path === '/api/training/method-check' ||
         /\/(hint|assessment|chat)$/.test(path))
     )
       state.paid.push(path)
@@ -95,7 +97,25 @@ async function install(page: Page) {
     state.reads.push(url)
     const delay = state.delay
     if (delay) await delay
-    await route.fulfill({ json: evidence(url.searchParams.get('topic_id')!, delay ? 999 : 7) })
+    await route.fulfill({
+      json: {
+        ...evidence(url.searchParams.get('topic_id')!, delay ? 999 : 7),
+        ...(state.methodChecks.length
+          ? {
+              method_check_summary: {
+                checked_count: 6,
+                accepted_count: 2,
+                uncertain_count: 3,
+                rejected_count: 1,
+              },
+            }
+          : {}),
+      },
+    })
+  })
+  await page.route('**/api/training/method-check', async (route) => {
+    state.methodChecks.push(route.request().postDataJSON())
+    await route.fulfill({ json: { id: 'synthetic-method-job', status: 'queued' } })
   })
   await page.route('**/api/training/catalog/refresh', async (route) => {
     state.refreshes.push(route.request().postDataJSON())
@@ -103,6 +123,24 @@ async function install(page: Page) {
     await route.fulfill({ json: { id: 'synthetic-topic-job', status: 'queued' } })
   })
   await page.route('**/api/jobs', async (route) => {
+    if (state.methodChecks.length)
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: 'synthetic-method-job',
+              kind: 'topic_method_check',
+              status: 'completed',
+              result: {
+                checked_count: 6,
+                accepted_count: 2,
+                uncertain_count: 3,
+                rejected_count: 1,
+              },
+            },
+          ],
+        },
+      })
     if (!state.jobCreated) return route.fulfill({ json: { items: [] } })
     const running = state.slowJob && ++state.runningReads <= 3
     await route.fulfill({
@@ -227,4 +265,36 @@ test('daily specialist exposes the same explicit cache and partial refresh contr
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   )
+})
+
+test('paid method verification is explicitly disclosed, sends the saved-model contract, and restores only a summary without spoilers', async ({
+  page,
+}) => {
+  const state = await install(page)
+  await specialist(page)
+  const panel = page.getByRole('region', { name: '专项候选诊断' })
+  await expect(panel).toContainText('读取最多 6 道候选官方题面')
+  await expect(panel).toContainText('可能产生额外费用')
+  await expect(panel).toContainText('不会改变 AC / 签到')
+  await expect(page.locator('.specialist-ai-note')).toContainText('候选不足时')
+  expect(state.methodChecks).toEqual([])
+  await page.getByLabel('专项 CF rating 下限').fill('1000')
+  await page.getByLabel('专项 CF rating 上限').fill('1800')
+  await panel.getByRole('button', { name: 'AI 核查细类候选', exact: true }).click()
+  await expect(panel).toContainText('已核查 6 题 · 方法可行 2 题 · 无法确定 3 题 · 未通过核查 1 题')
+  await expect(panel).toContainText('不是官方标签、标准解法或判题结果')
+  await expect(panel).toContainText('不会把 AI 核查通过当作模板')
+  expect(state.methodChecks).toEqual([{ topic_id: 'bfs', cf_minimum: 1000, cf_maximum: 1800 }])
+  expect(state.refreshes).toEqual([])
+  expect(state.paid).toEqual(['/api/training/method-check'])
+  await expect(panel.locator('pre')).toHaveCount(0)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.reload()
+  await page.getByRole('button', { name: '训练', exact: true }).click()
+  await page.getByRole('tab', { name: '专项训练', exact: true }).click()
+  await expect(panel).toBeVisible()
+  await panel.getByRole('button', { name: '查看本专题候选', exact: true }).click()
+  await expect(panel).toContainText('方法可行 2 题')
+  expect(state.methodChecks).toHaveLength(1)
+  expect(state.paid).toEqual(['/api/training/method-check'])
 })
