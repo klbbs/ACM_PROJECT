@@ -64,6 +64,8 @@ def test_all_verified_platform_sources_are_merged_without_credentials_or_invente
         def close(self): pass
         def json(self, *args, **kwargs): return {}
         def get(self, url, params=None):
+            if 'atcoder.jp/contests/practice2/tasks' in url:
+                return PRACTICE_HTML
             seen.append('luogu')
             return envelope([{'pid': 'P3367', 'name': '【模板】并查集', 'tags': [47]}], 1)
     monkeypatch.setattr(catalog, 'Client', lambda **kw: options.append(kw) or Public())
@@ -80,7 +82,8 @@ def test_all_verified_platform_sources_are_merged_without_credentials_or_invente
     assert {row['platform'] for row in result if row['status'] == 'updated'} == set(catalog.PLATFORMS)
     assert all('cookie' not in kwargs and 'cookie_host' not in kwargs for kwargs in options)
     assert all(len(catalog._pool(db, name)) == 1 for name in catalog.PLATFORMS)
-    assert all(catalog._pool(db, name)[0]['published_at'] is None for name in catalog.PLATFORMS)
+    assert all(catalog._pool(db, name)[0]['published_at'] is None for name in catalog.PLATFORMS if name != 'atcoder')
+    assert catalog._pool(db, 'atcoder')[0]['published_at_source'] == 'atcoder.contest.startTime'
 
 
 def test_luogu_uses_actual_page_size_and_later_page_topic_metadata():
@@ -195,3 +198,106 @@ def test_legacy_empty_success_marker_does_not_block_explicit_retry(db, monkeypat
     cached = catalog.refresh_specialist_candidates(db, accounts('nowcoder'), TOPICS['luogu-47'])[0]
     assert cached['status'] == 'cached' and cached['coverage'] == 'official tag fixture'
     assert calls == ['nowcoder']
+
+
+PRACTICE_HTML = '''<div class="contest-duration"><span class="fixtime-full">2020-09-07 22:31:51+0900</span></div>
+<table><tbody><tr><td><a href="/contests/practice2/tasks/practice2_a">A</a></td>
+<td><a href="/contests/practice2/tasks/practice2_a">Disjoint Set Union</a></td></tr></tbody></table>'''
+
+
+@pytest.mark.parametrize(('stamp', 'source'), [
+    (1700000000, 'kenkoooo.contests.start_epoch_second'),
+    (None, None), (4102444800, 'atcoder.archive.time'),
+])
+def test_sparse_or_third_party_dates_never_downgrade_saved_official_date(db, stamp, source):
+    old = catalog._problem('atcoder', 'practice2_a', 'Official title', published_at=1599485511,
+        published_at_source='atcoder.contest.startTime', publication_note='官方比赛开始时间')
+    catalog._store_catalog_rows(db, 'atcoder', [old])
+    fresh = catalog._problem('atcoder', 'practice2_a', 'Index title', published_at=stamp,
+        published_at_source=source, candidate_source='Kenkoooo 第三方索引')
+    catalog._store_catalog_rows(db, 'atcoder', [fresh])
+    row = catalog._pool(db, 'atcoder')[0]
+    assert row['published_at'] == 1599485511 and row['published_at_source'] == 'atcoder.contest.startTime'
+    assert len(catalog.candidates(db, platform='atcoder', published_after='2020-01-01')) == 1
+
+
+def test_new_official_date_can_upgrade_third_party_or_replace_previous_official(db):
+    index = catalog._problem('atcoder', 'abc400_a', 'Index', published_at=1735689600,
+        published_at_source='kenkoooo.contests.start_epoch_second', candidate_source='Kenkoooo 第三方索引')
+    catalog._store_catalog_rows(db, 'atcoder', [index])
+    official = catalog._problem('atcoder', 'abc400_a', 'Official', published_at=1735776000,
+        published_at_source='atcoder.archive.time')
+    catalog._store_catalog_rows(db, 'atcoder', [official])
+    assert catalog._pool(db, 'atcoder')[0]['published_at'] == 1735776000
+    assert catalog._pool(db, 'atcoder')[0]['published_at_source'] == 'atcoder.archive.time'
+
+
+def test_official_practice_supplements_index_without_dropping_numeric_estimates():
+    original = catalog._problem('atcoder', 'practice2_a', 'Index DSU',
+        published_at=1599485511, published_at_source='kenkoooo.contests.start_epoch_second',
+        candidate_source='Kenkoooo 第三方索引', atcoder_problem_difficulty=500)
+    found = catalog._with_atcoder_official_practice(SimpleNamespace(get=lambda *args, **kwargs: PRACTICE_HTML),
+        {'items': [original], 'coverage': 'Index fixture', 'warnings': [], 'truncated': True})
+    assert len(found['items']) == 1
+    row = found['items'][0]
+    assert row['published_at_source'] == 'atcoder.contest.startTime'
+    assert row['candidate_source'] == 'AtCoder 官方 Library Practice Contest'
+    assert row['atcoder_problem_difficulty'] == 500
+    assert row['tags'] == [] and 'tags_source' not in row
+    assert '官方 ACL' in found['coverage']
+
+
+def test_official_practice_failure_does_not_drop_index_or_copy_exception_text():
+    original = catalog._problem('atcoder', 'abc400_a', 'Index')
+    def denied(*args, **kwargs): raise catalog.CrawlError('HTTP 403 Cookie=PRIVATE-SECRET')
+    found = catalog._with_atcoder_official_practice(SimpleNamespace(get=denied),
+        {'items': [original], 'coverage': 'Index fixture', 'warnings': [], 'truncated': True})
+    assert found['items'] == [original] and found['partial_failure']
+    assert 'PRIVATE-SECRET' not in json.dumps(found)
+    assert '补抓失败' in found['warnings'][0]
+
+
+@pytest.mark.parametrize(('platform', 'pid', 'source', 'first', 'second'), [
+    ('codeforces', '2000-A', 'codeforces.problemset.problems', ['dsu'], ['graphs']),
+    ('luogu', 'P3367', 'luogu.official_problem_list', ['47'], [47, '6']),
+    ('nowcoder', '1000', 'nowcoder.official_problem_list', ['并查集'], ['图论']),
+])
+def test_same_official_list_source_merges_actual_tag_subsets(db, platform, pid, source, first, second):
+    old = catalog._problem(platform, pid, 'Task', tags=first, tags_source=source)
+    fresh = catalog._problem(platform, pid, 'Task', tags=second, tags_source=source)
+    catalog._store_catalog_rows(db, platform, [old])
+    catalog._store_catalog_rows(db, platform, [fresh])
+    row = catalog._pool(db, platform)[0]
+    assert {str(tag) for tag in row['tags']} == {str(tag) for tag in first + second}
+    assert row['tags_source'] == source
+
+
+def test_third_party_or_unknown_tags_are_never_promoted_into_official_tags(db):
+    official = catalog._problem('luogu', 'P3367', 'Official', tags=['47'],
+        tags_source='luogu.official_problem_list')
+    catalog._store_catalog_rows(db, 'luogu', [official])
+    unknown = catalog._problem('luogu', 'P3367', 'Index', tags=['999'], candidate_source='Third-party index')
+    catalog._store_catalog_rows(db, 'luogu', [unknown])
+    row = catalog._pool(db, 'luogu')[0]
+    assert row['tags'] == ['47'] and row['tags_source'] == 'luogu.official_problem_list'
+    # Merely labelling a source as a public index is not proof of official tags.
+    atcoder = catalog._problem('atcoder', 'abc400_a', 'Index', tags=['dsu'],
+        candidate_source='Third-party index')
+    catalog._store_catalog_rows(db, 'atcoder', [atcoder])
+    assert 'tags_source' not in catalog._pool(db, 'atcoder')[0]
+
+
+def test_legacy_native_tag_signature_is_conservative_and_ignores_foreign_labels(db):
+    legacy = catalog._problem('luogu', 'P3367', 'Native old cache', tags=['47'],
+        difficulty_source='洛谷官方难度等级（与 CF rating 不可比）')
+    catalog._store_catalog_rows(db, 'luogu', [legacy])
+    fresh = catalog._problem('luogu', 'P3367', 'New native list', tags=['6'],
+        tags_source='luogu.official_problem_list')
+    catalog._store_catalog_rows(db, 'luogu', [fresh])
+    assert set(catalog._pool(db, 'luogu')[0]['tags']) == {'47', '6'}
+    unknown = catalog._problem('nowcoder', '1000', 'Unknown', tags=['未知标签'], candidate_source='Third-party index')
+    catalog._store_catalog_rows(db, 'nowcoder', [unknown])
+    fresh = catalog._problem('nowcoder', '1000', 'Official', tags=['并查集'],
+        tags_source='nowcoder.official_problem_list')
+    catalog._store_catalog_rows(db, 'nowcoder', [fresh])
+    assert catalog._pool(db, 'nowcoder')[0]['tags'] == ['并查集']

@@ -65,6 +65,7 @@ def _cf(client):
         contest = finished[p['contestId']]
         rows.append(_problem('codeforces', f"{p['contestId']}-{p['index']}", p['name'],
             difficulty=p['rating'], difficulty_source='Codeforces 官方 rating', tags=p.get('tags', []),
+            tags_source='codeforces.problemset.problems',
             contest_id=p['contestId'], published_at=publication_time(contest.get('startTimeSeconds')),
             published_at_source='codeforces.contest.startTimeSeconds',
             publication_note='官方比赛开始时间；不使用比赛编号推测日期'))
@@ -97,7 +98,7 @@ def parse_atcoder_tasks(html, contest, published_at):
 
 def _atcoder(client):
     from .expanded_topic_sources import discover_atcoder
-    found = discover_atcoder(client, None)
+    found = _with_atcoder_official_practice(client, discover_atcoder(client, None))
     client.catalog_discovery = {key: value for key, value in found.items() if key != 'items'}
     return _enrich_atcoder_difficulties(client, found['items'])
 
@@ -162,7 +163,7 @@ def parse_luogu_catalog(html):
         result.append(_problem('luogu', p['pid'], p.get('name') or p.get('title') or p['pid'],
             native_difficulty=p.get('difficulty'), difficulty_source='洛谷官方难度等级（与 CF rating 不可比）',
             published_at=stamp, published_at_source='luogu.problem.createTime' if stamp else None,
-            tags=[str(x) for x in p.get('tags', [])]))
+            tags=[str(x) for x in p.get('tags', [])], tags_source='luogu.official_problem_list'))
     return result
 
 
@@ -267,6 +268,69 @@ def _discover_luogu_topic(database, client, topic):
             **({'error_code': error_code} if error_code else {})}
 
 
+_OFFICIAL_TAG_SOURCES = {'codeforces': 'codeforces.problemset.problems',
+                         'luogu': 'luogu.official_problem_list',
+                         'nowcoder': 'nowcoder.official_problem_list'}
+_OFFICIAL_PUBLICATION_SOURCES = {
+    'codeforces': {'codeforces.contest.startTimeSeconds'},
+    'atcoder': {'atcoder.archive.time', 'atcoder.contest.startTime'},
+    'luogu': {'luogu.problem.createTime'}, 'nowcoder': {'nowcoder.problem.publishTime'},
+}
+
+
+def _official_tags_source(platform, row):
+    expected = _OFFICIAL_TAG_SOURCES.get(platform)
+    if not expected:
+        return None
+    if row.get('tags_source') == expected:
+        return expected
+    # These exact signatures were emitted only by our old native public-list
+    # parsers. Do not promote arbitrary old tags, AtCoder index tags, or labels
+    # obtained from a third-party source into official metadata.
+    legacy = {'codeforces': 'Codeforces 官方 rating',
+              'luogu': '洛谷官方难度等级（与 CF rating 不可比）'}
+    if (platform in legacy and not row.get('tags_source') and row.get('candidate_source') == '官方题库'
+            and row.get('difficulty_source') == legacy.get(platform)):
+        return expected
+    return None
+
+
+def _merge_catalog_metadata(platform, previous, row):
+    merged = ({**previous, **{key: value for key, value in row.items() if value is not None}}
+              if previous else dict(row))
+    old_tags, new_tags = previous.get('tags', []), row.get('tags', [])
+    old_source, new_source = _official_tags_source(platform, previous), _official_tags_source(platform, row)
+    if old_tags and (not new_tags or old_source and not new_source):
+        merged['tags'] = old_tags
+        if old_source: merged['tags_source'] = old_source
+        else: merged.pop('tags_source', None)
+    elif old_tags and new_tags and old_source == new_source and old_source:
+        # A filtered list may expose only a subset of the real native tags.
+        # Merge only evidence from the same platform's official list source.
+        tags, seen = [], set()
+        for tag in old_tags + new_tags:
+            if type(tag) not in (str, int): continue
+            key = str(tag).casefold()
+            if key not in seen:
+                seen.add(key); tags.append(tag)
+        merged['tags'] = tags
+        merged['tags_source'] = old_source
+    elif new_tags:
+        if new_source: merged['tags_source'] = new_source
+        else: merged.pop('tags_source', None)
+    if row.get('difficulty') is None and previous.get('difficulty') is not None:
+        merged['difficulty_source'] = previous.get('difficulty_source')
+    official_dates = _OFFICIAL_PUBLICATION_SOURCES.get(platform, set())
+    old_official = previous.get('published_at_source') in official_dates and publication_time(previous.get('published_at'))
+    new_official = row.get('published_at_source') in official_dates and publication_time(row.get('published_at'))
+    # A new third-party (or invalid/future) timestamp cannot erase an already
+    # verified official date and thereby make a formerly eligible task vanish.
+    if (old_official and not new_official) or not row.get('published_at') and previous.get('published_at'):
+        for key in ('published_at', 'published_at_source', 'publication_note'):
+            if key in previous: merged[key] = previous[key]
+    return merged
+
+
 def _store_catalog_rows(database, platform, rows):
     """Merge discovery batches without erasing previous official coverage."""
     unique = {row['id']: row for row in rows if row.get('platform') == platform}
@@ -274,19 +338,34 @@ def _store_catalog_rows(database, platform, rows):
         existing = {row[0]: json.loads(row[1]) for row in db.execute(
             'SELECT id,data FROM problem_catalog WHERE platform=?', (platform,)) if row[0] in unique}
         for pid, row in unique.items():
-            previous = existing.get(pid, {})
-            merged = ({**previous, **{key: value for key, value in row.items() if value is not None}}
-                      if previous else dict(row))
-            if not row.get('tags') and previous.get('tags'): merged['tags'] = previous['tags']
-            if row.get('difficulty') is None and previous.get('difficulty') is not None:
-                merged['difficulty_source'] = previous.get('difficulty_source')
-            if not row.get('published_at') and previous.get('published_at'):
-                for key in ('published_at', 'published_at_source', 'publication_note'):
-                    if key in previous: merged[key] = previous[key]
-            unique[pid] = merged
+            unique[pid] = _merge_catalog_metadata(platform, existing.get(pid, {}), row)
         db.executemany('INSERT OR REPLACE INTO problem_catalog VALUES(?,?,?)',
             [(platform, pid, json.dumps(row, ensure_ascii=False)) for pid, row in unique.items()])
     return len(unique)
+
+
+def _with_atcoder_official_practice(client, found):
+    """One official ACL task-list request; supplemental failure keeps the index."""
+    found = {**found, 'items': list(found['items']), 'warnings': list(found.get('warnings', []))}
+    try:
+        practice = _atcoder_practice(client)
+        if not practice: raise CrawlError('官方练习赛任务列表返回空内容')
+    except (CrawlError, AIError, ValueError, TypeError, KeyError):
+        found['warnings'].append('AtCoder 官方 ACL 练习赛补抓失败；已保留公开索引与旧缓存，可稍后重试')
+        found['partial_failure'] = True
+        return found
+    unique = {row['id']: row for row in found['items']}
+    for row in practice:
+        unique[row['id']] = _merge_catalog_metadata('atcoder', unique.get(row['id'], {}), row)
+    found['items'] = list(unique.values())
+    found['coverage'] += f'；另补充官方 ACL 练习赛 {len(practice)} 道（官方页面提供时保留真实开始时间）'
+    return found
+
+
+def _official_nowcoder_items(rows):
+    # This adapter receives rows only from the fixed official ac.nowcoder.com
+    # list parser. AtCoder's unrelated third-party index is never labelled here.
+    return [{**row, 'tags_source': 'nowcoder.official_problem_list'} for row in rows]
 
 
 class _DiscoveryDeadline:
@@ -364,20 +443,21 @@ def refresh_specialist_candidates(database, accounts, topic, on_progress=None):
                 found = _discover_luogu_topic(database, client, topic)
             elif platform == 'atcoder':
                 from .expanded_topic_sources import discover_atcoder
-                found = discover_atcoder(client, topic)
+                found = _with_atcoder_official_practice(client, discover_atcoder(client, topic))
                 found['items'] = _enrich_atcoder_difficulties(client, found['items'])
             else:
                 from .expanded_topic_sources import discover_nowcoder
                 found = discover_nowcoder(client, topic)
+                found['items'] = _official_nowcoder_items(found['items'])
             count = _store_catalog_rows(database, platform, found['items'])
             usable_count = count or int(found.get('existing_count', 0))
-            status = 'partial' if found.get('error_code') and usable_count else 'updated' if usable_count else 'failed' if found.get('error_code') else 'empty'
+            status = 'partial' if (found.get('error_code') or found.get('partial_failure')) and usable_count else 'updated' if usable_count else 'failed' if found.get('error_code') else 'empty'
             row = {'platform': platform, 'status': status, 'count': count,
                    'coverage': found['coverage'], 'truncated': bool(found.get('truncated')),
                    'warnings': found.get('warnings', []), 'updated_at': int(time.time())}
             if found.get('error_code'): row['error_code'] = found['error_code']
             if not usable_count: row['message'] = '本次公开来源没有取得可用题目；旧缓存保留，可重试；不代表平台没有该专题题目'
-            if usable_count and not found.get('error_code'):
+            if usable_count and not found.get('error_code') and not found.get('partial_failure'):
                 database.set(cache_key, int(time.time()))
                 if platform == 'codeforces': database.set('catalog_updated_at:codeforces', int(time.time()))
             database.set(status_key, row)
@@ -408,6 +488,7 @@ def parse_nowcoder_catalog(html):
             native_difficulty=int(native) if native.isdigit() else None,
             difficulty_source='牛客官方难度（与 CF rating 不可比）',
             tags=[a.get_text(strip=True) for a in row.select('a[href*="tagId="]')],
+            tags_source='nowcoder.official_problem_list',
             publication_note='官方题库列表未提供可靠发布日期'))
     return result
 
@@ -416,7 +497,7 @@ def _nowcoder(client):
     from .expanded_topic_sources import discover_nowcoder
     found = discover_nowcoder(client, None)
     client.catalog_discovery = {key: value for key, value in found.items() if key != 'items'}
-    return found['items']
+    return _official_nowcoder_items(found['items'])
 
 
 DISCOVERY = {'codeforces': _cf, 'atcoder': _atcoder, 'luogu': _luogu, 'nowcoder': _nowcoder}
