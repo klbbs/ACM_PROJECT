@@ -112,11 +112,85 @@ def _path(tag_id):
 _CF_TAG_TO_LUOGU = {
     'strings': 2, 'dp': 3, 'math': 5, 'graphs': 6, 'greedy': 7,
     'geometry': 8, 'games': 13, 'binary search': 45, 'dsu': 47,
-    'fft': 69, 'number theory': 72, 'sortings': 113,
+    'fft': 313, 'number theory': 72, 'sortings': 113,
     'dfs and similar': 4, 'shortest paths': 160, 'mst': 166,
     'bipartite': 187, 'hashing': 235, 'combinatorics': 252,
-    'probabilities': 266,
+    'probabilities': 266, 'flows': 79, 'trees': 230,
+    'matrices': 71, 'divide and conquer': 112, 'two pointers': 345,
+    'ternary search': 67, 'constructive algorithms': 318,
+    'brute force': 111, 'meet-in-the-middle': 380, 'bitmasks': 314,
+    'chinese remainder theorem': 250, 'string suffix structures': 2,
 }
+
+# Language aliases name algorithms, not inferred solutions. Parent topics may
+# include descendants; a broad platform tag must never establish a child topic.
+# For example CF `dp` does not prove tree DP and `data structures` cannot prove
+# Fenwick trees. These aliases also work for exact official task titles/tags on
+# platforms which do not expose numeric Luogu tags.
+_TOPIC_ALIASES = {
+    3: ['dynamic programming', 'dp'], 5: ['math'],
+    6: ['graphs', 'graph theory'], 8: ['geometry'], 13: ['game theory'],
+    41: ["mo's algorithm", '莫队'], 42: ['segment tree'],
+    45: ['binary search'], 47: ['dsu', 'disjoint set union', 'union find', 'union-find'],
+    49: ['centroid decomposition'], 50: ['balanced binary search tree'],
+    51: ['heap', 'priority queue'], 53: ['fenwick tree', 'binary indexed tree'],
+    56: ['monotonic queue'], 67: ['ternary search'],
+    71: ['matrix operations', 'matrices'], 72: ['number theory'],
+    79: ['network flow', 'max flow', 'maxflow', 'maximum flow'],
+    101: ['suffix automaton', 'sam'], 112: ['divide and conquer'],
+    113: ['sortings', 'sorting'], 126: ['bfs', 'breadth first search', 'breadth-first search'],
+    127: ['dfs', 'depth first search', 'depth-first search'],
+    129: ['memoization', '记忆化'], 139: ['knapsack', '背包'],
+    141: ['digit dp', '数位dp', '数位 dp'],
+    144: ['interval dp', '区间dp', '区间动态规划'],
+    150: ['convex hull trick'], 152: ['tree dp', '树形dp', '树形动态规划'],
+    159: ['topological sort', 'topological sorting'],
+    160: ['shortest path', 'shortest paths', 'dijkstra', 'bellman-ford'],
+    166: ['minimum spanning tree', 'mst', 'kruskal', 'prim'],
+    176: ['2-sat', 'two sat'], 179: ['scc', 'strongly connected components'],
+    181: ['biconnected components'], 182: ['eulerian circuit', 'eulerian path'],
+    185: ['difference constraints'], 187: ['bipartite graph', 'bipartite'],
+    198: ['minimum cut', 'min cut'], 204: ['minimum cost flow', 'min cost flow'],
+    211: ['lca', 'lowest common ancestor'], 228: ['heavy light decomposition', 'hld'],
+    229: ['link cut tree', 'lct'], 230: ['trees'], 233: ['persistent segment tree'],
+    235: ['hashing'], 241: ['gcd', 'greatest common divisor'],
+    242: ['extended euclidean algorithm'], 250: ['chinese remainder theorem', 'crt'],
+    251: ['mobius inversion', 'möbius inversion'], 252: ['combinatorics'],
+    254: ['prefix sum', 'prefix sums'], 259: ['inclusion exclusion'],
+    266: ['probability', 'probabilities'], 270: ['expected value', 'expectation'],
+    271: ['linear algebra'], 272: ['matrix multiplication'], 274: ['gaussian elimination'],
+    277: ['xor basis', 'linear basis'], 287: ['stack'], 288: ['queue'],
+    290: ['sparse table', 'st表', 'st 表'], 291: ['convex hull'],
+    300: ['trie'], 301: ['aho corasick', 'aho-corasick'],
+    302: ['kmp', 'prefix function'], 303: ['suffix array'], 304: ['suffix tree'],
+    313: ['fft', 'fast fourier transform'], 314: ['bitmask', 'bitmasks', 'bit manipulation'],
+    318: ['constructive algorithms'], 324: ['ntt', 'number theoretic transform'],
+    325: ['palindromic tree', 'eertree'], 329: ['manacher'],
+    330: ['difference array'], 345: ['two pointers', 'two pointer', '双指针'],
+    377: ['li chao tree'], 378: ['segment tree beats'],
+    380: ['meet in the middle', 'meet-in-the-middle'], 385: ['monotonic stack'],
+    444: ['linear dp', '线性dp', '线性动态规划'],
+    464: ['subset dp', 'bitmask dp', '状压dp'],
+    474: ['z function', 'z-function'], 475: ['linear sieve', 'sieve of eratosthenes'],
+    476: ['floyd warshall', 'floyd-warshall'],
+}
+
+
+def _topic_text_terms(tag_ids):
+    terms = []
+    for tag_id in sorted(tag_ids):
+        name = _TAGS[tag_id]['name'].lstrip('\ufeff')
+        terms.append(name)
+        # Official names often append an English acronym, e.g. 后缀自动机 SAM.
+        # Preserve the Chinese algorithm name without requiring that suffix.
+        if re.match(r'[\u4e00-\u9fff]', name):
+            terms.append(re.split(r'\s+(?=[A-Za-z0-9])', name, maxsplit=1)[0])
+        terms.extend(_TOPIC_ALIASES.get(tag_id, []))
+        for alias, tags in LUOGU_TOPIC_TAGS.items():
+            if tag_id in tags:
+                terms.extend(TOPICS[alias]['keywords'])
+    return list(dict.fromkeys(terms))
+
 
 # Verified public implementation exercises from the official ACL practice
 # contest (https://atcoder.jp/contests/practice2/tasks). These are algorithm
@@ -148,9 +222,7 @@ for root_id in _CHILDREN[None]:
                  'source_version': _CATALOG['source_version']}
         TOPICS[topic['id']] = {**topic, 'template_ids': templates,
             'luogu_tags': inherited, 'official_exact': True,
-            'text_keywords': list(dict.fromkeys([path[-1]] + [keyword
-                for alias, tags in LUOGU_TOPIC_TAGS.items() if tags & inherited
-                for keyword in TOPICS[alias]['keywords']])),
+            'text_keywords': _topic_text_terms(inherited),
             'cf_tags': {tag for tag, target in _CF_TAG_TO_LUOGU.items() if target in inherited}}
         group['topics'].append(topic)
         for child in _CHILDREN.get(tag_id, []):
@@ -171,34 +243,62 @@ def topic_groups():
     return deepcopy(GROUPS)
 
 
-def matches_topic(problem, topic):
+def topic_evidence(problem, topic):
+    """Return published metadata evidence, never an AI-invented algorithm tag.
+
+    Missing/conflicting metadata stays unknown. In particular a bare DP or
+    graph tag cannot certify one of its finer topics. Title/tag evidence is
+    only a shortlist aid; selection reports still read the actual statement.
+    """
     if problem.get('id') in topic['template_ids']:
-        return True
-    if topic.get('official_exact'):
-        if problem.get('platform') == 'luogu':
-            return bool(_luogu_tags(problem) & topic.get('luogu_tags', set()))
-        if problem.get('platform') == 'codeforces':
-            return bool({str(tag).casefold() for tag in problem.get('tags', [])} & topic.get('cf_tags', set()))
-        # AtCoder and Nowcoder do not use Luogu's numeric taxonomy. They may,
-        # however, publish exact algorithm names in task titles/text tags. Do
-        # not discard those platforms solely because their tag schema differs.
-        return _matches_text(problem, topic.get('text_keywords', []))
-    if problem.get('platform') == 'luogu':
-        tags = _luogu_tags(problem)
-        if tags & LUOGU_TOPIC_TAGS.get(topic['id'], set()):
-            return True
-        # Hashing alone also covers numeric/set hashing; require string evidence.
-        if topic['id'] == 'string-hash' and {2, 235} <= tags:
-            return True
-    return _matches_text(problem, topic['keywords'])
+        return {'matched': True, 'source': 'curated_official_template', 'terms': [problem['id']]}
+    platform = problem.get('platform')
+    if platform == 'luogu':
+        numeric = _luogu_tags(problem)
+        expected = topic.get('luogu_tags', LUOGU_TOPIC_TAGS.get(topic['id'], set()))
+        common = numeric & expected
+        if common:
+            return {'matched': True, 'source': 'official_luogu_tag', 'terms': sorted(common)}
+        if topic['id'] == 'string-hash' and {2, 235} <= numeric:
+            return {'matched': True, 'source': 'official_luogu_tag', 'terms': [2, 235]}
+        if topic.get('official_exact'):
+            # On Luogu the platform-scoped numeric taxonomy is authoritative.
+            # A suggestive title cannot override absent/conflicting official tags.
+            return {'matched': False, 'source': 'unknown', 'terms': []}
+    if platform == 'codeforces' and topic.get('official_exact'):
+        common = {str(tag).casefold().strip() for tag in problem.get('tags', [])} & topic.get('cf_tags', set())
+        if common:
+            return {'matched': True, 'source': 'official_codeforces_tag', 'terms': sorted(common)}
+    terms = _matching_text_terms(problem, topic.get('text_keywords', topic['keywords']))
+    if terms:
+        return {'matched': True, 'source': 'official_title_or_text_tag', 'terms': terms}
+    return {'matched': False, 'source': 'unknown', 'terms': []}
+
+
+def matches_topic(problem, topic):
+    return topic_evidence(problem, topic)['matched']
+
+
+def _matching_text_terms(problem, keywords):
+    text_tags = [tag for tag in problem.get('tags', [])
+                 if isinstance(tag, str) and not re.fullmatch(r'-?[0-9]+', tag)]
+    # Match each published field independently: a title ending in `binary`
+    # and an unrelated tag `search` must not manufacture `binary search`.
+    texts = [re.sub(r'[-_–—]+', ' ', field.casefold())
+             for field in [str(problem.get('title', '')), *text_tags]]
+    # Normalize separators so union-find and union find are the same name.
+    result = []
+    for keyword in keywords:
+        term = re.sub(r'[-_–—]+', ' ', keyword.casefold())
+        found = any(re.search(r'(?<![a-z0-9])' + re.escape(term) + r'(?![a-z0-9])', text)
+                    if term.isascii() else term in text for text in texts)
+        if found:
+            result.append(keyword)
+    return result
 
 
 def _matches_text(problem, keywords):
-    text_tags = [tag for tag in problem.get('tags', [])
-                 if isinstance(tag, str) and not re.fullmatch(r'-?[0-9]+', tag)]
-    text = ' '.join([str(problem.get('title', '')), *text_tags]).casefold()
-    return any(re.search(r'(?<![a-z0-9])' + re.escape(keyword.casefold()) + r'(?![a-z0-9])', text)
-               if keyword.isascii() else keyword.casefold() in text for keyword in keywords)
+    return bool(_matching_text_terms(problem, keywords))
 
 
 def is_template(problem, topic):

@@ -8,14 +8,14 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 
-from .catalog import (PLATFORMS, PUBLISHED_SOURCES, _date_floor, _pool,
-                      publication_time, recommendation_candidates,
+from .catalog import (LEGACY_DATE_NOTICE, PLATFORMS, PUBLISHED_SOURCES, _date_floor, _pool,
+                      publication_time, recommendation_candidates, requires_publication_date,
                       refresh_recommendation_sessions, refresh_specialist_candidates,
                       verified_platforms)
 from .codex_bridge import AIError
 from .runtime_logs import emit_event
 from .selection_report_links import prepare_selection_reports
-from .training_topics import MODES, TOPICS, is_template, matches_topic, topic_groups
+from .training_topics import MODES, TOPICS, is_template, matches_topic, topic_evidence, topic_groups
 from .difficulty_estimates import cf_reference, estimate, overlaps
 
 DDL = '''
@@ -143,7 +143,114 @@ class Training:
             predicate=eligible, allow_attempted=True,
             prioritize=lambda p: is_template(p, topic))
         completed = self._ac_ids()
-        return [{**p, 'cf_rating_estimate': estimate(p, reference)} for p in pool if p['id'] not in completed]
+        return [{**p, 'cf_rating_estimate': estimate(p, reference), 'topic_evidence': topic_evidence(p, topic)}
+                for p in pool if p['id'] not in completed]
+
+    def candidate_coverage(self, topic_id, *, excluded_ids=(), difficulty_bounds=None,
+                           cf_minimum=None, cf_maximum=None, discovery=None):
+        """Read-only per-user cache coverage, using the actual selection gates.
+
+        This never contacts platforms or AI. Counts describe this user's local
+        evidence, not a claim to exhaust every problem on an online judge.
+        Rejection counts are exclusive and ordered, so they add up to the
+        cached count; unknown topic evidence is deliberately not a match.
+        """
+        topic = TOPICS.get(topic_id)
+        if topic is None:
+            raise HTTPException(422, '请选择支持的训练专题')
+        prefs = self.db.get('training', {})
+        minimum = cf_minimum if cf_minimum is not None else prefs.get('minimum', 800)
+        maximum = cf_maximum if cf_maximum is not None else prefs.get('maximum', 3500)
+        if minimum > maximum:
+            raise HTTPException(422, 'CF rating 下限不能大于上限，请同时设置有效范围')
+        constrained = cf_minimum is not None or cf_maximum is not None
+        legacy_date = requires_publication_date(prefs)
+        bounds = self._difficulty_bounds(difficulty_bounds)
+        floor = _date_floor(prefs.get('published_after'))
+        avoided = set(prefs.get('avoid_tags', []))
+        reference = cf_reference(self.db)
+        active, complete, excluded = set(verified_platforms(self.accounts)), self._ac_ids(), set(excluded_ids)
+        messages = {
+            'unverified': '当前平台登录未通过验证或验证已过期',
+            'legacy_date': LEGACY_DATE_NOTICE,
+            'unknown_topic': '官方标签或题名不足以确认属于此专题；不会用上级粗标签冒充细分专题',
+            'completed_or_reserved': '已通过、跳过、被对战占用或已在本次题单中',
+            'difficulty': f'不满足 CF {minimum}–{maximum} 难度范围',
+            'unknown_date': '缺少可核查的官方发布日期，无法确认满足日期要求',
+            'before_date': '早于用户设置的最早发布日期',
+            'avoided_tags': '题目标签均属于用户设置的避开标签',
+            'unknown_difficulty': '缺少可核查的跨平台难度证据',
+            'estimated_difficulty': '有依据的难度估计区间与本次范围不重叠',
+            'progression': '不满足本次递进难度边界',
+        }
+        discovery_by_platform = {row.get('platform'): row for row in (discovery or []) if isinstance(row, dict)}
+        result = []
+        for platform in PLATFORMS:
+            raw = _pool(self.db, platform, include_excluded=True)
+            available = {p['id'] for p in _pool(self.db, platform, allow_attempted=True)}
+            counts = {key: 0 for key in messages}
+            matched = [p for p in raw if topic_evidence(p, topic)['matched']]
+            matched_ids = {p['id'] for p in matched}
+            eligible = []
+            for problem in raw:
+                # Unknown topic metadata is counted even for an unverified
+                # platform, making the local coverage gap visible to users.
+                if problem['id'] not in matched_ids:
+                    counts['unknown_topic'] += 1
+                    continue
+                if platform not in active:
+                    counts['unverified'] += 1
+                    continue
+                if legacy_date:
+                    counts['legacy_date'] += 1
+                    continue
+                if problem['id'] not in available or problem['id'] in complete or problem['id'] in excluded:
+                    counts['completed_or_reserved'] += 1
+                    continue
+                if platform == 'codeforces' and (not isinstance(problem.get('difficulty'), int)
+                        or not minimum <= problem['difficulty'] <= maximum):
+                    counts['difficulty'] += 1
+                    continue
+                if floor is not None:
+                    timestamp = publication_time(problem.get('published_at'))
+                    if not timestamp or problem.get('published_at_source') not in PUBLISHED_SOURCES:
+                        counts['unknown_date'] += 1
+                        continue
+                    if timestamp < floor:
+                        counts['before_date'] += 1
+                        continue
+                if problem.get('tags') and set(problem['tags']).issubset(avoided):
+                    counts['avoided_tags'] += 1
+                    continue
+                if constrained and platform != 'codeforces':
+                    evidence = estimate(problem, reference)
+                    if evidence['kind'] == 'unknown':
+                        counts['unknown_difficulty'] += 1
+                        continue
+                    if not overlaps(evidence, minimum, maximum):
+                        counts['estimated_difficulty'] += 1
+                        continue
+                if not self._within_difficulty_bounds(problem, bounds):
+                    counts['progression'] += 1
+                    continue
+                eligible.append(problem)
+            stored = self.db.get('specialist_catalog_status:' + platform + ':' + topic_id, {})
+            status = discovery_by_platform.get(platform, stored)
+            # Producers supply sanitized metadata. Never forward arbitrary
+            # persisted keys, URLs, accounts, credentials, or exception details.
+            public_status = {key: status[key] for key in ('status', 'count', 'updated_at', 'error_code', 'message', 'coverage', 'truncated', 'warnings')
+                             if isinstance(status, dict) and key in status}
+            result.append({'platform': platform, 'verified': platform in active,
+                'cached_count': len(raw), 'topic_count': len(matched),
+                'eligible_count': len(eligible), 'template_count': sum(is_template(p, topic) for p in eligible),
+                'unknown_topic_count': counts['unknown_topic'],
+                'conditions': [{'code': key, 'count': value, 'message': messages[key]}
+                               for key, value in counts.items() if value],
+                'discovery': public_status or {'status': 'not_requested'}})
+        return {'topic_id': topic_id, 'platforms': result,
+            'eligible_count': sum(row['eligible_count'] for row in result),
+            'template_count': sum(row['template_count'] for row in result),
+            'notice': '仅展示本人题库缓存与已验证登录平台的证据覆盖，不代表平台全站无题；未知标签、日期或难度不会被猜测。刷新只补充官方元信息，生成时才会按已保存模型阅读题面。'}
 
     def _learner_evidence(self):
         """Only this workspace's currently bound CF snapshots, no identities."""
@@ -196,7 +303,8 @@ class Training:
             templates = [p for p in raw if is_template(p, topic)]
             reasons = []
             if not raw:
-                reasons.append('题库尚无该专题候选，需同步或等待官方列表可访问')
+                cached = _pool(self.db, platform, include_excluded=True)
+                reasons.append(f'本地缓存 {len(cached)} 道题中暂无足够标签/题名证据确认该专题，需补充官方元信息；不代表全站没有题')
             elif not templates:
                 reasons.append('官方候选中暂无可确认的模板题；可选择巩固、变式或加强')
             if floor is not None:
