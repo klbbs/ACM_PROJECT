@@ -182,3 +182,16 @@ def test_deadline_stops_slow_source_but_reserves_later_platform(db, monkeypatch)
     assert result[0]['status'] == 'failed' and result[0]['error_code'] == 'timeout'
     assert result[1]['status'] == 'updated' and result[1]['platform'] == 'nowcoder'
     assert calls == ['get', 'get', 'nowcoder']
+
+
+def test_legacy_empty_success_marker_does_not_block_explicit_retry(db, monkeypatch):
+    db.set('specialist_catalog:nowcoder:luogu-47', int(catalog.time.time()))
+    calls = []
+    stub_sources(monkeypatch, lambda name, client, topic: calls.append(name) or {
+        'items': [catalog._problem('nowcoder', '1000', '并查集')],
+        'coverage': 'official tag fixture', 'truncated': True, 'warnings': []})
+    monkeypatch.setattr(catalog, 'Client', lambda **kwargs: SimpleNamespace(close=lambda: None))
+    assert catalog.refresh_specialist_candidates(db, accounts('nowcoder'), TOPICS['luogu-47'])[0]['status'] == 'updated'
+    cached = catalog.refresh_specialist_candidates(db, accounts('nowcoder'), TOPICS['luogu-47'])[0]
+    assert cached['status'] == 'cached' and cached['coverage'] == 'official tag fixture'
+    assert calls == ['nowcoder']

@@ -242,13 +242,14 @@ def _discover_luogu_topic(database, client, topic):
                         (str(tag), {'tag': str(tag)}, 8 if len(tags) <= 2 else 2)])
     if not queries:
         queries = [('keyword', {'keyword': topic['title']}, 8)]
-    rows, warnings, pages = [], [], 0
+    rows, warnings, pages, requested_tags = [], [], 0, set()
     page_cursors = cursor.get('pages', {})
     if not isinstance(page_cursors, dict): page_cursors = {}
     page_cursors = dict(page_cursors)
     truncated = len(chosen) < len(tags)
     error_code = None
     for key, params, budget in queries:
+        if params.get('tag'): requested_tags.add(params['tag'])
         first_page = page_cursors.get(key, 1)
         if type(first_page) is not int or not 1 <= first_page <= 10000: first_page = 1
         result = _luogu_page_batch(client, params, max_pages=budget, first_page=first_page)
@@ -258,9 +259,10 @@ def _discover_luogu_topic(database, client, topic):
         if result.get('error_code'):
             error_code = result['error_code']
             break  # Access challenges/rate limits must not hammer every tag.
-    database.set(cursor_key, {'tag_offset': (offset + len(chosen)) % max(1, len(tags)), 'pages': page_cursors})
+    next_offset = offset if error_code else (offset + len(chosen)) % max(1, len(tags))
+    database.set(cursor_key, {'tag_offset': next_offset, 'pages': page_cursors})
     return {'items': list({row['id']: row for row in rows}.values()),
-            'coverage': f'洛谷专题有界补抓：本次 {pages} 页，{len(chosen)}/{len(tags)} 个相关标签；后续刷新轮换标签并继续分页',
+            'coverage': f'洛谷专题有界补抓：本次 {pages} 页，{len(requested_tags)}/{len(tags)} 个相关标签；后续刷新轮换标签并继续分页',
             'truncated': truncated, 'warnings': list(dict.fromkeys(warnings)),
             **({'error_code': error_code} if error_code else {})}
 
@@ -331,8 +333,11 @@ def refresh_specialist_candidates(database, accounts, topic, on_progress=None):
     for index, platform in enumerate(verified):
         cache_key = 'specialist_catalog:' + platform + ':' + topic['id']
         status_key = 'specialist_catalog_status:' + platform + ':' + topic['id']
-        if int(database.get(cache_key, 0)) > int(time.time()) - 300:
-            previous = database.get(status_key, {})
+        previous = database.get(status_key, {})
+        # Legacy versions cached empty batches without a status record; do not
+        # inherit those poisoned success TTLs after upgrading this code.
+        if (int(database.get(cache_key, 0)) > int(time.time()) - 300
+                and previous.get('status') == 'updated'):
             result[index] = {**previous, 'platform': platform, 'status': 'cached',
                              'message': '使用最近 5 分钟的专题公开元信息缓存；未再次请求平台'}
             publish()
