@@ -96,17 +96,10 @@ def parse_atcoder_tasks(html, contest, published_at):
 
 
 def _atcoder(client):
-    archive = parse_atcoder_archive(client.get('https://atcoder.jp/contests/archive', params={'lang': 'en'}))
-    rows = []
-    for contest, ts in archive[:6]:
-        rows.extend(parse_atcoder_tasks(client.get(f'https://atcoder.jp/contests/{contest}/tasks', params={'lang': 'en'}), contest, ts))
-    # ACL's official practice contest is not listed in the recent ABC/ARC/AGC
-    # archive, but is the platform's actual implementation-template collection.
-    try:
-        rows.extend(_atcoder_practice(client))
-    except (CrawlError, AIError, ValueError, TypeError):
-        pass  # A supplemental collection must not discard recent official tasks.
-    return _enrich_atcoder_difficulties(client, rows)
+    from .expanded_topic_sources import discover_atcoder
+    found = discover_atcoder(client, None)
+    client.catalog_discovery = {key: value for key, value in found.items() if key != 'items'}
+    return _enrich_atcoder_difficulties(client, found['items'])
 
 
 def _enrich_atcoder_difficulties(client, rows):
@@ -174,82 +167,231 @@ def parse_luogu_catalog(html):
 
 
 def _luogu(client):
-    rows = _luogu_pages(client, {}, max_pages=1)
-    try:
-        # The first ordinary page never contains most template problems. The
-        # official keyword collection currently spans several pages.
-        rows.extend(_luogu_pages(client, {'keyword': '模板'}, max_pages=8))
-    except (CrawlError, AIError, ValueError, TypeError):
-        pass
-    return list({row['id']: row for row in rows}.values())
-
-
-def _luogu_pages(client, params, max_pages=3):
-    rows, seen = [], set()
-    for page in range(1, max_pages + 1):
-        html = client.get('https://www.luogu.com.cn/problem/list',
-                          params={'type': 'luogu', **params, 'page': page})
-        parsed = parse_luogu_catalog(html)
-        fresh = [row for row in parsed if row['id'] not in seen]
-        if not fresh:
-            break
-        rows.extend(fresh)
-        seen.update(row['id'] for row in fresh)
-        container = page_data(html).get('problems', {})
-        total = container.get('count') if isinstance(container, dict) else None
-        per_page = container.get('perPage', 50) if isinstance(container, dict) else 50
-        if type(total) is int and type(per_page) is int and page * per_page >= total:
-            break
-        if len(parsed) < 50:
-            break
+    ordinary = _luogu_page_batch(client, {}, max_pages=8)
+    templates = _luogu_page_batch(client, {'keyword': '模板'}, max_pages=8) if not ordinary.get('error_code') else {
+        'items': [], 'warnings': [], 'truncated': True, 'pages_read': 0}
+    rows = list({row['id']: row for row in ordinary['items'] + templates['items']}.values())
+    warnings = list(dict.fromkeys(ordinary['warnings'] + templates['warnings']))
+    client.catalog_discovery = {'coverage': f"洛谷普通列表与模板列表，本次共 {ordinary['pages_read'] + templates['pages_read']} 页；并非全站镜像",
+                               'truncated': ordinary['truncated'] or templates['truncated'],
+                               'warnings': warnings}
+    if warnings: client.catalog_discovery['partial_failure'] = True
+    if not rows and warnings: raise CrawlError(warnings[0])
     return rows
 
 
-def refresh_specialist_candidates(database, accounts, topic):
-    """On an explicit selection request, supplement this user's verified pools.
-
-    Public metadata only: no other user's sessions, saved credentials or code
-    are used. Never replace an existing catalog after a partial upstream failure.
-    """
-    from .training_topics import LUOGU_TOPIC_TAGS
-    platforms = verified_platforms(accounts)
-    result = []
-    for platform in platforms:
-        if platform not in {'luogu', 'atcoder'}:
-            continue
-        cache_key = 'specialist_catalog:' + platform + ':' + topic['id']
-        if int(database.get(cache_key, 0)) > int(time.time()) - 300:
-            continue
-        client = Client(timeout=12, retries=0)
+def _luogu_page_batch(client, params, max_pages=3, first_page=1):
+    """Return bounded public pages plus honest continuation/partial evidence."""
+    rows, seen, warnings = [], set(), []
+    exhausted, pages_read = False, 0
+    for page in range(first_page, first_page + max_pages):
         try:
-            if platform == 'luogu':
-                if topic['id'].startswith('luogu-'):
-                    tag_ids = [int(topic['id'][6:])]
-                else:
-                    tag_ids = sorted(LUOGU_TOPIC_TAGS.get(topic['id'], []))
-                rows = []
-                for tag in tag_ids[:2]:
-                    if tag > 0:
-                        rows.extend(_luogu_pages(client, {'tag': str(tag)}, max_pages=3))
-                        rows.extend(_luogu_pages(client, {'tag': str(tag), 'keyword': '模板'}, max_pages=2))
-                if not tag_ids:
-                    rows.extend(_luogu_pages(client, {'keyword': topic['title']}, max_pages=3))
-            else:
-                rows = _atcoder_practice(client)
-                with database.connect() as db:
-                    cached = [json.loads(row[0]) for row in db.execute("SELECT data FROM problem_catalog WHERE platform='atcoder'")]
-                rows = _enrich_atcoder_difficulties(client, list({row['id']: row for row in cached + rows}.values()))
-            unique = {row['id']: row for row in rows}
-            with database.connect() as db:
-                db.executemany('INSERT OR REPLACE INTO problem_catalog VALUES(?,?,?)',
-                    [(platform, row['id'], json.dumps(row, ensure_ascii=False)) for row in unique.values()])
-            database.set(cache_key, int(time.time()))
-            result.append({'platform': platform, 'status': 'updated', 'count': len(unique)})
+            html = client.get('https://www.luogu.com.cn/problem/list',
+                              params={'type': 'luogu', **params, 'page': page})
+            parsed = parse_luogu_catalog(html)
+            container = page_data(html).get('problems', {})
         except (CrawlError, AIError, ValueError, TypeError, KeyError) as exc:
             code, message = _sync_error(exc)
-            result.append({'platform': platform, 'status': 'failed', 'error_code': code, 'message': message})
+            warnings.append(message)
+            return {'items': rows, 'truncated': True, 'next_page': page,
+                    'warnings': warnings, 'error_code': code, 'pages_read': pages_read}
+        pages_read += 1
+        fresh = [row for row in parsed if row['id'] not in seen]
+        if not fresh:
+            exhausted = not parsed
+            if parsed: warnings.append('官方分页返回重复题目，本次已停止；不能据此认定专题题库已遍历完整')
+            break
+        rows.extend(fresh)
+        seen.update(row['id'] for row in fresh)
+        total = container.get('count') if isinstance(container, dict) else None
+        per_page = container.get('perPage', 50) if isinstance(container, dict) else 50
+        # Honor the upstream page size rather than assume every page has 50 rows.
+        if type(total) is int and type(per_page) is int and per_page > 0:
+            exhausted = page * per_page >= total
+        else:
+            exhausted = len(parsed) < 50
+        if exhausted:
+            break
+    return {'items': rows, 'truncated': not exhausted,
+            'next_page': 1 if exhausted else first_page + pages_read,
+            'warnings': warnings, 'pages_read': pages_read}
+
+
+def _luogu_pages(client, params, max_pages=3):
+    result = _luogu_page_batch(client, params, max_pages=max_pages)
+    if not result['items'] and result.get('error_code'):
+        raise CrawlError(result['warnings'][0])
+    return result['items']
+
+
+def _discover_luogu_topic(database, client, topic):
+    from .training_topics import LUOGU_TOPIC_TAGS
+    tags = sorted(tag for tag in topic.get('luogu_tags', LUOGU_TOPIC_TAGS.get(topic['id'], []))
+                  if type(tag) is int and tag > 0)
+    if not tags and topic['id'].startswith('luogu-'):
+        tags = [int(topic['id'][6:])]
+    cursor_key = 'specialist_catalog_cursor:luogu:' + topic['id']
+    cursor = database.get(cursor_key, {})
+    if not isinstance(cursor, dict): cursor = {}
+    offset = int(cursor.get('tag_offset', 0)) % max(1, len(tags))
+    ordered = tags[offset:] + tags[:offset]
+    chosen = ordered[:6]
+    queries = []
+    for tag in chosen:
+        queries.extend([(str(tag) + ':template', {'tag': str(tag), 'keyword': '模板'}, 4 if len(tags) <= 2 else 1),
+                        (str(tag), {'tag': str(tag)}, 8 if len(tags) <= 2 else 2)])
+    if not queries:
+        queries = [('keyword', {'keyword': topic['title']}, 8)]
+    rows, warnings, pages, requested_tags = [], [], 0, set()
+    page_cursors = cursor.get('pages', {})
+    if not isinstance(page_cursors, dict): page_cursors = {}
+    page_cursors = dict(page_cursors)
+    truncated = len(chosen) < len(tags)
+    error_code = None
+    for key, params, budget in queries:
+        if params.get('tag'): requested_tags.add(params['tag'])
+        first_page = page_cursors.get(key, 1)
+        if type(first_page) is not int or not 1 <= first_page <= 10000: first_page = 1
+        result = _luogu_page_batch(client, params, max_pages=budget, first_page=first_page)
+        rows.extend(result['items']); warnings.extend(result['warnings'])
+        pages += result['pages_read']; truncated |= result['truncated']
+        page_cursors[key] = result['next_page']
+        if result.get('error_code'):
+            error_code = result['error_code']
+            break  # Access challenges/rate limits must not hammer every tag.
+    next_offset = offset if error_code else (offset + len(chosen)) % max(1, len(tags))
+    database.set(cursor_key, {'tag_offset': next_offset, 'pages': page_cursors})
+    return {'items': list({row['id']: row for row in rows}.values()),
+            'coverage': f'洛谷专题有界补抓：本次 {pages} 页，{len(requested_tags)}/{len(tags)} 个相关标签；后续刷新轮换标签并继续分页',
+            'truncated': truncated, 'warnings': list(dict.fromkeys(warnings)),
+            **({'error_code': error_code} if error_code else {})}
+
+
+def _store_catalog_rows(database, platform, rows):
+    """Merge discovery batches without erasing previous official coverage."""
+    unique = {row['id']: row for row in rows if row.get('platform') == platform}
+    with database.connect() as db:
+        existing = {row[0]: json.loads(row[1]) for row in db.execute(
+            'SELECT id,data FROM problem_catalog WHERE platform=?', (platform,)) if row[0] in unique}
+        for pid, row in unique.items():
+            previous = existing.get(pid, {})
+            merged = ({**previous, **{key: value for key, value in row.items() if value is not None}}
+                      if previous else dict(row))
+            if not row.get('tags') and previous.get('tags'): merged['tags'] = previous['tags']
+            if row.get('difficulty') is None and previous.get('difficulty') is not None:
+                merged['difficulty_source'] = previous.get('difficulty_source')
+            if not row.get('published_at') and previous.get('published_at'):
+                for key in ('published_at', 'published_at_source', 'publication_note'):
+                    if key in previous: merged[key] = previous[key]
+            unique[pid] = merged
+        db.executemany('INSERT OR REPLACE INTO problem_catalog VALUES(?,?,?)',
+            [(platform, pid, json.dumps(row, ensure_ascii=False)) for pid, row in unique.items()])
+    return len(unique)
+
+
+class _DiscoveryDeadline:
+    def __init__(self, client, deadline):
+        self.client, self.deadline = client, deadline
+
+    def _call(self, method, *args, **kwargs):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise CrawlError('Timeout: 公开专题补抓已达到本轮时间预算')
+        if hasattr(self.client, 'timeout'):
+            self.client.timeout = min(12, remaining)
+        return getattr(self.client, method)(*args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        return self._call('get', *args, **kwargs)
+
+    def json(self, *args, **kwargs):
+        return self._call('json', *args, **kwargs)
+
+    def close(self):
+        return self.client.close()
+
+
+def refresh_specialist_candidates(database, accounts, topic, on_progress=None):
+    """Bounded discovery for this user's verified platforms; no credentials used."""
+    verified_set = set(verified_platforms(accounts))
+    verified = [platform for platform in PLATFORMS if platform in verified_set]
+    result = [{'platform': platform, 'status': 'queued', 'count': 0} for platform in verified]
+    result.extend({'platform': platform, 'status': 'skipped', 'count': 0,
+                   'coverage': '未请求此平台：仅当前用户已验证登录的平台参与专题选题',
+                   'message': '尚无有效登录检测；请在连接与设置检测登录后重试',
+                   'truncated': False, 'warnings': []}
+                  for platform in PLATFORMS if platform not in verified)
+    deadline = time.monotonic() + 150
+
+    def publish():
+        if on_progress:
+            on_progress({'platforms': [dict(row) for row in result],
+                         'completed_platforms': sum(row['status'] not in ('queued', 'running') for row in result),
+                         'total_platforms': len(result), 'count': sum(row.get('count', 0) for row in result)})
+
+    publish()
+    for index, platform in enumerate(verified):
+        cache_key = 'specialist_catalog:' + platform + ':' + topic['id']
+        status_key = 'specialist_catalog_status:' + platform + ':' + topic['id']
+        previous = database.get(status_key, {})
+        # Legacy versions cached empty batches without a status record; do not
+        # inherit those poisoned success TTLs after upgrading this code.
+        if (int(database.get(cache_key, 0)) > int(time.time()) - 300
+                and previous.get('status') == 'updated'):
+            result[index] = {**previous, 'platform': platform, 'status': 'cached',
+                             'message': '使用最近 5 分钟的专题公开元信息缓存；未再次请求平台'}
+            publish()
+            continue
+        result[index]['status'] = 'running'
+        publish()
+        # Reserve an equal share of remaining time for each later platform.
+        # A slow source must not starve the other verified account catalogs.
+        remaining = max(0, deadline - time.monotonic())
+        platform_deadline = min(deadline, time.monotonic() + remaining / (len(verified) - index))
+        client = _DiscoveryDeadline(Client(timeout=12, retries=0), platform_deadline)
+        try:
+            if platform == 'codeforces':
+                if int(database.get('catalog_updated_at:codeforces', 0)) > int(time.time()) - 300:
+                    with database.connect() as db:
+                        count = db.execute("SELECT count(*) FROM problem_catalog WHERE platform='codeforces'").fetchone()[0]
+                    found = {'items': [] if count else _cf(client), 'existing_count': count,
+                             'coverage': 'Codeforces 最近同步的官方全量已结束且具有 rating 的公开题库',
+                             'truncated': False, 'warnings': []}
+                else:
+                    found = {'items': _cf(client), 'coverage': 'Codeforces 官方全量已结束且具有 rating 的公开题库',
+                             'truncated': False, 'warnings': []}
+            elif platform == 'luogu':
+                found = _discover_luogu_topic(database, client, topic)
+            elif platform == 'atcoder':
+                from .expanded_topic_sources import discover_atcoder
+                found = discover_atcoder(client, topic)
+                found['items'] = _enrich_atcoder_difficulties(client, found['items'])
+            else:
+                from .expanded_topic_sources import discover_nowcoder
+                found = discover_nowcoder(client, topic)
+            count = _store_catalog_rows(database, platform, found['items'])
+            usable_count = count or int(found.get('existing_count', 0))
+            status = 'partial' if found.get('error_code') and usable_count else 'updated' if usable_count else 'failed' if found.get('error_code') else 'empty'
+            row = {'platform': platform, 'status': status, 'count': count,
+                   'coverage': found['coverage'], 'truncated': bool(found.get('truncated')),
+                   'warnings': found.get('warnings', []), 'updated_at': int(time.time())}
+            if found.get('error_code'): row['error_code'] = found['error_code']
+            if not usable_count: row['message'] = '本次公开来源没有取得可用题目；旧缓存保留，可重试；不代表平台没有该专题题目'
+            if usable_count and not found.get('error_code'):
+                database.set(cache_key, int(time.time()))
+                if platform == 'codeforces': database.set('catalog_updated_at:codeforces', int(time.time()))
+            database.set(status_key, row)
+            result[index] = row
+        except (CrawlError, AIError, ValueError, TypeError, KeyError) as exc:
+            code, message = _sync_error(exc)
+            row = {'platform': platform, 'status': 'failed', 'count': 0,
+                   'error_code': code, 'message': message,
+                   'coverage': '公开元信息补抓失败，保留既有缓存', 'truncated': True, 'warnings': []}
+            database.set(status_key, row)
+            result[index] = row
         finally:
             client.close()
+        publish()
     return result
 
 
@@ -271,7 +413,10 @@ def parse_nowcoder_catalog(html):
 
 
 def _nowcoder(client):
-    return parse_nowcoder_catalog(client.get('https://ac.nowcoder.com/acm/problem/list'))
+    from .expanded_topic_sources import discover_nowcoder
+    found = discover_nowcoder(client, None)
+    client.catalog_discovery = {key: value for key, value in found.items() if key != 'items'}
+    return found['items']
 
 
 DISCOVERY = {'codeforces': _cf, 'atcoder': _atcoder, 'luogu': _luogu, 'nowcoder': _nowcoder}
@@ -306,7 +451,7 @@ def refresh_catalog(database, platform=None, on_progress=None):
         return {'count': sum(row['count'] for row in results),
                 'platforms': [dict(row) for row in results],
                 'complete': all(row['status'] == 'updated' for row in results),
-                'completed_platforms': sum(row['status'] in ('updated', 'failed') for row in results),
+                'completed_platforms': sum(row['status'] in ('updated', 'partial', 'failed') for row in results),
                 'total_platforms': len(names), 'started_at': started, 'updated_at': int(time.time())}
 
     def publish():
@@ -320,15 +465,17 @@ def refresh_catalog(database, platform=None, on_progress=None):
         try:
             rows = DISCOVERY[name](client)
             if not rows: raise CrawlError('官方题库返回空内容或结构变化，保留原缓存')
-            with database.connect() as db:
-                db.execute('DELETE FROM problem_catalog WHERE platform=?', (name,))
-                db.executemany('INSERT INTO problem_catalog VALUES(?,?,?)',
-                    [(name, row['id'], json.dumps(row, ensure_ascii=False)) for row in rows])
+            _store_catalog_rows(database, name, rows)
             now = int(time.time()); database.set('catalog_updated_at:' + name, now)
             if name == 'codeforces': database.set('catalog_updated_at', now)
-            results[index] = {'platform': name, 'status': 'updated', 'count': len(rows),
+            results[index] = {'platform': name,
+                'status': 'partial' if getattr(client, 'catalog_discovery', {}).get('partial_failure') else 'updated', 'count': len(rows),
                 'dated_count': sum(bool(row.get('published_at')) for row in rows), 'updated_at': now,
-                'message': '已更新官方公开题库；是否参与 AI 选题还需满足登录验证与下方筛选条件'}
+                'message': '已补充公开题库元信息并保留既有缓存；是否参与 AI 选题仍需满足登录与筛选条件',
+                'coverage': getattr(client, 'catalog_discovery', {}).get('coverage',
+                    'Codeforces 已结束且具有 rating 的官方公开题库' if name == 'codeforces' else '洛谷普通列表及模板列表各最多 8 页；并非全站镜像'),
+                'truncated': bool(getattr(client, 'catalog_discovery', {}).get('truncated', name != 'codeforces')),
+                'warnings': getattr(client, 'catalog_discovery', {}).get('warnings', [])}
         except (CrawlError, AIError, KeyError, ValueError, TypeError) as exc:
             code, message = _sync_error(exc)
             results[index] = {'platform': name, 'status': 'failed', 'count': 0,
