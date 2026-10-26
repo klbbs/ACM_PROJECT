@@ -106,6 +106,20 @@ it('shows failed reads and allows an explicit retry without paid AI work', async
   expect(host.textContent).toContain('可选 8 题')
   expect(apiMock.mock.calls.every((call) => !call[1])).toBe(true)
 })
+it('explains public discovery states in Chinese including empty responses and unrequested platforms', async () => {
+  const result = coverage()
+  result.platforms[0].discovery = { status: 'empty', message: '本次公开列表未返回符合条件的题目' }
+  result.platforms[1] = {
+    ...result.platforms[1],
+    discovery: { status: 'not_requested', message: '' },
+  }
+  apiMock.mockResolvedValue(result)
+  await render()
+  await click('查看本专题候选')
+  expect(host.textContent).toContain('专题补抓：本次无结果')
+  expect(host.textContent).toContain('尚未查询')
+  expect(host.textContent).not.toContain('not_requested')
+})
 it('runs public discovery only on click, polls the exact job, then reloads local evidence without selecting problems', async () => {
   vi.useFakeTimers()
   apiMock.mockImplementation((path, method) => {
@@ -165,15 +179,20 @@ it('stops polling on account revision and never displays an earlier account resp
   vi.useFakeTimers()
   const pending = deferred<{ items: { id: string; status: string }[] }>()
   apiMock.mockImplementation((path, method) =>
-    method === 'POST' ? Promise.resolve({ id: 'old', status: 'queued' }) : pending.promise,
+    method === 'POST'
+      ? Promise.resolve({ id: 'old', status: 'queued' })
+      : path === '/jobs'
+        ? pending.promise
+        : Promise.resolve(coverage('dp', 2)),
   )
   await render()
   await click('补抓本专题题库')
   await render({ revision: 2 })
   await act(async () => pending.resolve({ items: [{ id: 'old', status: 'completed' }] }))
   await act(async () => vi.advanceTimersByTimeAsync(10000))
-  expect(apiMock).toHaveBeenCalledTimes(2)
+  expect(apiMock).toHaveBeenCalledTimes(3)
   expect(host.textContent).not.toContain('本次补抓：')
+  expect(host.textContent).toContain('当前缓存可选 2 题')
 })
 it('preserves a failed refresh reason and lets users explicitly retry', async () => {
   apiMock.mockRejectedValueOnce(new Error('同类任务正在执行，请等待完成'))

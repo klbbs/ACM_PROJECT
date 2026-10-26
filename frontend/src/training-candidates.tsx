@@ -56,6 +56,9 @@ const statuses: Record<string, string> = {
   failed: '失败',
   interrupted: '已中断',
   skipped: '未参与',
+  cached: '复用缓存',
+  empty: '本次无结果',
+  not_requested: '尚未查询',
 }
 const explain = (error: unknown) => (error instanceof Error ? error.message : '请求未完成，请重试')
 
@@ -76,6 +79,8 @@ export function TrainingCandidates({
   const alive = useRef(true)
   const operation = useRef(0)
   const pending = useRef('')
+  const participated = useRef(false)
+  const previousRevision = useRef(revision)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [state, setState] = useState<{
     scope: string
@@ -95,10 +100,29 @@ export function TrainingCandidates({
     }
   }, [])
   useEffect(() => {
-    operation.current++
+    const token = ++operation.current
+    const refreshed = previousRevision.current !== revision
+    previousRevision.current = revision
     pending.current = ''
     clearTimeout(timer.current)
     setState({ scope })
+    // Global job completion refreshes this revision too. Discard old-account
+    // evidence but restore current local evidence if the user opened this panel.
+    // This read is never a discovery, generation, or paid AI request.
+    if (refreshed && participated.current && topicId && valid) {
+      pending.current = scope
+      setState({ scope, loading: true })
+      void read()
+        .then((coverage) => {
+          if (isCurrent(token, scope)) setState({ scope, coverage })
+        })
+        .catch((error) => {
+          if (isCurrent(token, scope)) setState({ scope, error: explain(error) })
+        })
+        .finally(() => {
+          if (isCurrent(token, scope)) pending.current = ''
+        })
+    }
   }, [scope])
   const visible = state.scope === scope ? state : { scope }
   const active = !!visible.loading || !!visible.refreshing
@@ -115,6 +139,7 @@ export function TrainingCandidates({
   }
   const inspect = async () => {
     if (!canRead || pending.current === scope) return
+    participated.current = true
     pending.current = scope
     const selected = scope,
       token = ++operation.current
@@ -131,6 +156,7 @@ export function TrainingCandidates({
   }
   const refresh = async () => {
     if (!canRead || pending.current === scope) return
+    participated.current = true
     pending.current = scope
     const selected = scope,
       token = ++operation.current
@@ -285,7 +311,12 @@ export function TrainingCandidates({
                     {condition.count ? `（${condition.count} 题）` : ''}
                   </p>
                 ))}
-                {item.discovery?.message && <p>专题补抓：{item.discovery.message}</p>}
+                {item.discovery && (
+                  <p>
+                    专题补抓：{statuses[item.discovery.status] || '状态未知'}
+                    {item.discovery.message ? `；${item.discovery.message}` : ''}
+                  </p>
+                )}
                 {!item.verified && <a href="#settings">前往连接与设置检测平台登录</a>}
               </li>
             ))}
