@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { api, names } from './api'
 import { SelectionReportButton } from './selection-report'
+import { TrainingCandidates } from './training-candidates'
 import './specialist-training.css'
 
 type Topic = {
@@ -505,6 +506,16 @@ export function SpecialistTrainingPage({
         非 CF
         题按估计区间与目标范围重叠筛选，可能存在偏差，并非官方等价；牛客等缺少可信映射的题会排除并说明。
       </p>
+      <TrainingCandidates
+        topicId={topicId}
+        topicTitle={topic?.title}
+        minimum={ratingSpecified && ratingValid ? minimum : undefined}
+        maximum={ratingSpecified && ratingValid ? maximum : undefined}
+        valid={ratingValid}
+        mode={mode}
+        disabled={loading || busy}
+        revision={revision}
+      />
       <div className="ai-controls specialist-generate">
         {aiPicker}
         <button
@@ -530,7 +541,7 @@ export function SpecialistTrainingPage({
         <div role="alert" className="help specialist-error">
           {error}。
           {failed === 'generate'
-            ? '本次没有保存新题单，已有题单保留；调整选项后可再次点击生成，失败请求不会自动重试。'
+            ? '本次没有保存新题单，已有题单保留；可先点击“查看本专题候选”核对缓存、平台与过滤原因，再决定补抓或调整选项。失败请求不会自动重试。'
             : '已显示的题单保留；可点击“刷新训练”重试读取，读取不会消耗 AI 额度。'}
         </div>
       )}

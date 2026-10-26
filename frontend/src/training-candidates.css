@@ -1,0 +1,63 @@
+.training-candidates {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border, #dbe3eb);
+  border-radius: 1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.training-candidates-heading,
+.training-candidates-actions,
+.training-candidates-platforms > li > div {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+.training-candidates-heading {
+  justify-content: space-between;
+}
+.training-candidates-platforms {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 0.7rem;
+}
+.training-candidates-platforms > li {
+  border: 1px solid var(--border, #dbe3eb);
+  padding: 0.8rem;
+  border-radius: 0.7rem;
+  min-width: 0;
+}
+.training-candidates p {
+  margin: 0.6rem 0;
+  line-height: 1.6;
+}
+.training-candidates-progress {
+  border-left: 3px solid var(--accent, #3b82f6);
+  padding-left: 0.8rem;
+}
+.training-candidates-spinner {
+  animation: training-candidates-spin 1.3s linear infinite;
+}
+@keyframes training-candidates-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 600px) {
+  .training-candidates-actions {
+    width: 100%;
+  }
+  .training-candidates-actions .button {
+    width: 100%;
+    justify-content: center;
+    white-space: normal;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .training-candidates-spinner {
+    animation: none;
+  }
+}
