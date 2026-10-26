@@ -39,6 +39,11 @@ class CrawlRequest(BaseModel):
     day: str = Field(default='', max_length=10)
 
 
+class SpecialistCatalogRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    topic_id: str = Field(min_length=1, max_length=80)
+
+
 def publication_date(value):
     if value is not None:
         calendar_date.fromisoformat(value)
@@ -344,6 +349,26 @@ def create_app(settings=None):
     app.state.specialist_training.selection_reports = app.state.selection_reports
     app.state.daily.specialist_training = app.state.specialist_training
     register_specialist_training(app, app.state.specialist_training)
+
+    @app.get('/api/training/candidates')
+    def training_candidates(topic_id: str = Query(min_length=1, max_length=80),
+                            cf_minimum: int | None = Query(default=None, ge=800, le=3500),
+                            cf_maximum: int | None = Query(default=None, ge=800, le=3500)):
+        # Cache-only: inspecting coverage never logs into a platform, fetches a
+        # statement, changes a plan, or calls a model.
+        return app.state.specialist_training.candidate_coverage(topic_id,
+            cf_minimum=cf_minimum, cf_maximum=cf_maximum)
+
+    @app.post('/api/training/catalog/refresh')
+    async def training_catalog_refresh(payload: SpecialistCatalogRequest):
+        from .training_topics import TOPICS
+        from .catalog import verified_platforms
+        if payload.topic_id not in TOPICS:
+            raise HTTPException(422, '请选择支持的训练专题')
+        if not verified_platforms(account_config):
+            raise HTTPException(409, '请先在连接与设置中检测至少一个平台，确认本人的登录身份后再补抓专题题库')
+        return jobs.start('specialist_catalog', {'topic_id': payload.topic_id})
+
     app.state.training_assessment = TrainingAssessment(
         database, ai, app.state.workbench, app.state.problem_submissions, app.state.specialist_training)
     register_training_assessment(app, app.state.training_assessment)

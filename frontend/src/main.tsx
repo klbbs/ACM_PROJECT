@@ -72,6 +72,7 @@ const jobNames: Record<string, string> = {
   analysis: '训练建议',
   recommend: '智能选题',
   catalog: '同步题库',
+  specialist_catalog: '补充专题题库',
   ai_test: 'AI 连接测试',
   wb_statement: '获取题面',
   wb_hint: '生成小提示',

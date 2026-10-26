@@ -48,6 +48,7 @@ EVENTS = {
 LEVELS = ('INFO', 'WARNING', 'ERROR')
 CATEGORIES = ('system', 'task', 'platform', 'security', 'request')
 KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
+         'specialist_catalog',
          'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',

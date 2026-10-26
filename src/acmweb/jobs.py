@@ -71,6 +71,35 @@ class Jobs:
                 self.log_gym_results(job_id, kind, result)
                 self.update(job_id,"completed" if result["complete"] else "partial",result,
                     error='部分官方提交未能读取，请查看同步详情；当前榜单可能缺少未同步题目' if not result['complete'] else None)
+            elif kind == 'specialist_catalog':
+                from .catalog import refresh_specialist_candidates
+                from .training_topics import TOPICS
+                topic = TOPICS.get(payload.get('topic_id'))
+                if topic is None:
+                    raise AIError('请选择支持的训练专题')
+                progress_lock = threading.Lock()
+                progress_open = True
+                def publish_specialist(progress):
+                    with progress_lock:
+                        if progress_open:
+                            self.update(job_id, 'running', {'topic_id': topic['id'], **progress})
+                try:
+                    rows = await asyncio.to_thread(refresh_specialist_candidates,
+                        self.db, self.accounts, topic, on_progress=publish_specialist)
+                finally:
+                    with progress_lock:
+                        progress_open = False
+                active = [row for row in rows if row['status'] != 'skipped']
+                if not active or all(row['status'] == 'failed' for row in active):
+                    status = 'failed'
+                elif all(row['status'] in {'updated', 'cached'} for row in active):
+                    status = 'completed'
+                else:
+                    status = 'partial'
+                self.update(job_id, status, {'topic_id': topic['id'], 'platforms': rows,
+                    'count': sum(row.get('count', 0) for row in rows), 'complete': status == 'completed',
+                    'completed_platforms': len(rows), 'total_platforms': len(rows)},
+                    error='本次专题题库补充未完成，请查看分平台原因；已有缓存与题单已保留' if status == 'failed' else None)
             elif kind=="catalog":
                 # A cancelled to_thread keeps running until its current request returns.
                 # Close progress delivery before persisting "interrupted", otherwise a
