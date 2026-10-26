@@ -17,7 +17,7 @@ def site(tmp_path, monkeypatch):
                               enable_codex=False, multi_user=False))
     with TestClient(app) as client:
         assert client.put('/api/accounts', json={'items':[{'platform':'codeforces', 'handle':'demo',
-                           'cookie':'JSESSIONID=synthetic-only', 'enrich':False}]}).status_code == 200
+                           'cookie':'JSESSIONID=synthetic-only', 'api_key':'a'*40, 'api_secret':'b'*40, 'enrich':False}]}).status_code == 200
         service = app.state.problem_submissions
         plan = {'result':Collection('codeforces','demo', submissions=[Submission('12345','4-A',int(time.time()),'WA',language='Python 3')], complete=True)}
         monkeypatch.setattr(service, '_collect', lambda *_: (plan['result'], 'synthetic current problem'))
@@ -104,46 +104,43 @@ def test_official_source_creates_review_record_without_changing_draft(site, monk
 
 
 @pytest.mark.parametrize('allowed', [True, False])
-def test_source_route_reads_dynamic_cf_entry_without_using_editor_draft(site, monkeypatch, allowed):
-    """Real service/driver chain, synthetic upstream HTML and source only."""
+def test_source_route_reads_signed_cf_api_without_cookie_or_editor_draft(site, monkeypatch, allowed):
+    """Actual service/driver chain; the official API is a synthetic fixture."""
     import asyncio
+    import base64
     import json
+    from urllib.parse import parse_qs, urlsplit
     from acmweb.remote_judges import PlatformSession
     client, app, service, _ = site
     asyncio.run(service.sync('codeforces:4-A', 'demo'))
     draft = {'language':'python3','code':'print("keep editor draft")','revision':0}
     assert client.put('/api/workbench/problem/4-A/draft', json=draft).status_code == 200
+    # Source reads are independent of the browser session used to submit.
+    assert client.put('/api/accounts', json={'items':[{'platform':'codeforces',
+        'handle':'demo','cookie':''}]}).status_code == 200
     calls = []
     stamp = int(time.time())
-    def driver(*_):
-        session = PlatformSession('codeforces', 'JSESSIONID=synthetic-only')
-        def request(method, url, *, data=None, headers=None):
-            calls.append((method, url, data))
-            if '/api/' in url:
-                return 200, {}, json.dumps({'status':'OK', 'result':[{'id':12345,
-                    'problem':{'contestId':4,'index':'A'}, 'author':{'members':[{'handle':'demo'}]},
-                    'creationTimeSeconds':stamp,'verdict':'WRONG_ANSWER','programmingLanguage':'Python 3'}]})
-            if '/contest/4/submission/' in url:
-                return 403, {}, '<title>Just a moment...</title>'
-            if '/submissions/demo' in url:
-                ids = '["12345"]' if allowed else '[]'
-                return 200, {}, f'''<meta name="X-Csrf-Token" content="{'a'*32}">
-                    <div class="lang-chooser"><a href="/profile/demo">demo</a><a href="/logout">Logout</a></div>
-                    <table><tr data-submission-id="12345"><td class="id-cell"><span class="hiddenSource">12345</span></td>
-                    <td><a href="/profile/demo">demo</a></td><td><a href="/contest/4/problem/A">A</a></td></tr></table>
-                    <script>const viewableSubmissionIds = {ids};
-                    if (viewableSubmissionIds.indexOf(submissionId) != -1) {{ show = true; }}
-                    $.post('/data/submitSource', {{submissionId: id}});</script>'''
-            assert method == 'POST' and '/data/submitSource?rv=' in url
-            assert data == {'submissionId':'12345','csrf_token':'a'*32}
-            return 200, {}, json.dumps({'submissionId':12345,'source':'print("official fixture")'})
-        session._request = request
-        return session
-    monkeypatch.setattr(service.remote, '_driver', driver)
+    def request(self, method, url, *, data=None, headers=None):
+        assert self._api_only and not list(self.session.cookies)
+        parsed = urlsplit(url)
+        query = parse_qs(parsed.query)
+        calls.append((method, parsed.path, query))
+        assert method == 'GET' and parsed.hostname == 'codeforces.com'
+        row = {'id':12345, 'problem':{'contestId':4,'index':'A'},
+            'author':{'members':[{'handle':'demo'}]}, 'creationTimeSeconds':stamp,
+            'verdict':'WRONG_ANSWER','programmingLanguage':'Python 3'}
+        if parsed.path == '/api/user.status':
+            assert query['apiKey'] == ['a'*40] and 'apiSig' in query
+            if 'includeSources' in query:
+                assert query['count'] == ['1']
+                row['sourceBase64'] = base64.b64encode(b'print("official fixture")').decode() if allowed else '%%invalid%%'
+        else:
+            assert parsed.path == '/api/contest.status' and 'apiKey' not in query
+        return 200, {}, json.dumps({'status':'OK', 'result':[row]})
+    monkeypatch.setattr(PlatformSession, '_request', request)
     response = client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'})
     assert response.status_code == (200 if allowed else 400), response.text
-    posts = [call for call in calls if call[0] == 'POST']
-    assert len(posts) == int(allowed)
+    assert [call[1] for call in calls] == ['/api/contest.status','/api/user.status','/api/user.status']
     with app.state.database.connect() as db:
         saved = db.execute('SELECT code,revision FROM wb_drafts WHERE problem_id=?', ('codeforces:4-A',)).fetchone()
         assert saved['code'] == draft['code'] and saved['revision'] == 1
@@ -151,12 +148,20 @@ def test_source_route_reads_dynamic_cf_entry_without_using_editor_draft(site, mo
     if allowed:
         result = response.json()
         assert result['code_verified'] and result['provenance'] == 'official'
-        assert result['code'] == 'print("official fixture")'
-        assert result['code'] != draft['code']
+        assert result['code'] == 'print("official fixture")' and result['code'] != draft['code']
         assert service.listing('4-A','demo')['items'][0]['code_verified']
     else:
         assert '尚不可核验' in response.json()['detail']
-        assert '不一致' not in response.json()['detail']
+
+
+def test_cf_source_requires_api_binding_without_sending_any_request(site, monkeypatch):
+    client, app, service, _ = site
+    assert client.put('/api/accounts', json={'items':[{'platform':'codeforces','handle':'demo',
+        'api_key':'','api_secret':''}]}).status_code == 200
+    monkeypatch.setattr(service.remote, '_driver', lambda *_: pytest.fail('no outbound request without API'))
+    result = client.post('/api/problem-submissions/4-A/source', json={'handle':'demo','submission_id':'12345'})
+    assert result.status_code == 400 and 'API Key' in result.json()['detail']
+    assert service.listing('4-A','demo')['items'] == []
 
 
 def test_source_upstream_rate_limit_has_retry_after_and_keeps_history(site, monkeypatch):

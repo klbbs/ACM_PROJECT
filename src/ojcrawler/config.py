@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,19 @@ class Account:
     cookie_env: str | None = None
     enrich: bool = False
     cookie: str | None = field(default=None, repr=False)
+    api_key: str | None = field(default=None, repr=False)
+    api_secret: str | None = field(default=None, repr=False)
+
+
+def validate_cf_api_credentials(platform, api_key, api_secret):
+    """Validate optional official CF credentials without echoing private values."""
+    if api_key is None and api_secret is None:
+        return
+    if platform != 'codeforces':
+        raise ValueError('只有 Codeforces 支持官方 API Key / Secret')
+    if not all(isinstance(value, str) and re.fullmatch(r'(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40})', value)
+               for value in (api_key, api_secret)):
+        raise ValueError('Codeforces API Key 和 Secret 必须同时填写，并使用官方提供的 32 或 40 位十六进制字符串')
 
 
 @dataclass
@@ -44,7 +58,7 @@ def load(path):
         raise ValueError("配置仅支持 crawler 和 accounts")
     accounts, seen = [], set()
     for item in doc.get("accounts", []):
-        if set(item) - {"platform", "handle", "cookie_env", "enrich", "cookie", "login_method"}:
+        if set(item) - {"platform", "handle", "cookie_env", "enrich", "cookie", "login_method", "api_key", "api_secret"}:
             raise ValueError("accounts 存在未知字段")
         if item.get('login_method') is not None and item['login_method'] not in {'qr', 'cookie', 'browser', 'public'}:
             raise ValueError('login_method 必须为受支持的登录方式')
@@ -60,6 +74,8 @@ def load(path):
         seen.add((platform, handle))
         cookie_env = item.get("cookie_env")
         cookie = item.get("cookie")
+        api_key, api_secret = item.get('api_key'), item.get('api_secret')
+        validate_cf_api_credentials(platform, api_key, api_secret)
         if cookie is not None and (not isinstance(cookie, str) or not cookie.strip() or '\r' in cookie or '\n' in cookie):
             raise ValueError("cookie 必须为非空单行字符串")
         if cookie and cookie_env:
@@ -70,7 +86,7 @@ def load(path):
             raise ValueError(f"环境变量 {cookie_env} 未设置，不能静默忽略 Cookie")
         if not isinstance(item.get("enrich", False), bool):
             raise ValueError("enrich 必须为布尔值")
-        accounts.append(Account(platform, handle, cookie_env, item.get("enrich", False), cookie))
+        accounts.append(Account(platform, handle, cookie_env, item.get("enrich", False), cookie, api_key, api_secret))
     if not accounts:
         raise ValueError("至少配置一个账号")
     config = Config(path.parent / settings.pop("database", "data/accounts.sqlite3"),

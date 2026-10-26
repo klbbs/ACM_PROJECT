@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
-from ojcrawler.config import load, tomllib
+from ojcrawler.config import load, tomllib, validate_cf_api_credentials
 from .codex_bridge import AIError
 from .cookie_validation import cookie_summary, prepare_cookie
 
@@ -21,6 +21,9 @@ class AccountInput(BaseModel):
     enrich: bool = False
     # null preserves the saved credential; empty string clears it.
     cookie: str | None = Field(default=None, max_length=16384, repr=False)
+    # Both null preserve the pair; both empty explicitly remove it.
+    api_key: str | None = Field(default=None, max_length=40, repr=False)
+    api_secret: str | None = Field(default=None, max_length=40, repr=False)
 
 
 class AccountList(BaseModel):
@@ -106,6 +109,7 @@ class Accounts:
         return {'configured': bool(doc.get('accounts')), 'source': 'web' if self.path.exists() else 'file',
                 'items': [{'platform': a['platform'], 'handle': a['handle'], 'enrich': a.get('enrich', False),
                            'has_cookie': bool(a.get('cookie') or a.get('cookie_env')),
+                           'has_api_key': bool(a.get('api_key') and a.get('api_secret')) if a['platform'] == 'codeforces' else False,
                            'cookie_info': credential_info(a),
                            'login_method': a.get('login_method', 'cookie' if a.get('cookie') or a.get('cookie_env') else 'public'),
                            'credential_source': 'environment' if a.get('cookie_env') else ('saved' if a.get('cookie') else 'public')}
@@ -126,6 +130,17 @@ class Accounts:
                     raise AIError('账号重复，请每个平台账号只保留一条')
                 seen.add(key)
                 account = {'platform': item.platform, 'handle': handle, 'enrich': item.enrich}
+                if item.api_key is None and item.api_secret is None:
+                    old = previous.get(key, {})
+                    account.update({name: old[name] for name in ('api_key', 'api_secret') if old.get(name)})
+                elif item.platform == 'codeforces' and item.api_key == '' and item.api_secret == '':
+                    pass
+                else:
+                    try:
+                        validate_cf_api_credentials(item.platform, item.api_key, item.api_secret)
+                    except ValueError as error:
+                        raise AIError(str(error)) from None
+                    account.update(api_key=item.api_key, api_secret=item.api_secret)
                 if item.cookie is None:
                     old = previous.get(key, {})
                     account.update({k: old[k] for k in ('cookie', 'cookie_env') if old.get(k)})

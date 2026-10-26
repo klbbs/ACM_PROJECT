@@ -221,7 +221,8 @@ class ProblemSubmissions:
         pid = normalize(pid)
         # Prefer the immutable code already sent through this workbench. It is
         # labelled local_sent/local_unverified, never falsely official_verified.
-        handle = self.account(pid, payload.handle)['handle']
+        account = self.account(pid, payload.handle)
+        handle = account['handle']
         for item in self.listing(pid, handle)['items']:
             if item['submission_id'] == payload.submission_id and item.get('attempt_id'):
                 attempt = self.workbench.attempt(item['attempt_id'])
@@ -232,13 +233,24 @@ class ProblemSubmissions:
         platform = pid.split(':')[0]
         if platform not in {'codeforces', 'atcoder'}:
             raise HTTPException(400, '判题记录已保留，但此平台暂不能自动读取并核验官方源码；不会使用本地草稿替代')
-        _, cookie, _ = self.remote.account(pid, handle)
+        credentials = None
+        if platform == 'codeforces':
+            if not account.get('api_key') or not account.get('api_secret'):
+                raise HTTPException(400, '请在连接与设置中编辑 Codeforces 账号，绑定该账号的 API Key 和 Secret 后再获取本次代码。'
+                                    '官方源码读取与 AI 复盘使用 API；Cookie 用于交题，两者独立。')
+            credentials = {name: account[name] for name in ('api_key', 'api_secret')}
+            # Signed own-source reads do not require a browser login Cookie.
+            cookie = None
+        else:
+            _, cookie, _ = self.remote.account(pid, handle)
         from .remote_judges import SubmissionError
         driver = self.remote._driver(platform, cookie)
         try:
-            observed = driver.source(pid, handle, payload.submission_id)
+            observed = (driver.source(pid, handle, payload.submission_id, credentials)
+                        if credentials is not None else driver.source(pid, handle, payload.submission_id))
         except SubmissionError as exc:
             reason = {'challenge':'source_challenge', 'access_restricted':'source_access_restricted', 'rate_limited':'source_rate_limited',
+                      'api_rejected':'source_api_rejected',
                       'login_required':'source_login_required', 'account_mismatch':'source_account_mismatch',
                       'record_mismatch':'source_record_mismatch', 'record_unavailable':'source_record_unavailable',
                       'source_unavailable':'source_unavailable'}.get(exc.reason, 'source_read_failed')

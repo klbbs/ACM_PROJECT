@@ -574,6 +574,12 @@ export function ProblemSubmissions({
           : `${platformName} 的提交请在官方页面完成；回到这里点击「同步本题提交」，本站会读取这个账号在当前题的记录和判题，不需要填写提交号、重新粘贴代码或勾选代码校对。`}{' '}
         同步只读取记录，不会替你交题。
       </p>
+      {platform === 'codeforces' && (
+        <p className="muted">
+          获取 CF 官方源码及 AI 复盘需先绑定该账号的 API Key 与 Secret；公开判题同步不需要 API，交题仍使用 Cookie。{' '}
+          <a href="#settings">前往连接与设置绑定 API</a>
+        </p>
+      )}
       <div className="problem-submit-controls">
         <label>
           平台账号

@@ -55,6 +55,7 @@ KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
          'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited', 'source_login_required', 'source_read_failed',
+           'source_api_rejected',
            'source_account_mismatch', 'source_record_mismatch', 'source_record_unavailable', 'source_unavailable',
            'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',
            'gym_access_restricted', 'gym_time_unverified', 'gym_login_or_permission',

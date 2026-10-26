@@ -42,6 +42,7 @@ import { ProblemRecordsList } from './problem-records'
 import { OnlineUsers } from './online-users'
 import { PlatformConnections } from './platform-connections'
 import { AccountCookieField } from './account-cookie-field'
+import { CfApiFields, cfApiPayload, cfApiValid } from './cf-api-fields'
 import { AIConnectionTest } from './ai-connection-test'
 import { AdminPage } from './admin'
 import { DailyTasksPage } from './daily-tasks'
@@ -2091,6 +2092,7 @@ function SettingsPage({
     }
     if (editingAccount.clearCookie) item.cookie = ''
     else if (editingAccount.cookie) item.cookie = editingAccount.cookie
+    if (editingAccount.platform === 'codeforces') Object.assign(item, cfApiPayload(editingAccount))
     saveAccounts([...payload, item], true)
   }
   const readAccount = async () => {
@@ -2265,6 +2267,9 @@ function SettingsPage({
                       originalHandle: a.handle,
                       cookie: '',
                       clearCookie: false,
+                      api_key: '',
+                      api_secret: '',
+                      clearApi: false,
                     })
                   }
                 >
@@ -2300,7 +2305,13 @@ function SettingsPage({
                   value={editingAccount.platform}
                   disabled={!!editingAccount.originalHandle}
                   onChange={(e) =>
-                    setEditingAccount({ ...editingAccount, platform: e.target.value })
+                    setEditingAccount({
+                      ...editingAccount,
+                      platform: e.target.value,
+                      api_key: '',
+                      api_secret: '',
+                      clearApi: false,
+                    })
                   }
                 >
                   {Object.entries(names).map(([id, name]) => (
@@ -2344,6 +2355,13 @@ function SettingsPage({
                 </>
               )}
             </p>
+            {editingAccount.platform === 'codeforces' && (
+              <CfApiFields
+                value={editingAccount}
+                disabled={accountSaving}
+                onChange={(value) => setEditingAccount({ ...editingAccount, ...value })}
+              />
+            )}
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -2368,7 +2386,10 @@ function SettingsPage({
               <Button
                 className="primary"
                 loading={accountSaving}
-                disabled={!editingAccount.handle.trim()}
+                disabled={
+                  !editingAccount.handle.trim() ||
+                  (editingAccount.platform === 'codeforces' && !cfApiValid(editingAccount))
+                }
                 onClick={saveAccount}
               >
                 保存平台账号

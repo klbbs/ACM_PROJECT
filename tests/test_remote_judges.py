@@ -390,3 +390,16 @@ def test_bad_baseline_never_sends_source(session,monkeypatch,result):
     s=session();calls=script(monkeypatch,s,[(200,{},cf_form()),(200,{},json.dumps({'status':'OK','result':result}))])
     with pytest.raises(SubmissionError) as e:s.submit('4-A','demo','code','89')
     assert e.value.reason=='record_unavailable' and not any(c[0]=='POST' for c in calls)
+
+
+def test_cookie_free_signed_api_reader_cannot_post_or_open_browser_pages(monkeypatch):
+    session = PlatformSession('codeforces', None)
+    monkeypatch.setattr(session.session, 'request', lambda *_a, **_k: pytest.fail('not an allowed API read'))
+    try:
+        for method, path in [('POST', '/problemset/submit'), ('POST', '/data/submitSource'),
+                             ('GET', '/settings/api'), ('GET', '/contest/4/submission/123')]:
+            with pytest.raises(SubmissionError) as error:
+                session._request(method, session.base + path)
+            assert error.value.reason == 'login_required'
+    finally:
+        session.close()

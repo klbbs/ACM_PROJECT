@@ -27,6 +27,7 @@ _MESSAGES = {
     'account_mismatch': '当前 Cookie 的平台身份与所选提交账号不一致。',
     'challenge': '官方平台要求浏览器安全验证，此读取入口暂不可用；请在官方浏览器处理验证。',
     'access_restricted': '官方平台拒绝此入口的服务器访问，不能据此认定登录失效；已有记录保留。',
+    'api_rejected': 'Codeforces 官方 API 未接受读取请求，请检查 Key / Secret 是否属于当前账号及服务器时间；判题记录已保留。',
     'language_unsupported': '官方当前不支持所选编译器，请刷新编译器列表重新选择。',
     'form_changed': '官方提交表单结构已变化，已停止提交，请使用官方页面。',
     'network': '连接官方平台失败，请稍后重试。',
@@ -62,6 +63,11 @@ class PlatformSession:
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.headers.update(browser_headers())
+        # An explicitly absent Cookie is permitted only for CF's signed,
+        # read-only API. Existing remote-submit callers still require Cookie.
+        self._api_only = cookie is None and platform == 'codeforces'
+        if self._api_only:
+            return
         try:
             prepared = prepare_cookie(cookie)
         except ValueError:
@@ -85,6 +91,9 @@ class PlatformSession:
 
     def _request(self, method, url, *, data=None, headers=None):
         url = self._url(url)
+        if self._api_only and (method != 'GET' or urlsplit(url).path not in {
+                '/api/contest.status', '/api/user.status'}):
+            raise SubmissionError('login_required')
         sending_code = method == 'POST' and urlsplit(url).path != '/data/submitSource'
         if method == 'GET':
             # Share the collector's host pacing, including receipt discovery
@@ -461,9 +470,16 @@ class PlatformSession:
                 'source_block_reason':blocked_reason}
         raise SubmissionError('record_unavailable')
 
-    def source(self, pid, handle, submission_id):
+    def source(self, pid, handle, submission_id, api_credentials=None):
         """Fetch only an independently verified owner's official source page."""
         record = self.judge(pid, handle, submission_id)
+        if api_credentials is not None:
+            if self.platform != 'codeforces' or not isinstance(api_credentials, dict):
+                raise SubmissionError('invalid_input')
+            from .codeforces_api_source import fetch_source
+            return fetch_source(api_key=api_credentials.get('api_key'),
+                api_secret=api_credentials.get('api_secret'), expected=record,
+                handle=handle, request=self._request)
         if record.get('source_block_reason'):
             # The exact source/detail URL was already challenged during judge.
             # Reusing a readable list is judge evidence, never source evidence.
