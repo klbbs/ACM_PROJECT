@@ -240,6 +240,36 @@ test('account submission sync refreshes the open leaderboard when its job comple
   expect(sent).toBe(1)
 })
 
+test('a sync already completed at the first job poll still refreshes the board and tracks its Gym scope', async ({ page }) => {
+  await community(page)
+  let started = false
+  let completed = false
+  let sends = 0
+  await page.route('**/api/social/leaderboard?**', (route) => route.fulfill({ json: {
+    items: [{ id: 'partner', display_name: '练习伙伴', count: completed ? 4 : 2, rank: 1 }],
+    rule: '当天已同步的官方 AC，包含 Gym',
+  } }))
+  await page.route('**/api/crawl', (route) => {
+    expect(route.request().postDataJSON()).toEqual({ gym_url: 'https://codeforces.com/gym/700001/submission/101',
+      day: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }) })
+    sends += 1
+    started = true
+    return route.fulfill({ json: { id: 'fast-gym-job', status: 'queued' } })
+  })
+  await page.route('**/api/jobs', (route) => {
+    if (!started) return route.fulfill({ json: { items: [] } })
+    completed = true
+    return route.fulfill({ json: { items: [{ id: 'fast-gym-job', kind: 'crawl', status: 'completed',
+      result: { complete: true, accounts: [] }, created_at: 1792830000, updated_at: 1792830001 }] } })
+  })
+  await expect(page.locator('.social-ranking')).toContainText('2 题')
+  await page.getByText('补充 Gym / Mashup 虚拟参赛记录', { exact: true }).click()
+  await page.getByLabel('官方 Gym 比赛或提交链接').fill('https://codeforces.com/gym/700001/submission/101')
+  await page.getByRole('button', { name: '同步我的提交记录', exact: true }).click()
+  await expect(page.locator('.social-ranking')).toContainText('4 题', { timeout: 10000 })
+  expect(sends).toBe(1)
+})
+
 test('friend battle requires recipient acceptance and distinct official verification action', async ({
   page,
 }) => {

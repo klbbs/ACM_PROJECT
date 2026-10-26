@@ -339,6 +339,8 @@ class Social:
     def url(platform, raw, problem=None):
         if platform == 'codeforces' and re.fullmatch(r'\d+-[A-Za-z]\w*', raw):
             contest, index = raw.split('-', 1)
+            if int(contest) >= 100000:
+                return f'https://codeforces.com/gym/{contest}/problem/{index}'
             return f'https://codeforces.com/problemset/problem/{contest}/{index}'
         if platform == 'luogu' and re.fullmatch(r'[A-Za-z0-9_]+', raw):
             return 'https://www.luogu.com.cn/problem/' + raw
@@ -616,7 +618,7 @@ def register(app, identities, workspaces, require):
         result.sort(key=lambda r: (-r['count'], r['username']))
         for i, r in enumerate(result):
             r['rank'] = i + 1 if i == 0 or r['count'] != result[i - 1]['count'] else result[i - 1]['rank']
-        return {'day': day, 'items': result, 'rule': '按北京时间当天官方 AC 的题目数排名，包含自主练习、每日任务和对战；按平台及题号去重，重复 AC 只计一题。仅统计已同步且已验证认领的平台身份，公开榜单默认关闭。'}
+        return {'day': day, 'items': result, 'rule': '按北京时间当天官方 AC 的题目数排名，包含自主练习、每日任务和对战，以及已同步的虚拟参赛和 Gym；按平台及题号去重，重复 AC 只计一题。部分 Gym/Mashup 不在用户历史 API 中，需补充比赛链接同步；无权限或安全验证时不能保证完整。仅统计已同步且已验证认领的平台身份，公开榜单默认关闭。'}
 
     @app.get('/api/social/users/{other}')
     async def user_profile(other: str, request: Request, day: str = Query(default='', max_length=10)):

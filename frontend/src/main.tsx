@@ -1101,6 +1101,11 @@ export function App() {
           {page === 'social' && auth.multi_user && (
             <SocialPage
               onOpenProblem={openProblem}
+              run={run}
+              syncDetails={(() => {
+                const job = jobs.find((item) => ['crawl', 'catalog'].includes(item.kind))
+                return job?.kind === 'catalog' ? job.result?.submission_sync : job?.result
+              })()}
               revision={revision}
               syncing={jobs.some(
                 (job) =>

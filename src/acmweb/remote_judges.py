@@ -134,6 +134,8 @@ class PlatformSession:
             raise SubmissionError('invalid_input')
         if self.platform not in ('codeforces', 'atcoder'):
             raise SubmissionError('unsupported')
+        if self.platform == 'codeforces' and int(normalized.split(':', 1)[1].split('-')[0]) >= 100000:
+            raise SubmissionError('unsupported')
         return normalized.split(':', 1)[1]
 
     @staticmethod

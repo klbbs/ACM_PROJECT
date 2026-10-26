@@ -479,3 +479,60 @@ def test_catalog_sync_updates_today_board_and_public_problem_details(site, monke
     item = request(member, 'GET', f"/api/social/users/{admin['user']['id']}").json()['items'][0]
     assert item['url'] == 'https://codeforces.com/problemset/problem/1000/A'
     assert item['score'] == 100 and item['difficulty'] == 1200 and item['tags'] == ['dp']
+
+
+def test_gym_virtual_sync_counts_by_real_day_and_deduplicates_outside_daily_tasks(site, monkeypatch):
+    import asyncio
+    import acmweb.jobs as jobs_module
+    import acmweb.gym_submissions as gym
+    from acmweb.social import TZ
+    request, admin, member, *_ = site
+    runtime = claim(site, admin, 'Owner')
+    request(admin, 'PUT', '/api/social/me', {'leaderboard': True})
+    now = int(time.time())
+    midnight = int(datetime.fromtimestamp(now, TZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    def collect(config, args):
+        store = Store(config.database)
+        try:
+            store.save_run({'run_id': 'synthetic-gym-run-' + str(time.time_ns()), 'collected_at': now, 'accounts': []})
+        finally:
+            store.close()
+        return 0
+    class GymClient:
+        def __init__(self, **kwargs): pass
+        def json(self, url, params):
+            assert params['contestId'] == 700001
+            rows = []
+            for sid, index, ts, verdict, owner in [
+                (101, 'A', now, 'OK', 'Owner'), (102, 'A', now, 'OK', 'Owner'),
+                (103, 'B', now, 'OK', 'Owner'), (104, 'C', midnight - 1, 'OK', 'Owner'),
+                (105, 'D', now, 'WRONG_ANSWER', 'Owner'), (106, 'E', now, 'TESTING', 'Owner'),
+                (107, 'F', now, 'OK', 'SomeoneElse'),
+            ]:
+                item = official(owner, ts, verdict, cid=700001, index=index, sid=sid)
+                item['author']['participantType'] = 'VIRTUAL'
+                rows.append(item)
+            return {'status': 'OK', 'result': rows}
+        def close(self): pass
+    monkeypatch.setattr(jobs_module, 'crawl', collect)
+    monkeypatch.setattr(Jobs, 'crawl', _REAL_CRAWL)
+    monkeypatch.setattr(gym, 'Client', GymClient)
+    async def run(day=''):
+        jobs = runtime.state.jobs
+        job = jobs.start('crawl', {'gym_url': 'https://codeforces.com/gym/700001/submission/101', 'day': day})
+        await jobs.tasks[job['id']][1]
+        return jobs.list()[0]
+    result = asyncio.run(run())
+    assert result['status'] == 'completed' and result['result']['gym_sync'][0]['count'] == 5
+    board = request(member, 'GET', '/api/social/leaderboard').json()
+    assert board['items'][0]['count'] == 2
+    details = request(member, 'GET', f"/api/social/users/{admin['user']['id']}").json()['items']
+    assert {r['id'] for r in details} == {'codeforces:700001-A', 'codeforces:700001-B'}
+    assert details[0]['url'].startswith('https://codeforces.com/gym/700001/problem/')
+    assert all(r['tags'] == ['dp'] and r['difficulty'] == 1200 for r in details)
+    assert request(member, 'GET', f"/api/social/users/{member['user']['id']}").json()['items'] == []
+    assert request(admin, 'GET', '/api/daily').json()['plan'] is None
+    yesterday = datetime.fromtimestamp(midnight - 1, TZ).date().isoformat()
+    assert asyncio.run(run(yesterday))['status'] == 'completed'
+    assert request(member, 'GET', '/api/social/leaderboard?day=' + yesterday).json()['items'][0]['count'] == 1
+    assert request(member, 'GET', '/api/social/leaderboard').json()['items'][0]['count'] == 2

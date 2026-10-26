@@ -93,6 +93,11 @@ class ProblemSubmissions:
         try:
             if platform == 'codeforces':
                 contest, index = key.split('-')
+                if int(contest) >= 100000:
+                    from .gym_submissions import collect_contest
+                    rows = collect_contest(client, int(contest), account['handle'], 0)
+                    return Collection(platform, account['handle'], submissions=[s for s in rows if s.problem_id == key],
+                        complete=True), '官方 Gym 比赛提交（API 或有权限的官方页面，最多 1000 条 / 5 页）'
                 out = Collection(platform, account['handle'])
                 seen = set()
                 for start in (1, 201, 401):

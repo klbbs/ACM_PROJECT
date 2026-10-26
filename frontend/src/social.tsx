@@ -7,6 +7,8 @@ type Props = {
   onError?: (message: string) => void
   revision?: number
   syncing?: boolean
+  run?: (path: string, payload?: Record<string, unknown>) => Promise<any>
+  syncDetails?: { accounts?: { platform: string; account: string; contest_id?: number; complete: boolean; error?: string; warnings?: string[] }[] }
 }
 const relations: Record<string, string> = {
   self: '你自己',
@@ -27,7 +29,7 @@ const duelStatuses: Record<string, string> = {
 }
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 
-export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = false }: Props) {
+export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = false, run, syncDetails }: Props) {
   const [tab, setTab] = useState('leaderboard')
   const [me, setMe] = useState<any>(null)
   const [form, setForm] = useState<any>(null)
@@ -41,6 +43,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [gymUrl, setGymUrl] = useState('')
   const [available, setAvailable] = useState<boolean | null>(null)
   const [opponent, setOpponent] = useState('')
   const [difficulty, setDifficulty] = useState(1200)
@@ -330,7 +333,11 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                   disabled={busy || syncing || !me.bindings.length}
                   onClick={() =>
                     act(
-                      () => api('/crawl', 'POST', {}),
+                      async () => {
+                        const payload = { day, ...(gymUrl.trim() ? { gym_url: gymUrl.trim() } : {}) }
+                        const result = run ? await run('/crawl', payload) : await api('/crawl', 'POST', payload)
+                        if (result?.error) throw new Error(result.error)
+                      },
                       '已开始同步平台提交记录，完成后自动更新排行榜。',
                     )
                   }
@@ -338,6 +345,39 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                   {syncing ? '正在同步提交记录…' : '同步我的提交记录'}
                 </button>
               </div>
+              <details>
+                <summary>补充 Gym / Mashup 虚拟参赛记录</summary>
+                <label>
+                  官方 Gym 比赛或提交链接
+                  <input
+                    aria-label="官方 Gym 比赛或提交链接"
+                    type="url"
+                    placeholder="https://codeforces.com/gym/比赛号"
+                    maxLength={500}
+                    value={gymUrl}
+                    onChange={(e) => setGymUrl(e.target.value)}
+                    disabled={busy || syncing}
+                  />
+                </label>
+                <p className="help">
+                  部分 Gym/Mashup 不出现在 CF 普通用户历史中。填入链接后点击“同步我的提交记录”；比赛范围按本用户保存，以后同步提交或题库时也会读取。无需代码；只有服务器读到对应账号的官方判题和可靠时间才计数。私有比赛需要已保存 Cookie 具有访问权限，遇到安全验证会明确报告同步不完整。
+                  可先选择榜单日期再补同步；跨天同步会按真实提交日期归日。
+                </p>
+              </details>
+              {!!syncDetails?.accounts?.some((account) => !account.complete) && (
+                <div role="alert">
+                  <p>部分平台提交尚未完整同步，榜单当前数量可能偏少；历史记录已保留。</p>
+                  <ul>
+                    {syncDetails.accounts.filter((account) => !account.complete).map((account, index) => (
+                      <li key={`${account.platform}:${account.account}:${account.contest_id || ''}:${index}`}>
+                        {names[account.platform] || account.platform} · {account.account}
+                        {account.contest_id ? ` · Gym ${account.contest_id}` : ''}：
+                        {account.error || account.warnings?.join('；') || '本次查询未完整完成，请重试同步'}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {!me.accounts.length && (
                 <p className="help">
                   尚无可计数的平台身份。请在“连接与设置”检测登录，验证通过后将自动关联榜单；已解除认领或存在身份冲突时，请到“我的主页”处理。
@@ -363,7 +403,7 @@ export function SocialPage({ onOpenProblem, onError, revision = 0, syncing = fal
                 <p>还没有用户开启公开榜单。成为第一位分享进步的人吧。</p>
               )}
               <p className="help">
-                每日任务以外的题目同样计入，按官方提交时间统计；今天同步的历史 AC
+                每日任务以外的题目同样计入，包括已同步的虚拟参赛和 Gym，按官方提交时间统计；今天同步的历史 AC
                 不会计入今天。同步题库也会获取已配置账号的今日提交；更新做题数量还可点击“同步我的提交记录”，或在工作台同步本题提交。点击“查看当日题目”查看其他用户完成的题目、链接、分数和标签。
                 分数与标签保留原平台口径；没有提供的数据会标为“未标定”。
               </p>

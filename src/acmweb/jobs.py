@@ -64,8 +64,12 @@ class Jobs:
         self.update(job_id,"running")
         try:
             if kind=="crawl":
-                result=await asyncio.to_thread(self.crawl, payload['platform']) if payload.get('platform') else await asyncio.to_thread(self.crawl)
-                self.update(job_id,"completed" if result["complete"] else "partial",result)
+                if payload.get('gym_url') or payload.get('day'):
+                    result = await asyncio.to_thread(self.crawl, gym_url=payload.get('gym_url', ''), day=payload.get('day', ''))
+                else:
+                    result=await asyncio.to_thread(self.crawl, payload['platform']) if payload.get('platform') else await asyncio.to_thread(self.crawl)
+                self.update(job_id,"completed" if result["complete"] else "partial",result,
+                    error='部分官方提交未能读取，请查看同步详情；当前榜单可能缺少未同步题目' if not result['complete'] else None)
             elif kind=="catalog":
                 # A cancelled to_thread keeps running until its current request returns.
                 # Close progress delivery before persisting "interrupted", otherwise a
@@ -166,22 +170,27 @@ class Jobs:
             message=str(exc) if isinstance(exc,AIError) else f"任务失败 ({type(exc).__name__})，请检查服务端环境与网络"
             self.update(job_id,"failed",error=message)
 
-    def crawl(self, platform=None, *, since_today=False):
+    def crawl(self, platform=None, *, since_today=False, gym_url='', day=''):
         config=load(self.accounts.effective_path if self.accounts else self.settings.config_path)
         config.database=self.settings.database
         config.output_dir=self.settings.data_dir/"runs"
         since = None
-        if since_today:
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-            since = int(datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        if since_today or day:
+            from .gym_submissions import start_of_day
+            since = start_of_day(day)
         code=crawl(config,Namespace(platform=[platform] if platform else None,since=since,full=False,max_pages=None))
         with self.db.connect() as db:
             row=db.execute("SELECT data FROM runs ORDER BY collected_at DESC,id DESC LIMIT 1").fetchone()
         if not row:
             raise AIError("采集未产生任务记录")
         run=json.loads(row[0])
-        return {"complete":code==0,"run_id":run["run_id"],"accounts":[{k:a.get(k) for k in ("platform","account","complete","error","warnings")} for a in run["accounts"]]}
+        accounts = [{k:a.get(k) for k in ("platform","account","complete","error","warnings")} for a in run["accounts"]]
+        gym = []
+        if self.accounts and platform in {None, 'codeforces'}:
+            from .gym_submissions import sync_gym
+            gym = sync_gym(self.db, self.accounts, self.settings, url=gym_url, day=day)
+        return {"complete":code==0 and all(a['complete'] for a in gym),"run_id":run["run_id"],
+                "accounts":accounts + gym, "gym_sync":gym}
 
     async def close(self):
         tasks=[task for _,task in self.tasks.values()]

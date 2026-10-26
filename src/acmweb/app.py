@@ -33,6 +33,12 @@ class Login(BaseModel):
     token: str = Field(max_length=1000)
 
 
+class CrawlRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    gym_url: str = Field(default='', max_length=500)
+    day: str = Field(default='', max_length=10)
+
+
 def publication_date(value):
     if value is not None:
         calendar_date.fromisoformat(value)
@@ -209,9 +215,23 @@ def create_app(settings=None):
     def job_list():return {"items":jobs.list()}
 
     @app.post("/api/crawl")
-    async def start_crawl():
+    async def start_crawl(payload: CrawlRequest | None = None):
         if not account_config.public()['configured']:raise HTTPException(400,"请先在连接与设置中添加平台账号")
-        return jobs.start("crawl")
+        if payload and payload.day:
+            from .gym_submissions import start_of_day
+            try:
+                start_of_day(payload.day)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+        if payload and payload.gym_url:
+            from .gym_submissions import contest_from_url
+            try:
+                contest_from_url(payload.gym_url)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+            if not any(a['platform'] == 'codeforces' for a in account_config.public()['items']):
+                raise HTTPException(400, '请先添加 Codeforces 账号，再补充 Gym 比赛范围')
+        return jobs.start("crawl", payload.model_dump(exclude_defaults=True) if payload else None)
 
     @app.get("/api/ai/presets")
     def ai_presets():return ai.presets()

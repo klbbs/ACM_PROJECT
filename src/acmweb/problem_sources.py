@@ -33,11 +33,11 @@ def normalize(value):
         elif host not in {'codeforces.com', 'www.codeforces.com'}:
             raise AIError('仅允许四个平台的官方题目地址')
         else:
-            m = re.fullmatch(r'/(?:problemset/problem/(\d+)/([A-Za-z]\d?)|contest/(\d+)/problem/([A-Za-z]\d?))/?', u.path)
+            m = re.fullmatch(r'/(?:problemset/problem/(\d+)/([A-Za-z]\d?)|(?:contest|gym)/(\d+)/problem/([A-Za-z]\d?))/?', u.path)
             if not m: raise AIError('Codeforces 题目链接格式错误')
             value = f'codeforces:{m[1] or m[3]}-{m[2] or m[4]}'
     for pattern, fmt in [
-        (r'(?:codeforces:)?([1-9]\d{0,4})-([A-Za-z]\d?)', lambda m:f'codeforces:{int(m[1])}-{m[2].upper()}'),
+        (r'(?:codeforces:)?([1-9]\d{0,8})-([A-Za-z]\d?)', lambda m:f'codeforces:{int(m[1])}-{m[2].upper()}'),
         (r'atcoder:([a-z0-9]+(?:_[a-z0-9]+)+)', lambda m:'atcoder:'+m[1]),
         (r'(?:luogu:)?((?:P|B|CF|SP|UVA|AT|T|U)\d+[A-Za-z0-9_]*)', lambda m:'luogu:'+m[1].upper()),
         (r'nowcoder:([1-9]\d{0,11})', lambda m:'nowcoder:'+m[1]),
@@ -50,7 +50,8 @@ def normalize(value):
 def source_url(pid):
     pid = normalize(pid); platform, key = pid.split(':',1)
     if platform == 'codeforces':
-        a,b=key.split('-'); return f'https://codeforces.com/problemset/problem/{a}/{b}'
+        a,b=key.split('-')
+        return f'https://codeforces.com/gym/{a}/problem/{b}' if int(a) >= 100000 else f'https://codeforces.com/problemset/problem/{a}/{b}'
     if platform == 'atcoder': return f'https://atcoder.jp/contests/{"abs" if key == "practice_1" else key.rsplit("_",1)[0]}/tasks/{key}'
     if platform == 'luogu': return f'https://www.luogu.com.cn/problem/{key}'
     if key.startswith('contest-'):
@@ -148,5 +149,8 @@ def capabilities(pid,accounts):
     if platform=='atcoder': url=f'https://atcoder.jp/contests/{"abs" if key == "practice_1" else key.rsplit("_",1)[0]}/submit?taskScreenName={key}'
     elif platform=='codeforces': url=f'https://codeforces.com/problemset/submit?contestId={key.split("-")[0]}&submittedProblemIndex={key.split("-")[1]}'
     elif platform=='luogu':url+='#submit'
-    enabled = platform in {'codeforces','atcoder'}
+    gym = platform == 'codeforces' and int(key.split('-')[0]) >= 100000
+    if gym:
+        url = f'https://codeforces.com/gym/{key.split("-")[0]}/submit'
+    enabled = platform in {'codeforces','atcoder'} and not gym
     return {'platform':platform,'statement':True,'auto_submit':enabled,'official_submit_url':url,'account_configured':bool(matched),'cookie_configured':any(a.get('cookie') for a in matched),'login_verified':False,'judge_sync':True,'notice':('可在编辑器下方选择账号及官方编译器后直接提交，判题结果自动同步；平台要求重新登录或浏览器验证时会明确停止，不会自动重复交题。' if enabled else '此平台远程交题尚未完成真实适配，请在官方页面提交；可先同步账号记录，再关联提交号。')}

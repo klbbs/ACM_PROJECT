@@ -222,7 +222,7 @@ it('syncs account submissions and refreshes the daily board after the background
     expect(host.textContent).toContain('每日任务以外的题目同样计入')
     expect(host.textContent).toContain('同步题库也会获取已配置账号的今日提交')
     await act(async () => button(host, '同步我的提交记录').click())
-    expect(api).toHaveBeenCalledWith('/crawl', 'POST', {})
+    expect(api).toHaveBeenCalledWith('/crawl', 'POST', expect.objectContaining({ day: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }))
     expect(host.textContent).toContain('完成后自动更新排行榜')
     await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} revision={0} syncing />))
     expect(button(host, '正在同步提交记录…').disabled).toBe(true)
@@ -232,6 +232,38 @@ it('syncs account submissions and refreshes the daily board after the background
     expect(host.textContent).not.toContain('尚无可计数的平台身份')
     expect(button(host, '同步我的提交记录').disabled).toBe(false)
     expect(vi.mocked(api).mock.calls.filter(([path]) => path === '/crawl')).toHaveLength(1)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+it('uses the tracked application job runner and keeps Gym failures visibly incomplete', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const run = vi.fn().mockResolvedValue({ error: 'Gym 范围无效' })
+  vi.mocked(api).mockClear()
+  vi.mocked(api).mockImplementation(async (path: string) => path === '/social/me'
+    ? { profile: own, accounts: [], bindings: [{ platform: 'codeforces', handle: 'demo' }] } as never
+    : defaults(path) as never)
+  try {
+    await act(async () => root.render(<SocialPage onOpenProblem={vi.fn()} run={run}
+      syncDetails={{ accounts: [{ platform: 'codeforces', account: 'demo', contest_id: 700001,
+        complete: false, error: 'Gym 官方页面要求安全验证' }] }} />))
+    const input = host.querySelector<HTMLInputElement>('[aria-label="官方 Gym 比赛或提交链接"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input,
+        'https://codeforces.com/gym/700001')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => button(host, '同步我的提交记录').click())
+    expect(run).toHaveBeenCalledWith('/crawl', expect.objectContaining({ gym_url: 'https://codeforces.com/gym/700001', day: expect.any(String) }))
+    expect(vi.mocked(api).mock.calls.some(([path]) => path === '/crawl')).toBe(false)
+    expect(host.textContent).toContain('Gym 范围无效')
+    expect(host.textContent).not.toContain('已开始同步平台提交记录')
+    expect(host.textContent).toContain('榜单当前数量可能偏少')
+    expect(host.textContent).toContain('Gym 700001')
   } finally {
     await act(async () => root.unmount())
     host.remove()
