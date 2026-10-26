@@ -44,6 +44,11 @@ class SpecialistCatalogRequest(BaseModel):
     topic_id: str = Field(min_length=1, max_length=80)
 
 
+class TopicMethodRequest(SpecialistCatalogRequest):
+    cf_minimum: int | None = Field(default=None, ge=800, le=3500)
+    cf_maximum: int | None = Field(default=None, ge=800, le=3500)
+
+
 def publication_date(value):
     if value is not None:
         calendar_date.fromisoformat(value)
@@ -347,6 +352,9 @@ def create_app(settings=None):
     from .training_assessment import TrainingAssessment, register as register_training_assessment
     app.state.specialist_training = SpecialistTraining(database, ai, account_config, event_log=event_log)
     app.state.specialist_training.selection_reports = app.state.selection_reports
+    from .topic_feasibility import TopicFeasibility
+    app.state.topic_feasibility = TopicFeasibility(database, account_config, app.state.workbench, ai)
+    app.state.specialist_training.topic_feasibility = app.state.topic_feasibility
     app.state.daily.specialist_training = app.state.specialist_training
     register_specialist_training(app, app.state.specialist_training)
 
@@ -368,6 +376,32 @@ def create_app(settings=None):
         if not verified_platforms(account_config):
             raise HTTPException(409, '请先在连接与设置中检测至少一个平台，确认本人的登录身份后再补抓专题题库')
         return jobs.start('specialist_catalog', {'topic_id': payload.topic_id})
+
+    @app.post('/api/training/method-check')
+    async def training_method_check(payload: TopicMethodRequest):
+        from .training_topics import TOPICS
+        from .catalog import verified_platforms
+        if payload.topic_id not in TOPICS:
+            raise HTTPException(422, '请选择支持的训练专题')
+        if payload.cf_minimum is not None and payload.cf_maximum is not None and payload.cf_minimum > payload.cf_maximum:
+            raise HTTPException(422, 'CF rating 下限不能大于上限')
+        if not verified_platforms(account_config):
+            raise HTTPException(409, '请先在连接与设置检测本人的平台登录，再核查专题方法')
+        selection = ai.selection()
+        if not selection['ready']:
+            raise HTTPException(400, '请先在连接与设置中保存可用的默认 AI 模型；方法核查只使用这套配置')
+        return jobs.start('topic_method_check', {**payload.model_dump(exclude_none=True),
+            'provider': selection['channel'], 'model': selection['model']})
+
+    async def run_topic_method_check(payload):
+        selection = ai.selection()
+        if (not selection['ready'] or selection['channel'] != payload['provider']
+                or selection['model'] != payload['model']):
+            raise AIError('默认 AI 配置已更改或不可用，请重新发起方法核查')
+        return await app.state.topic_feasibility.check(payload['topic_id'], payload['provider'], payload['model'],
+            cf_minimum=payload.get('cf_minimum'), cf_maximum=payload.get('cf_maximum'))
+
+    jobs.run_topic_method_check = run_topic_method_check
 
     app.state.training_assessment = TrainingAssessment(
         database, ai, app.state.workbench, app.state.problem_submissions, app.state.specialist_training)

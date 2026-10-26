@@ -71,6 +71,9 @@ class Jobs:
                 self.log_gym_results(job_id, kind, result)
                 self.update(job_id,"completed" if result["complete"] else "partial",result,
                     error='部分官方提交未能读取，请查看同步详情；当前榜单可能缺少未同步题目' if not result['complete'] else None)
+            elif kind == 'topic_method_check':
+                result = await self.run_topic_method_check(payload)
+                self.update(job_id, 'partial' if result.get('incomplete') else 'completed', result)
             elif kind == 'specialist_catalog':
                 from .catalog import refresh_specialist_candidates
                 from .training_topics import TOPICS
