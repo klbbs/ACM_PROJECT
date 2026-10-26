@@ -243,6 +243,31 @@ def topic_groups():
     return deepcopy(GROUPS)
 
 
+def _text_evidence_source(problem, keywords):
+    """Describe discovery provenance without claiming to have read a statement.
+
+    AtCoder Problems is a third-party task index, even when it links to an
+    official task and a separate official archive verifies its contest date.
+    An unknown title-source marker remains unconfirmed metadata.
+    """
+    title_source = problem.get('title_source')
+    source = str(title_source if title_source is not None else problem.get('candidate_source', '')).casefold()
+    if any(marker in source for marker in ('kenkoooo', '第三方', 'third_party', 'third-party')):
+        title_terms = _matching_text_terms({'title': problem.get('title', '')}, keywords)
+        tag_terms = _matching_text_terms({'tags': problem.get('tags', [])}, keywords)
+        if title_terms and not tag_terms:
+            return 'third_party_index_title'
+        return 'third_party_index_metadata'
+    official_sources = {
+        '官方题库', 'atcoder 官方 library practice contest', '用户已获取的官方题面缓存',
+        '牛客官方题库', 'atcoder.official_tasks', 'luogu.official_problem_list',
+        'nowcoder.official_problem_list', 'codeforces.problemset.problems',
+    }
+    if source in official_sources:
+        return 'official_title_or_text_tag'
+    return 'catalog_title_or_text_tag'
+
+
 def topic_evidence(problem, topic):
     """Return published metadata evidence, never an AI-invented algorithm tag.
 
@@ -271,7 +296,7 @@ def topic_evidence(problem, topic):
             return {'matched': True, 'source': 'official_codeforces_tag', 'terms': sorted(common)}
     terms = _matching_text_terms(problem, topic.get('text_keywords', topic['keywords']))
     if terms:
-        return {'matched': True, 'source': 'official_title_or_text_tag', 'terms': terms}
+        return {'matched': True, 'source': _text_evidence_source(problem, topic.get('text_keywords', topic['keywords'])), 'terms': terms}
     return {'matched': False, 'source': 'unknown', 'terms': []}
 
 
