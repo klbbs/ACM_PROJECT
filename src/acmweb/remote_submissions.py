@@ -231,7 +231,7 @@ class RemoteSubmissions:
                             message='工作区或账号凭据已变化，尚未发送本次代码；请重新检查账号配置')
         except Exception:
             current = self._row(rid)
-            self.update(rid, status='uncertain' if current['status'] == 'submitting' else 'failed',
+            self.update(rid, status='judging' if current['submission_id'] else 'uncertain',
                         reason='submission_unconfirmed', message='本次提交未能确认，系统不会自动重交，请先查看官方记录')
         finally:
             if driver:
@@ -313,6 +313,15 @@ class RemoteSubmissions:
                 or normalize(platform+':'+str(observed.get('problem_id', ''))) != pid
                 or type(timestamp) is not int or not (intent['sent_at']-60 <= timestamp <= int(time.time())+300)):
             raise AIError('官方记录的账号、题号、提交号或提交时间不匹配，未关联代码')
+        # The editor mode is a user's draft preference, not the compiler that
+        # the official platform actually used (e.g. cpp17 + CF C++23).
+        from .problem_submissions import editor_language
+        language = editor_language(observed.get('language'))
+        def same_language_family(left, right):
+            return left == right or left in {'cpp17', 'cpp20'} and right in {'cpp17', 'cpp20'}
+        if (not language or not same_language_family(intent['language'], language)
+                or hashlib.sha256(intent['code'].encode()).hexdigest() != intent['code_hash']):
+            raise AIError('官方编译语言与本次代码语言不匹配或源码校验失败，未关联代码')
         status = observed.get('verdict')
         status = status if status in FINAL else 'PENDING'
         now = int(time.time())
@@ -335,14 +344,19 @@ class RemoteSubmissions:
             old = conn.execute("SELECT * FROM wb_attempts WHERE substr(problem_id,1,instr(problem_id,':')-1)=? AND "+
                                ('lower(handle)=lower(?)' if platform=='codeforces' else 'handle=?')+
                                ' AND submission_id=?', (platform,intent['handle'],int(intent['submission_id']))).fetchone()
-            if old and (old['problem_id'] != pid or old['code_hash'] != intent['code_hash'] or old['language'] != intent['language']):
+            if old and (old['problem_id'] != pid or old['code_hash'] != intent['code_hash']
+                    or hashlib.sha256(old['code'].encode()).hexdigest() != old['code_hash']
+                    or not same_language_family(old['language'], language)):
                 raise AIError('此官方提交已有另一份代码记录，不能覆盖')
             aid = old['id'] if old else uuid.uuid4().hex
             if not old:
                 conn.execute('''INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,handle,submission_id)
-                    VALUES(?,?,?,?,?,?,?,?)''', (aid,pid,intent['language'],intent['code'],intent['code_hash'],
+                    VALUES(?,?,?,?,?,?,?,?)''', (aid,pid,language,intent['code'],intent['code_hash'],
                     intent['created_at'],intent['handle'],int(intent['submission_id'])))
                 conn.execute('INSERT INTO wb_submission_code_claims VALUES(?,?,?)', (aid,intent['code_hash'],now))
+            elif old['language'] != language:
+                conn.execute('UPDATE wb_attempts SET language=?,review=NULL WHERE id=?', (language,aid))
+                conn.execute('DELETE FROM wb_submission_reviews WHERE attempt_id=?', (aid,))
             encoded = json.dumps(judge, ensure_ascii=False)
             conn.execute('''UPDATE wb_attempts SET verdict=?,judge_data=?,last_synced=?,
                 review=CASE WHEN verdict=? AND judge_data=? THEN review ELSE NULL END WHERE id=?''',
@@ -352,7 +366,7 @@ class RemoteSubmissions:
             conn.execute('INSERT OR REPLACE INTO wb_official_sources VALUES(?,?,?)',
                          (aid,intent['code_hash'],now))
             conn.execute('INSERT OR REPLACE INTO wb_submission_source_bindings VALUES(?,?,?,?,?,?)',
-                         (aid,pid,intent['handle'],int(intent['submission_id']),intent['language'],intent['code_hash']))
+                         (aid,pid,intent['handle'],int(intent['submission_id']),language,intent['code_hash']))
             existing = conn.execute("SELECT account,data FROM submissions WHERE platform=? AND "+
                                     ('lower(account)=lower(?)' if platform=='codeforces' else 'account=?')+
                                     ' AND id=?', (platform,intent['handle'],intent['submission_id'])).fetchone()
@@ -392,7 +406,7 @@ class RemoteSubmissions:
                 return self.public(row)
         if any(kind in {'wb_remote_submit','wb_remote_refresh'} and not task.done() for kind, task in self.jobs.tasks.values()):
             return self.public(row)
-        self.update(rid, status='judging', message='正在读取官方记录并核对当次代码，不会重交代码' if not row['submission_id'] else '正在重新读取官方判题结果，不会重交代码')
+        self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='', message='正在读取官方记录并核对当次代码，不会重交代码' if not row['submission_id'] else '正在重新读取官方判题结果，不会重交代码')
         try:
             self.jobs.start('wb_remote_refresh', {'intent_id':rid})
         except Exception:
@@ -407,23 +421,39 @@ class RemoteSubmissions:
             _, cookie, _ = self.account(row['problem_id'], row['handle'])
             driver = self._driver(row['problem_id'].split(':')[0], cookie)
             if not row['submission_id']:
-                observed = await asyncio.to_thread(driver.find_receipt, row['problem_id'], row['handle'], row['sent_at'], row['code_hash'])
+                if hashlib.sha256(row['code'].encode()).hexdigest() != row['code_hash']:
+                    raise SubmissionError('record_mismatch')
+                credentials = None
+                if row['problem_id'].startswith('codeforces:'):
+                    account = next((item for item in self.accounts.document().get('accounts', [])
+                        if item['platform'] == 'codeforces' and item['handle'].casefold() == row['handle'].casefold()), {})
+                    if not account.get('api_key') or not account.get('api_secret'):
+                        raise SubmissionError('api_required')
+                    credentials = {name: account[name] for name in ('api_key', 'api_secret')}
+                observed = await asyncio.to_thread(driver.find_receipt, row['problem_id'], row['handle'], row['sent_at'], row['code_hash'],
+                    **({'api_credentials': credentials} if credentials is not None else {}))
                 if hashlib.sha256(observed['code'].encode()).hexdigest() != row['code_hash']:
                     raise SubmissionError('record_mismatch')
-                row['submission_id'] = str(observed['id'])
-                result = self.record(row, observed)
+                recovered_sid = str(observed['id'])
+                result = self.record({**row, 'submission_id': recovered_sid}, observed)
                 with self.db.connect() as conn:
                     conn.execute('INSERT OR REPLACE INTO wb_official_sources VALUES(?,?,?)',
                                  (result['attempt_id'],row['code_hash'],int(time.time())))
                 self.update(rid, status='completed' if result['verdict'] in FINAL else 'judging',
-                            submission_id=row['submission_id'], official_url=observed['url'],
+                            submission_id=recovered_sid, official_url=observed['url'],
                             reason='', message='已通过本人官方记录和源码核对找回提交结果', **result)
                 await self.after_judge(result['attempt_id'])
             else:
                 await self.watch(rid, driver, rounds=1)
-        except (HTTPException, AIError, SubmissionError):
-            self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='receipt_unavailable',
-                        message='暂未取得可核验的官方结果或当次源码；请检查平台登录和官方记录后再刷新，不会重新交题')
+        except SubmissionError as error:
+            self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason=error.reason,
+                        message='尚未核验本次提交：' + str(error) + ' 原记录已保留，不会重新交题。')
+        except HTTPException:
+            self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='configuration_changed',
+                        message='当前平台账号或登录凭据不可用，请在连接与设置检查该账号后重试；不会重新交题')
+        except AIError:
+            self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='record_mismatch',
+                        message='官方记录与本次账号、题号、提交时间或源码不匹配，未关联代码；不会重新交题')
         except Exception:
             self.update(rid, status='judging' if row['submission_id'] else 'uncertain', reason='receipt_unavailable',
                         message='官方结果查询未能完成，原提交记录已保留；可稍后刷新，不会重新交题')

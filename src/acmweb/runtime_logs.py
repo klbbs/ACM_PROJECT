@@ -55,6 +55,8 @@ KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
          'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited', 'source_login_required', 'source_read_failed',
+           'ai_schema_invalid', 'ai_auth_required', 'ai_usage_limit', 'ai_rate_limited',
+           'ai_context_limit', 'ai_model_unavailable',
            'source_api_rejected',
            'source_account_mismatch', 'source_record_mismatch', 'source_record_unavailable', 'source_unavailable',
            'qr_creation_failed', 'account_mismatch', 'crawl_in_progress', 'binding_failed',

@@ -1,5 +1,6 @@
 """No live OJ requests: test one-click sync independently of any editor code."""
 import time
+import hashlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -261,7 +262,8 @@ def test_sync_does_not_automatically_analyze_submissions(site, monkeypatch):
     # Existing immutable local code is associated by the server's send path.
     service.remote.record({'problem_id':'codeforces:4-A','handle':'demo','submission_id':'12345',
         'sent_at':int(time.time()),'created_at':int(time.time()),'language':'python3','code':'print(1)',
-        'code_hash':'fixture-hash'}, {'id':'12345','account':'demo','problem_id':'4-A','submitted_at':int(time.time()),'verdict':'WA'})
+        'code_hash':hashlib.sha256(b'print(1)').hexdigest()}, {'id':'12345','account':'demo','problem_id':'4-A',
+        'submitted_at':int(time.time()),'verdict':'WA','language':'Python 3'})
     import asyncio
     result = asyncio.run(service.sync('codeforces:4-A','demo'))
     assert result['count'] == 1

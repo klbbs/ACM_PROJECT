@@ -372,6 +372,177 @@ it('requires official confirmation to dismiss uncertain sends and never resubmit
     expect(request.mock.calls.some((call) => call[0] === '/remote-submissions')).toBe(false)
   })
 })
+it('recovers an unknown receipt on reopening using only bounded read-only refreshes', async () => {
+  vi.useFakeTimers()
+  const row = { ...queued, status:'uncertain', reason:'receipt_unavailable',
+    submission_id:null, updated_at:Math.floor(Date.now()/1000)-120 }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method) return { items:[row] }
+    if (path.endsWith('/refresh') && method === 'POST') return row
+    throw new Error('Must never submit code while recovering an unknown receipt')
+  })
+  await render(props(), async (host) => {
+    expect(host.textContent).toContain('最多自动查询 3 次')
+    for (let tick = 0; tick < 40; tick++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    }
+    expect(request.mock.calls.filter(([path, method]) => path.endsWith('/refresh') && method === 'POST')).toHaveLength(3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(120000) })
+    expect(host.textContent).toContain('本轮自动核验已结束')
+    expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(3)
+    const reads = request.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(120000) })
+    expect(request.mock.calls).toHaveLength(reads)
+    expect(request.mock.calls.some(([path]) => path === '/remote-submissions')).toBe(false)
+  })
+})
+it('shows recovered verdict immediately and stops unknown receipt recovery', async () => {
+  vi.useFakeTimers()
+  let row = { ...queued, status:'uncertain', submission_id:null as string|null,
+    verdict:null as string|null, reason:'receipt_unavailable', updated_at:Math.floor(Date.now()/1000)-120 }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method) return { items:[row] }
+    if (path.endsWith('/refresh') && method === 'POST') {
+      row = { ...row, status:'completed', submission_id:'12345', verdict:'WA', reason:'' }
+      return row
+    }
+    throw new Error('Must not resend')
+  })
+  await render(props(), async (host) => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(33000) })
+    expect(host.textContent).toContain('WA · 请查看判题结果')
+    expect(host.textContent).toContain('官方提交 #12345')
+    await act(async () => { await vi.advanceTimersByTimeAsync(120000) })
+    expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1)
+  })
+})
+it('observes a manual retry after automatic recovery ended without reopening automatic requests', async () => {
+  vi.useFakeTimers()
+  let refreshes = 0
+  let readsAfterRetry = 0
+  let complete = false
+  const row = { ...queued, status:'uncertain', reason:'receipt_unavailable', submission_id:null,
+    updated_at:Math.floor(Date.now()/1000)-120 }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method) {
+      if (refreshes > 3 && complete && ++readsAfterRetry >= 2)
+        return { items:[{ ...row, status:'completed', reason:'', verdict:'WA', submission_id:'12345' }] }
+      return { items:[row] }
+    }
+    if (path.endsWith('/refresh') && method === 'POST') {
+      refreshes++
+      return { ...row, reason:'' } // Only queues a read-only server job.
+    }
+    throw new Error('Must never resend code')
+  })
+  await render(props(), async (host) => {
+    for (let tick = 0; tick < 65; tick++)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(refreshes).toBe(3)
+    expect(host.textContent).toContain('本轮自动核验已结束')
+    await click(host, '刷新判题')
+    expect(host.textContent).not.toContain('本轮自动核验已结束')
+    for (let tick = 0; tick < 31; tick++)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(host.textContent).toContain('本轮自动核验已结束')
+    expect(refreshes).toBe(4) // Manual retry did not reset the three-query limit.
+    complete = true
+    await click(host, '刷新判题')
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(host.textContent).toContain('WA · 请查看判题结果')
+    expect(host.textContent).toContain('官方提交 #12345')
+    expect(refreshes).toBe(5)
+    await act(async () => { await vi.advanceTimersByTimeAsync(180000) })
+    expect(refreshes).toBe(5)
+  })
+})
+it('resumes observing a manually retried blocked receipt until the async verdict arrives', async () => {
+  vi.useFakeTimers()
+  let row = { ...queued, status:'uncertain', submission_id:null as string|null, verdict:null as string|null,
+    reason:'record_mismatch', message:'old blocked query', updated_at:Math.floor(Date.now()/1000) }
+  let readsAfterRefresh = 0
+  let retried = false
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method) {
+      if (retried && ++readsAfterRefresh >= 2)
+        row = { ...row, status:'completed', reason:'', submission_id:'12345', verdict:'WA', message:'已核验' }
+      return { items:[row] }
+    }
+    if (path.endsWith('/refresh') && method === 'POST') {
+      retried = true
+      row = { ...row, reason:'', message:'正在读取官方记录并核对当次代码，不会重交代码' }
+      return row
+    }
+    throw new Error('Must never resend the code')
+  })
+  await render(props(), async (host) => {
+    expect(host.textContent).toContain('old blocked query')
+    await click(host, '刷新判题')
+    expect(host.textContent).toContain('正在读取官方记录')
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(host.textContent).toContain('WA · 请查看判题结果')
+    expect(host.textContent).toContain('官方提交 #12345')
+    expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1)
+  })
+})
+it('observes the asynchronous result after the final bounded recovery request', async () => {
+  vi.useFakeTimers()
+  let refreshes = 0
+  let finishedAt = Infinity
+  const uncertainRow = { ...queued, status:'uncertain', reason:'receipt_unavailable', submission_id:null,
+    updated_at:Math.floor(Date.now()/1000)-120 }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method)
+      return { items:[Date.now() >= finishedAt
+        ? { ...uncertainRow, status:'completed', reason:'', verdict:'WA', submission_id:'12345' }
+        : uncertainRow] }
+    if (path.endsWith('/refresh') && method === 'POST') {
+      if (++refreshes === 3) finishedAt = Date.now() + 12000
+      return uncertainRow // The background job has not finished yet.
+    }
+    throw new Error('Do not send code')
+  })
+  await render(props(), async (host) => {
+    for (let tick = 0; tick < 40; tick++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    }
+    expect(refreshes).toBe(3)
+    expect(host.textContent).toContain('WA · 请查看判题结果')
+  })
+})
+it.each(['api_required', 'api_rejected', 'login_required', 'account_mismatch', 'challenge', 'record_mismatch'])(
+  'stops automatic unknown receipt recovery for %s', async (reason) => {
+    vi.useFakeTimers()
+    request.mockImplementation(async (path, method) => {
+      if (path.startsWith('/remote-submissions?') && !method)
+        return { items:[{ ...queued, status:'uncertain', submission_id:null, reason }] }
+      throw new Error('Do not replay blocked upstream reads')
+    })
+    await render(props(), async (host) => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(180000) })
+      expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(0)
+      expect(host.querySelector('a[href="#settings"]')).not.toBeNull()
+    })
+  },
+)
+it('obeys Retry-After during unknown receipt recovery without resending code', async () => {
+  vi.useFakeTimers()
+  const row = { ...queued, status:'uncertain', reason:'receipt_unavailable', submission_id:null,
+    updated_at:Math.floor(Date.now()/1000)-120 }
+  request.mockImplementation(async (path, method) => {
+    if (path.startsWith('/remote-submissions?') && !method) return { items:[row] }
+    if (path.endsWith('/refresh')) throw new ApiError('wait', 429, 120)
+    throw new Error('Do not resend')
+  })
+  await render(props(), async () => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(33000) })
+    expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(117000) })
+    expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(request.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(2)
+  })
+})
 it('renders status as text and rejects unsafe official links', async () => {
   request.mockResolvedValue({
     items: [

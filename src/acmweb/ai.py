@@ -17,6 +17,7 @@ from .codex_bridge import AIError
 from .providers import PRESETS
 from .prompts import build_prompt, PROMPT_VERSION
 from .runtime_logs import emit_event
+from .ai_schema import strict_output_schema
 
 AI_TIMEOUT_ERROR = 'AI 请求超时；未自动重试，请检查网络或调整超时设置'
 AI_NETWORK_ERROR = 'AI 网络连接失败；未自动重试，请检查提供方地址和服务器网络'
@@ -339,7 +340,11 @@ class AIProvider:
             if provider == 'codex':
                 if self.codex is None or not getattr(self.codex, 'enabled', True):
                     raise AIError('官方 Codex 通道当前不可用，请先完成登录或改用 API 通道')
-                text = await self.codex.generate(prompt, model, schema.model_json_schema())
+                try:
+                    wire_schema = strict_output_schema(schema.model_json_schema())
+                except ValueError:
+                    raise _ai_failure('AI 任务的输出结构不支持严格 JSON 模式，请联系管理员修复；未发送分析请求', 'ai_schema_invalid') from None
+                text = await self.codex.generate(prompt, model, wire_schema)
             else:
                 # Keep this three-argument seam for protocol adapters and offline test transports.
                 text = await self._api_generate(model, prompt, schema.model_json_schema())
@@ -354,6 +359,9 @@ class AIProvider:
             emit_event(self.event_log, 'ai.completed', duration_ms=round((time.monotonic()-started)*1000), **metrics)
             return AIResult(data=data, provenance=provenance)
         except BaseException as error:
+            upstream_status = getattr(error, 'upstream_status', None)
+            if type(upstream_status) is int and 100 <= upstream_status <= 599:
+                metrics['upstream_status'] = upstream_status
             reason = (getattr(error, 'reason', None) if isinstance(error, AIError) else None)
             if reason is None:
                 reason = 'ai_cancelled' if isinstance(error, asyncio.CancelledError) else 'ai_task_failed'
@@ -439,9 +447,14 @@ class AIProvider:
     async def _api_generate(self, model, prompt, schema):
         config=self._request_config.get() or self.config()
         if not self.key(config):raise _ai_failure('尚未为当前 API 地址配置 Key，请保存该提供方的密钥', 'ai_key_missing')
-        instruction='Return only a JSON object matching this schema: '+json.dumps(schema)
         mode=config['output_mode']
         if mode=='auto':mode='schema' if config['protocol']=='responses' else 'prompt' if config['protocol']=='anthropic' else 'json'
+        if mode == 'schema':
+            try:
+                schema = strict_output_schema(schema)
+            except ValueError:
+                raise _ai_failure('AI 任务的输出结构不支持严格 JSON 模式，请联系管理员修复；未发送分析请求', 'ai_schema_invalid') from None
+        instruction='Return only a JSON object matching this schema: '+json.dumps(schema)
         cap=config['max_output_tokens']
         if config['protocol']=='responses':
             path='/responses'

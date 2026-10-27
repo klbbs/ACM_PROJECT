@@ -262,13 +262,58 @@ def test_unknown_receipt_requires_exact_source_and_single_match(session,monkeypa
     stamp = int(time.time())
     monkeypatch.setattr(s,'_records',lambda *_:[cf_record(123+n) for n in range(copies)])
     monkeypatch.setattr(s,'judge',lambda pid,handle,sid:{'id':str(sid),'account':'demo','problem_id':'4-A','submitted_at':stamp})
-    monkeypatch.setattr(s,'source',lambda pid,handle,sid:{'id':str(sid),'code':'expected' if correct else 'wrong'})
+    monkeypatch.setattr(s,'source',lambda pid,handle,sid,**kwargs:{'id':str(sid),'code':'expected' if correct else 'wrong'})
     digest = hashlib.sha256(b'expected').hexdigest()
     if copies == 1 and correct:
-        assert s.find_receipt('4-A','demo',stamp,digest)['id'] == '123'
+        assert s.find_receipt('4-A','demo',stamp,digest,{'api_key':'test','api_secret':'test'})['id'] == '123'
     else:
         with pytest.raises(SubmissionError):
-            s.find_receipt('4-A','demo',stamp,digest)
+            s.find_receipt('4-A','demo',stamp,digest,{'api_key':'test','api_secret':'test'})
+
+
+@pytest.mark.parametrize('copies,correct', [(1, True), (2, True), (1, False)])
+def test_unknown_cf_receipt_reads_signed_api_and_never_posts(session, monkeypatch, copies, correct):
+    import base64
+    import hashlib
+    from urllib.parse import parse_qs, urlsplit
+    s = session()
+    stamp = int(time.time())
+    records = [cf_record(123 + index, creationTimeSeconds=stamp) for index in range(copies)]
+    for row in records:
+        row.pop('source')
+    monkeypatch.setattr(s, '_records', lambda *_: records)
+    calls = []
+    def request(method, url, **kwargs):
+        calls.append((method, urlsplit(url).path))
+        params = parse_qs(urlsplit(url).query)
+        assert method == 'GET' and urlsplit(url).path == '/api/user.status'
+        assert params['apiKey'] == ['TEST-API-KEY'] and len(params['apiSig'][0]) == 134
+        if params.get('includeSources') == ['true']:
+            selected = records[int(params['from'][0])-1]
+            rows = [{**selected, 'sourceBase64': base64.b64encode(
+                b'expected' if correct else b'other code').decode()}]
+        else:
+            rows = records
+        return 200, {}, json.dumps({'status':'OK', 'result':rows})
+    monkeypatch.setattr(s, '_request', request)
+    credentials = {'api_key':'TEST-API-KEY', 'api_secret':'TEST-SECRET'}
+    digest = hashlib.sha256(b'expected').hexdigest()
+    if copies == 1 and correct:
+        result = s.find_receipt('4-A', 'demo', stamp, digest, api_credentials=credentials)
+        assert result['id'] == '123' and result['account'] == 'demo' and result['code'] == 'expected'
+    else:
+        with pytest.raises(SubmissionError) as error:
+            s.find_receipt('4-A', 'demo', stamp, digest, api_credentials=credentials)
+        assert error.value.reason == 'record_unavailable'
+    assert calls and all(method == 'GET' for method, _ in calls)
+
+
+def test_unknown_cf_receipt_requires_api_before_reading_source(session, monkeypatch):
+    s = session()
+    monkeypatch.setattr(s, '_records', lambda *_: pytest.fail('Missing credentials must stop before upstream reads'))
+    with pytest.raises(SubmissionError) as error:
+        s.find_receipt('4-A', 'demo', int(time.time()), 'a'*64)
+    assert error.value.reason == 'api_required'
 
 
 @pytest.mark.parametrize('handle,task',[('other','practice_1'),('demo','other_task')])

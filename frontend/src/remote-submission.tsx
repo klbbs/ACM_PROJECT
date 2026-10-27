@@ -39,6 +39,11 @@ export type RemoteSubmissionPanelProps = {
 }
 const pending = (row: RemoteRow) => ['queued', 'submitting', 'judging'].includes(row.status)
 const uncertain = (row: RemoteRow) => row.status === 'uncertain'
+const recoveryBlocked = (row: RemoteRow) =>
+  ['login_required', 'account_mismatch', 'challenge', 'access_restricted', 'api_required',
+    'api_rejected', 'configuration_changed', 'record_mismatch'].includes(row.reason || '')
+const recoveryPending = (row: RemoteRow) => uncertain(row) && !row.submission_id && !recoveryBlocked(row)
+const MAX_RECEIPT_RECOVERIES = 3
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : '请求未完成，请检查连接后重试'
 function cppStandard(name: string) {
@@ -114,7 +119,7 @@ function rowTitle(row: RemoteRow) {
   if (row.status === 'completed') return `${row.verdict || '判题完成'} · 请查看判题结果`
   if (row.status === 'queued') return '已排队，等待提交'
   if (row.status === 'submitting') return '正在向平台提交'
-  if (row.status === 'judging') return '官方判题中'
+  if (row.status === 'judging') return row.reason ? '已提交，判题查询待恢复' : '官方判题中'
   if (row.status === 'blocked') return '需要登录或验证'
   if (row.status === 'uncertain') return '发送结果未确认（不会自动重交）'
   if (row.status === 'failed') return '提交未完成'
@@ -152,6 +157,9 @@ export function RemoteSubmissionPanel({
   const optionsLock = useRef(false)
   const outstanding = useRef<Intent | null>(null)
   const autoRefreshAfter = useRef<Record<string, number>>({})
+  const receiptRecoveries = useRef<Record<string, number>>({})
+  const [recoveryCounts, setRecoveryCounts] = useState<Record<string, number>>({})
+  const [recoveryFinished, setRecoveryFinished] = useState<Record<string, boolean>>({})
   const callbacks = useRef({ save, onError, onChanged })
   callbacks.current = { save, onError, onChanged }
   const previousRows = useRef('')
@@ -241,7 +249,8 @@ export function RemoteSubmissionPanel({
       listGeneration.current++
     }
   }, [problemId, loadRows])
-  const needsPolling = rows.some(pending)
+  const needsPolling = rows.some((row) => pending(row) ||
+    (recoveryPending(row) && !recoveryFinished[row.id]))
   useEffect(() => {
     if (!needsPolling) return
     let cancelled = false
@@ -250,12 +259,27 @@ export function RemoteSubmissionPanel({
       const items = await loadRows(problemId)
       const now = Date.now()
       for (const row of items) {
-        if (row.status !== 'judging' || !row.submission_id || !row.updated_at) continue
-        if (['login_required', 'account_mismatch', 'challenge', 'access_restricted'].includes(row.reason || '')) continue
-        const delay = row.reason === 'rate_limited' ? 60000 : 12000
-        if (now - row.updated_at * 1000 < delay || (autoRefreshAfter.current[row.id] || 0) > now)
+        const recovering = recoveryPending(row)
+        if (!recovering && (row.status !== 'judging' || !row.submission_id)) continue
+        if (recoveryBlocked(row)) continue
+        if (recovering && (receiptRecoveries.current[row.id] || 0) >= MAX_RECEIPT_RECOVERIES) {
+          // Refresh only queues a server job. Observe its eventual result for
+          // at most 90 more seconds without sending another upstream query.
+          if (now >= (autoRefreshAfter.current[row.id] || 0) + 60000)
+            setRecoveryFinished((previous) => ({ ...previous, [row.id]: true }))
           continue
-        autoRefreshAfter.current[row.id] = now + 15000
+        }
+        const delay = row.reason === 'rate_limited' ? 60000 : recovering ? 30000 : 12000
+        if (recovering && !autoRefreshAfter.current[row.id]) {
+          autoRefreshAfter.current[row.id] = now + delay
+          continue
+        }
+        if ((row.updated_at && now - row.updated_at * 1000 < delay) || (autoRefreshAfter.current[row.id] || 0) > now)
+          continue
+        autoRefreshAfter.current[row.id] = now + (recovering ? 30000 : 15000)
+        if (recovering) {
+          receiptRecoveries.current[row.id] = (receiptRecoveries.current[row.id] || 0) + 1
+        }
         try {
           const result = await api<RemoteRow>(
             `/remote-submissions/${encodeURIComponent(row.id)}/refresh`,
@@ -266,8 +290,13 @@ export function RemoteSubmissionPanel({
           listGeneration.current++
           setRows((previous) => previous.map((item) => (item.id === result.id ? result : item)))
           notifyChanged()
-        } catch {
-          autoRefreshAfter.current[row.id] = Date.now() + 30000
+        } catch (error) {
+          autoRefreshAfter.current[row.id] = Date.now() +
+            (error instanceof ApiError && error.status === 429
+              ? Math.max(60, error.retryAfterSeconds || 0) * 1000 : 30000)
+        } finally {
+          if (recovering && !cancelled && currentProblem.current === problemId)
+            setRecoveryCounts({ ...receiptRecoveries.current })
         }
       }
       if (!cancelled) timer = window.setTimeout(() => void tick(), 3000)
@@ -420,6 +449,13 @@ export function RemoteSubmissionPanel({
       )
       if (!mounted.current || currentProblem.current !== target) return
       listGeneration.current++
+      if (recoveryPending(result)) {
+        // A manual retry may finish after the automatic observation window.
+        // Reopen observation, but retain the automatic query count so this
+        // cannot start an unbounded new round of upstream requests.
+        autoRefreshAfter.current[row.id] = Date.now() + 30000
+        setRecoveryFinished((previous) => ({ ...previous, [row.id]: false }))
+      }
       setRows((previous) => previous.map((item) => (item.id === result.id ? result : item)))
       notifyChanged()
     } catch (error) {
@@ -566,7 +602,7 @@ export function RemoteSubmissionPanel({
         </p>
       )}
       {(!handles.length ||
-        currentRows.some((row) => row.status === 'blocked') ||
+        currentRows.some((row) => row.status === 'blocked' || recoveryBlocked(row)) ||
         /Cookie|登录|凭据|验证/.test(error)) && (
         <p>
           <a href="#settings">前往连接与设置，更新 Cookie 并检测登录</a>
@@ -618,6 +654,15 @@ export function RemoteSubmissionPanel({
                   </p>
                 )}
                 {row.message && <p>{row.message}</p>}
+                {uncertain(row) && !row.submission_id && !recoveryBlocked(row) && (
+                  <p className="muted">
+                    {recoveryFinished[row.id]
+                      ? '本轮自动核验已结束，请核对官方记录后手动刷新；未重新发送代码。'
+                      : (recoveryCounts[row.id] || 0) >= MAX_RECEIPT_RECOVERIES
+                      ? '已达到本轮 3 次自动查询上限，正在等待已排队的核验结果；不会重新发送代码。'
+                      : '正在间隔核验官方记录和本次源码，最多自动查询 3 次；不会重新发送代码。'}
+                  </p>
+                )}
                 <div className="remote-submit-controls">
                   <button type="button" disabled={!!refreshingId} onClick={() => void refresh(row)}>
                     {refreshingId === row.id ? '正在查询官方结果…' : '刷新判题'}

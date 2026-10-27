@@ -50,10 +50,13 @@ def remote_site(tmp_path, monkeypatch):
         def close(self):
             pass
 
-        def find_receipt(self, pid, handle, sent_at, code_hash):
+        def find_receipt(self, pid, handle, sent_at, code_hash, api_credentials=None):
+            plan['recovery_credentials'] = api_credentials
+            if plan.get('recovery_error'):
+                raise SubmissionError(plan['recovery_error'])
             if not plan.get('recover'):
                 raise SubmissionError('record_unavailable')
-            return {**self.judge(pid,handle,'12345'),'code':SOURCE}
+            return {**self.judge(pid,handle,'12345'),'code':plan.get('recovery_code', SOURCE)}
 
     monkeypatch.setattr(RemoteSubmissions, '_driver', staticmethod(lambda *_: SyntheticDriver()))
     watch = RemoteSubmissions.watch
@@ -92,7 +95,8 @@ def remote_site(tmp_path, monkeypatch):
             'username': 'member', 'password': 'Synthetic-password-123', 'invitation': invite,
         }))
         assert request(owner, 'PUT', '/api/accounts', {'items': [
-            {'platform': 'codeforces', 'handle': 'demo', 'cookie': 'session='+COOKIE},
+            {'platform': 'codeforces', 'handle': 'demo', 'cookie': 'session='+COOKIE,
+             'api_key':'a'*32, 'api_secret':'b'*32},
         ]}).status_code == 200
         assert request(owner, 'PUT', '/api/workbench/problem/4-A/draft', {
             'revision': 0, 'language': 'cpp20', 'code': SOURCE,
@@ -496,7 +500,157 @@ def test_uncertain_send_recovers_from_matching_official_source_without_new_post(
     done = wait_intent(request,owner,rid,'completed')
     assert done['submission_id'] == '12345' and done['verdict'] == 'WA'
     assert len(plan['sent']) == 1
+    assert plan['recovery_credentials'] == {'api_key':'a'*32, 'api_secret':'b'*32}
     assert child.state.workbench.attempt(done['attempt_id'])['code_verified']
+
+
+@pytest.mark.parametrize('reason', ['rate_limited', 'api_rejected', 'source_unavailable'])
+def test_receipt_recovery_preserves_upstream_failure_without_resending(remote_site, reason):
+    request, owner, _, child, plan = remote_site
+    plan['mode'] = 'uncertain'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'uncertain')
+    plan['recovery_error'] = reason
+    result = asyncio.run(child.state.remote_submissions.reread(rid))
+    assert result['status'] == 'uncertain' and result['submission_id'] is None
+    assert result['reason'] == reason and len(plan['sent']) == 1
+    if reason == 'rate_limited':
+        assert request(owner, 'POST', '/api/remote-submissions/'+rid+'/refresh', {}).status_code == 429
+
+
+def test_receipt_recovery_without_api_gives_configuration_guidance(remote_site, monkeypatch):
+    request, owner, _, child, plan = remote_site
+    plan['mode'] = 'uncertain'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'uncertain')
+    original = child.state.remote_submissions.accounts.document
+    def without_api():
+        document = original()
+        for account in document['accounts']:
+            account.pop('api_key', None)
+            account.pop('api_secret', None)
+        return document
+    monkeypatch.setattr(child.state.remote_submissions.accounts, 'document', without_api)
+    result = asyncio.run(child.state.remote_submissions.reread(rid))
+    assert result['status'] == 'uncertain' and result['submission_id'] is None
+    assert result['reason'] == 'api_required' and 'API Key' in result['message']
+    assert 'recovery_credentials' not in plan and len(plan['sent']) == 1
+
+
+def test_manual_receipt_retry_clears_old_blocked_reason_only_after_guard_checks(remote_site, monkeypatch):
+    request, owner, _, child, plan = remote_site
+    plan['mode'] = 'uncertain'
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'uncertain')
+    for _ in range(100):
+        if not child.state.jobs.tasks:
+            break
+        time.sleep(.01)
+    child.state.remote_submissions.update(rid, reason='record_mismatch', message='old blocked read')
+    queued = []
+    monkeypatch.setattr(child.state.jobs, 'start', lambda kind, data: queued.append((kind, data)))
+    result = request(owner, 'POST', '/api/remote-submissions/'+rid+'/refresh', {})
+    assert result.status_code == 200
+    assert result.json()['reason'] == '' and result.json()['status'] == 'uncertain'
+    assert result.json()['submission_id'] is None and '正在读取官方记录' in result.json()['message']
+    assert queued == [('wb_remote_refresh', {'intent_id':rid})] and len(plan['sent']) == 1
+    child.state.remote_submissions.update(rid, reason='rate_limited')
+    limited = request(owner, 'POST', '/api/remote-submissions/'+rid+'/refresh', {})
+    assert limited.status_code == 429
+    assert child.state.remote_submissions.get(rid)['reason'] == 'rate_limited'
+    assert len(queued) == 1 and len(plan['sent']) == 1
+
+
+def test_receipt_recovery_rejects_wrong_hash_and_retains_unknown_state(remote_site):
+    request, owner, _, child, plan = remote_site
+    plan.update(mode='uncertain', recover=True, recovery_code='different source')
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'uncertain')
+    result = asyncio.run(child.state.remote_submissions.reread(rid))
+    assert result['status'] == 'uncertain' and result['submission_id'] is None
+    assert result['attempt_id'] is None and result['reason'] == 'record_mismatch'
+    assert len(plan['sent']) == 1
+
+
+@pytest.mark.parametrize('previous_language', ['cpp17', 'cpp20'])
+def test_cf_cpp23_receipt_reuses_verified_source_despite_cpp17_draft_mode(remote_site, previous_language):
+    """The live incident: CF compiler 91, cpp17 intent, imported cpp20 source."""
+    request, owner, _, child, plan = remote_site
+    plan.update(mode='uncertain', recover=True, judge_changes={'language':'GNU G++23 14.2'})
+    assert request(owner, 'PUT', '/api/workbench/problem/4-A/draft', {
+        'revision':1, 'language':'cpp17', 'code':SOURCE,
+    }).status_code == 200
+    rid = request(owner, 'POST', '/api/remote-submissions', {
+        **payload(), 'revision':2, 'compiler_id':'91',
+    }).json()['id']
+    wait_intent(request, owner, rid, 'uncertain')
+    remote = child.state.remote_submissions
+    original = remote._row(rid)
+    plan['judge_changes']['submitted_at'] = original['sent_at']
+    observed = {'id':'12345', 'problem_id':'4-A', 'account':'demo', 'submitted_at':original['sent_at'],
+                'language':'GNU G++23 14.2', 'verdict':'WA',
+                'url':'https://codeforces.com/contest/4/submission/12345'}
+    # This is the same normalization path used when "获取本次代码" imported
+    # the source before the ambiguous remote receipt was recovered.
+    imported = remote.record({**original, 'submission_id':'12345', 'language':'cpp20'}, observed)
+    aid = imported['attempt_id']
+    with child.state.database.connect() as conn:
+        conn.execute('UPDATE wb_attempts SET language=?,review=? WHERE id=?',
+                     (previous_language, '{"category":"old"}', aid))
+        conn.execute('UPDATE wb_submission_source_bindings SET language=? WHERE attempt_id=?', (previous_language, aid))
+        conn.execute('INSERT INTO wb_submission_reviews VALUES(?,?,?,?)', (aid,'old-fingerprint','{}',int(time.time())))
+        conn.execute('INSERT INTO wb_submission_reviews VALUES(?,?,?,?)', ('unrelated','other-fingerprint','{}',int(time.time())))
+    result = asyncio.run(remote.reread(rid))
+    assert result['status'] == 'completed' and result['submission_id'] == '12345'
+    assert result['attempt_id'] == aid and len(plan['sent']) == 1
+    current = remote._row(rid)
+    assert current['language'] == original['language'] == 'cpp17'
+    assert current['compiler_id'] == '91' and current['code_hash'] == original['code_hash']
+    assert current['code'] == original['code'] == SOURCE
+    attempt = child.state.workbench.attempt(aid)
+    assert attempt['language'] == 'cpp20' and attempt['code_verified']
+    assert attempt['code'] == SOURCE and attempt['code_hash'] == original['code_hash']
+    with child.state.database.connect() as conn:
+        binding = conn.execute('SELECT * FROM wb_submission_source_bindings WHERE attempt_id=?', (aid,)).fetchone()
+        assert binding['language'] == 'cpp20' and binding['submission_id'] == 12345
+        assert binding['code_hash'] == original['code_hash']
+        if previous_language == 'cpp17':
+            assert attempt['review'] is None
+            assert conn.execute('SELECT 1 FROM wb_submission_reviews WHERE attempt_id=?', (aid,)).fetchone() is None
+        else:
+            assert attempt['review'] == {'category':'old'}
+            assert conn.execute('SELECT fingerprint FROM wb_submission_reviews WHERE attempt_id=?', (aid,)).fetchone()[0] == 'old-fingerprint'
+        assert conn.execute('SELECT fingerprint FROM wb_submission_reviews WHERE attempt_id=?', ('unrelated',)).fetchone()[0] == 'other-fingerprint'
+
+
+@pytest.mark.parametrize('conflict', ['other_source', 'corrupt_source', 'other_family', 'unknown_official_language'])
+def test_receipt_language_normalization_never_overrides_conflicting_evidence(remote_site, conflict):
+    import hashlib
+    request, owner, _, child, plan = remote_site
+    plan.update(mode='uncertain', recover=True)
+    if conflict == 'unknown_official_language':
+        plan['judge_changes'] = {'language':'Rust 1.82'}
+    rid = request(owner, 'POST', '/api/remote-submissions', payload()).json()['id']
+    wait_intent(request, owner, rid, 'uncertain')
+    intent = child.state.remote_submissions._row(rid)
+    if conflict != 'unknown_official_language':
+        code = 'other source' if conflict in {'other_source','corrupt_source'} else SOURCE
+        digest = (hashlib.sha256(code.encode()).hexdigest() if conflict == 'other_source' else intent['code_hash'])
+        language = 'python3' if conflict == 'other_family' else 'cpp17'
+        with child.state.database.connect() as conn:
+            conn.execute('INSERT INTO wb_attempts(id,problem_id,language,code,code_hash,created_at,handle,submission_id) VALUES(?,?,?,?,?,?,?,?)',
+                         ('conflicting',intent['problem_id'],language,code,digest,intent['created_at'],'demo',12345))
+    result = asyncio.run(child.state.remote_submissions.reread(rid))
+    assert result['status'] == 'uncertain' and result['submission_id'] is None
+    assert result['reason'] == 'record_mismatch' and result['attempt_id'] is None
+    assert len(plan['sent']) == 1
+    with child.state.database.connect() as conn:
+        if conflict == 'unknown_official_language':
+            assert conn.execute('SELECT COUNT(*) FROM wb_attempts').fetchone()[0] == 0
+        else:
+            saved = conn.execute('SELECT * FROM wb_attempts WHERE id=?', ('conflicting',)).fetchone()
+            assert saved['language'] == language and saved['code'] == code and saved['code_hash'] == digest
+            assert conn.execute('SELECT COUNT(*) FROM wb_submission_source_bindings').fetchone()[0] == 0
 
 
 @pytest.mark.parametrize('before,after', [('queued', 'failed'), ('submitting', 'uncertain')])

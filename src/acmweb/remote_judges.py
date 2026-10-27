@@ -28,6 +28,7 @@ _MESSAGES = {
     'challenge': '官方平台要求浏览器安全验证，此读取入口暂不可用；请在官方浏览器处理验证。',
     'access_restricted': '官方平台拒绝此入口的服务器访问，不能据此认定登录失效；已有记录保留。',
     'api_rejected': 'Codeforces 官方 API 未接受读取请求，请检查 Key / Secret 是否属于当前账号及服务器时间；判题记录已保留。',
+    'api_required': '请在连接与设置中为此 Codeforces 账号绑定 API Key 和 Secret，再查询本次提交；找回回执需要读取本人源码核对，不会重新交题。',
     'language_unsupported': '官方当前不支持所选编译器，请刷新编译器列表重新选择。',
     'form_changed': '官方提交表单结构已变化，已停止提交，请使用官方页面。',
     'network': '连接官方平台失败，请稍后重试。',
@@ -558,10 +559,14 @@ class PlatformSession:
             raise SubmissionError('source_unavailable') from None
         return {**record,'code':code}
 
-    def find_receipt(self, pid, handle, sent_at, code_hash):
+    def find_receipt(self, pid, handle, sent_at, code_hash, api_credentials=None):
         """Read-only recovery after an ambiguous POST; never guesses the newest ID."""
         import hashlib
         key = self._problem(pid, handle)
+        if self.platform == 'codeforces' and (
+                not isinstance(api_credentials, dict) or not api_credentials.get('api_key')
+                or not api_credentials.get('api_secret')):
+            raise SubmissionError('api_required')
         records = self._records(key, handle)
         if self.platform == 'codeforces':
             contest, index = key.split('-')
@@ -577,7 +582,7 @@ class PlatformSession:
                 record = self.judge(pid, handle, row['id'])
                 if not sent_at-60 <= record['submitted_at'] <= sent_at+300:
                     continue
-                source = self.source(pid, handle, row['id'])
+                source = self.source(pid, handle, row['id'], api_credentials=api_credentials)
             except SubmissionError as exc:
                 if exc.reason == 'record_mismatch':
                     continue
