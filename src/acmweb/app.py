@@ -129,7 +129,7 @@ def create_app(settings=None):
                 emit_event(event_log, 'service.stopped', mode='single')
 
     private_schema = settings.production or settings.isolated
-    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.21.5",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.21.6",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     app.state.settings=settings
     app.state.account_config=account_config
     app.state.event_log=event_log
@@ -180,7 +180,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.21.5"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.21.6"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
