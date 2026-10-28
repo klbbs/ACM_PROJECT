@@ -23,6 +23,7 @@ class Settings:
     codex_binary: str = field(default_factory=lambda: os.getenv("ACM_CODEX_BINARY", "codex"))
     multi_user: bool = field(default_factory=lambda: os.getenv("ACM_MULTI_USER", "false").lower() == "true")
     isolated: bool = False
+    enable_hermes: bool = field(default_factory=lambda: os.getenv('ACM_ENABLE_HERMES', 'false').lower() == 'true')
     allow_env_ai_key: bool = True
     ai_allowed_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv('ACM_AI_ALLOWED_HOSTS',DEFAULT_HOSTS).split(',') if x.strip()))
     allowed_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv('ACM_ALLOWED_HOSTS','localhost,127.0.0.1,[::1],testserver').split(',') if x.strip()))

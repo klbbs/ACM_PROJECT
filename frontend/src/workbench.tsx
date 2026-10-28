@@ -1,3 +1,4 @@
+import { AcceptedCodeAssessment } from './accepted-code-assessment'
 import React, { useEffect, useRef, useState } from 'react'
 import { api, date, names } from './api'
 const StatementView = React.lazy(() =>
@@ -799,6 +800,7 @@ function Attempt({ attempt: a, capabilities, active, aiReady, coach }: any) {
         </p>
       )}
       {[
+        'AC',
         'WA',
         'RE',
         'CE',
@@ -818,10 +820,11 @@ function Attempt({ attempt: a, capabilities, active, aiReady, coach }: any) {
           title={!aiReady ? '尚未配置可用的 AI 模型' : !a.analysis_available ? a.analysis_disabled_reason : undefined}
           onClick={() => coach(`/workbench/attempt/${a.id}/submission-review`)}
         >
-          AI 分析本次提交
+          {a.verdict === 'AC' ? 'AI 评估本次 AC 代码' : 'AI 分析本次提交'}
         </button>
       )}
-      {analysis && (
+      {analysis && a.verdict === 'AC' && <AcceptedCodeAssessment report={analysis} />}
+      {analysis && a.verdict !== 'AC' && (
         <div className="wb-hint">
           <strong>AI 推测 · {analysis.confidence === 'high' ? '较高' : analysis.confidence === 'medium' ? '中等' : '较低'}把握</strong>
           <p className="muted">推测不等同官方解释。</p>

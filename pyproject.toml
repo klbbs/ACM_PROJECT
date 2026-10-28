@@ -12,6 +12,7 @@ dependencies = ["requests>=2.31,<3", "beautifulsoup4>=4.12,<5", "tomli>=2,<3; py
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
 browser = ["playwright==1.64.0"]
+hermes = ["playwright==1.64.0", "markdown-it-py>=3,<5"]
 
 [project.scripts]
 ojcrawl = "ojcrawler.cli:main"
@@ -23,6 +24,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 acmweb = ["training_topic_catalog.json", "browser_extension/*.json", "browser_extension/*.js", "browser_extension/*.html", "browser_extension/*.css", "userscripts/*.js"]
+acmhermes = ["assets/*", "assets/fonts/*.woff2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

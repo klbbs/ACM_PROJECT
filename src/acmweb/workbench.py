@@ -463,11 +463,9 @@ class Workbench:
 
     def submission_review_availability(self, attempt, verdict=None):
         verdict = verdict or attempt['verdict']
-        if verdict == 'AC':
-            return False, '已通过的提交无需错因分析'
         if verdict in {'', 'UNLINKED', 'PENDING', 'TESTING', 'JUDGING', 'QUEUED', 'PRETESTS_PASSED'}:
             return False, '判题尚未结束或没有可分析的判题结果'
-        if verdict not in ERROR_VERDICTS:
+        if verdict != 'AC' and verdict not in ERROR_VERDICTS:
             return False, '此判题结果暂不支持错因分析'
         if not attempt.get('submission_id') or not attempt.get('handle') or not attempt.get('judge_data'):
             return False, '缺少已关联的账号、提交号或官方判题信息'
@@ -534,7 +532,12 @@ class Workbench:
                     'judge_result': attempt['judge_data'],
                 },
             }
-            completed = await self.ai.complete('submission_review', config.provider, config.model, data, SubmissionReview)
+            from .accepted_review import AcceptedCodeReview
+            accepted = attempt['verdict'] == 'AC'
+            task = 'accepted_code_review' if accepted else 'submission_review'
+            schema = AcceptedCodeReview if accepted else SubmissionReview
+            completed = await self.ai.complete(task, config.provider, config.model, data, schema)
+            validated = schema.model_validate(completed.data).model_dump()
             serialized = json.dumps(completed.data, ensure_ascii=False)
             if re.search(r'```|#include|\bint\s+main\s*\(|\bdef\s+\w+\s*\(|\bfor\s*\(|\bwhile\s*\(|public\s+static', serialized):
                 raise AIError('AI 输出疑似包含完整代码，已拦截；可以重试分析')
@@ -549,7 +552,7 @@ class Workbench:
                 current_available, current_reason = self.submission_review_availability(current_attempt)
                 if not current_available or self._review_fingerprint(current_attempt, current_data) != fingerprint:
                     raise AIError(current_reason or '提交源码、语言、判题结果或题面已变化，请重新分析')
-                result = {'result': completed.data, 'provenance': completed.provenance,
+                result = {'kind': task, 'result': validated, 'provenance': completed.provenance,
                           'fingerprint': fingerprint, 'analyzed_at': int(time.time())}
                 conn.execute('INSERT INTO wb_submission_reviews VALUES(?,?,?,?) ON CONFLICT(attempt_id) DO UPDATE SET fingerprint=excluded.fingerprint,data=excluded.data,created_at=excluded.created_at',
                              (aid, fingerprint, json.dumps(result, ensure_ascii=False), result['analyzed_at']))

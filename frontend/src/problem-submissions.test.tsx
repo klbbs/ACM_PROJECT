@@ -153,7 +153,8 @@ it('shows clear disabled reasons for AC, judging and missing source', async () =
       (record) => record.querySelector('button[title]') as HTMLButtonElement,
     )
     expect(analyses.every((item) => item.disabled)).toBe(true)
-    expect(records[0].textContent).toContain('AC 记录无需错因分析')
+    expect(records[0].textContent).toContain('AI 代码评估')
+    expect(records[0].textContent).toContain('先获取本次代码')
     expect(records[1].textContent).toContain('判题中，结束后才能分析')
     expect(records[2].textContent).toContain('先获取本次代码')
   })
@@ -761,5 +762,27 @@ it('loading into the editor stays bound to the account that started it', async (
     // this view must not claim the old operation for the new selection either.
     expect(host.textContent).not.toContain('已载入编辑器')
     expect(host.textContent).not.toContain('未载入编辑器')
+  })
+})
+
+it('offers accepted code assessment without loading the editor and renders improvement dimensions', async () => {
+  vi.useFakeTimers()
+  const report = { summary:'通过后的改进建议', dimensions:[{category:'code_quality',finding:'变量名可读性',evidence:'第 2 行',suggestion:'使用含义明确的名称',confidence:'medium'}], strengths:['实现简洁'], alternative_approaches:['比较另一种建模'], limitations:['未运行代码'] }
+  let complete = false
+  request.mockImplementation(async (path) => {
+    if (path.startsWith('/problem-submissions/')) return listing({items:[{...ac,code_verified:true,analysis_available:true,submission_review:complete?{kind:'accepted_code_review',result:report}:null}]})
+    if (path==='/jobs') { complete=true; return {items:[{id:'review-job',status:'completed'}]} }
+    throw Error(`Unexpected ${path}`)
+  })
+  const values=props()
+  await render(values,async(host)=>{
+    expect(button(host,'AI 代码评估')!.disabled).toBe(false)
+    await click(host,'AI 代码评估')
+    await act(async()=>{await vi.advanceTimersByTimeAsync(1200)})
+    expect(values.coach).toHaveBeenCalledWith('/workbench/attempt/att-2/submission-review')
+    expect(values.loadCode).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('其他思路与权衡')
+    expect(host.textContent).toContain('使用含义明确的名称')
+    expect(host.textContent).not.toContain('主要错误类型')
   })
 })

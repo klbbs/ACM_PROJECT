@@ -19,6 +19,7 @@ services:
       FORWARDED_ALLOW_IPS: "${ACM_TRUSTED_PROXIES:-127.0.0.1}"
       ACM_ENABLE_CODEX: "false"
       ACM_ENABLE_SERVER_CODEX: "${ACM_ENABLE_SERVER_CODEX:-false}"
+      ACM_ENABLE_HERMES: "${ACM_ENABLE_HERMES:-false}"
       ACM_ACCESS_TOKEN: "${ACM_ACCESS_TOKEN:?请先运行 python3 scripts/bootstrap.py}"
       ACM_DATA_DIR: "/app/data/${ACM_DATA_SUBDIR:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"

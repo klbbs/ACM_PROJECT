@@ -15,7 +15,7 @@ except ModuleNotFoundError:  # Python 3.10
 
 ROOT=Path(__file__).resolve().parent.parent
 VERSION=tomllib.loads((ROOT/'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
-DIRECTORIES=('src/acmweb','src/ojcrawler','tests','docs','examples','scripts','deploy','frontend/src','frontend/e2e','frontend/public','frontend/dist','.github')
+DIRECTORIES=('src/acmhermes','src/acmweb','src/ojcrawler','tests','docs','examples','scripts','deploy','frontend/src','frontend/e2e','frontend/public','frontend/dist','.github')
 FILES=('README.md','CHANGELOG.md','pyproject.toml','requirements.lock','requirements-browser.lock','accounts.example.toml','.env.example','.gitignore','.dockerignore','Dockerfile','compose.yaml','compose.browser.yaml','update.sh','frontend/package.json','frontend/package-lock.json','frontend/index.html','frontend/tsconfig.json','frontend/vite.config.ts','frontend/vitest.config.ts','frontend/playwright.config.ts','.prettierrc.json')
 
 

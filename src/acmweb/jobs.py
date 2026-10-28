@@ -169,6 +169,9 @@ class Jobs:
             elif kind=="ai_test":
                 result=await self.ai.test_connection()
                 self.update(job_id,"completed",result)
+            elif kind == 'hermes_draw':
+                result = await self.run_hermes(payload)
+                self.update(job_id, 'completed', result)
             elif kind.startswith("wb_"):
                 result=await self.run_workbench(kind,payload)
                 self.update(job_id,"completed",result)

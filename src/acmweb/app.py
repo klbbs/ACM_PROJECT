@@ -123,6 +123,8 @@ def create_app(settings=None):
             app.state.nowcoder_qr.close()
             await app.state.browser_login.aclose()
             await jobs.close()
+            if hasattr(app.state, 'hermes'):
+                app.state.hermes.close()
             app.state.translations.close()
             await codex.close()
             if not settings.isolated:
@@ -481,6 +483,10 @@ def create_app(settings=None):
         return await app.state.translations.generate(problem_id, payload)
 
     jobs.run_translation = run_translation
+
+    if settings.enable_hermes and settings.translation_owner != 'assets':
+        from acmhermes.service import register as register_hermes
+        register_hermes(app)
 
     async def local_translation_context(request, admin=False):
         # Single-user mode has one trusted owner; the regular app middleware

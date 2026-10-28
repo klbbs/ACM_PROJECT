@@ -52,7 +52,7 @@ LEVELS = ('INFO', 'WARNING', 'ERROR')
 CATEGORIES = ('system', 'task', 'platform', 'security', 'request')
 KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
          'specialist_catalog', 'topic_method_check', 'specialist_generate',
-         'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
+         'hermes_draw', 'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited', 'source_login_required', 'source_read_failed',
            'ai_schema_invalid', 'ai_auth_required', 'ai_usage_limit', 'ai_rate_limited',
@@ -109,7 +109,7 @@ def record_failure(scope, error):
 
 
 COMPONENTS = {'auth', 'admin', 'accounts', 'workbench', 'remote-submissions', 'problem-submissions',
-              'platform-login', 'platforms', 'translations', 'daily', 'ai', 'catalog', 'social',
+              'hermes', 'platform-login', 'platforms', 'translations', 'daily', 'ai', 'catalog', 'social',
               'crawl', 'analysis', 'recommend', 'training', 'selection-reports', 'shared', 'other'}
 HEX = re.compile(r'[a-f0-9]{32}')
 _registry = weakref.WeakValueDictionary()

@@ -1,3 +1,4 @@
+import { AcceptedCodeAssessment } from './accepted-code-assessment'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   CheckCircle2,
@@ -682,11 +683,9 @@ export function ProblemSubmissions({
             const attemptId = state?.attempt_id || item.attempt_id
             const reviewKey = `${problemId}\u0000${handle}\u0000${String(item.submission_id || '')}\u0000${attemptId || ''}`
             const report = item.submission_review?.result
-            const analysisDisabledReason = accepted
-              ? 'AC 记录无需错因分析'
-              : pending
+            const analysisDisabledReason = pending
                 ? '判题中，结束后才能分析'
-                : !errored
+                : !errored && !accepted
                   ? '此判题状态暂不支持错因分析'
                   : !aiReady
                     ? '尚未配置 AI 模型，请先在连接与设置中选择模型'
@@ -756,10 +755,10 @@ export function ProblemSubmissions({
                       <Sparkles size={14} />
                     )}
                     {analysisBusy[reviewKey]
-                      ? 'AI 分析中…'
+                      ? (accepted ? 'AI 评估中…' : 'AI 分析中…')
                       : analysisErrors[reviewKey]
-                        ? '重试 AI 分析'
-                        : 'AI 分析'}
+                        ? (accepted ? '重试 AI 代码评估' : '重试 AI 分析')
+                        : (accepted ? 'AI 代码评估' : 'AI 分析')}
                   </button>
                 </div>
                 {analysisDisabledReason && (
@@ -772,7 +771,8 @@ export function ProblemSubmissions({
                     {analysisErrors[reviewKey]}
                   </p>
                 )}
-                {report && (
+                {report && accepted && <AcceptedCodeAssessment report={report} />}
+                {report && !accepted && (
                   <div className="problem-submission-review" aria-label="本次提交的 AI 分析">
                     <strong>
                       AI 推测 ·{' '}
