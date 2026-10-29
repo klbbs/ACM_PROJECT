@@ -123,8 +123,6 @@ def create_app(settings=None):
             app.state.nowcoder_qr.close()
             await app.state.browser_login.aclose()
             await jobs.close()
-            if hasattr(app.state, 'hermes'):
-                app.state.hermes.close()
             app.state.translations.close()
             await codex.close()
             if not settings.isolated:

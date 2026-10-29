@@ -11,9 +11,10 @@ from acmweb.app import create_app
 from acmweb.codex_bridge import AIError
 from acmweb.settings import Settings
 from acmhermes.models import Draw
-from acmhermes.render import document
 
 PID='codeforces:4-A'
+EXPLANATION={'title':'求整数后继','description':'给定整数 n，求它的后继 n+1。',
+             'input_format':'一个整数 n。','output_format':'输出 n+1。','notes':['保留原题的变量与条件。']}
 REPORT={'problem_id':PID,'suitable':True,'topic_fit':'合成数学题','summary':'求后继',
         'constraints':['给定整数'],'approach':['加一'],'correctness':['后继的定义'],
         'complexity':'时间 O(1)，空间 O(1)','sample_walkthrough':['1 对应 2'],
@@ -26,7 +27,6 @@ STATEMENT={'id':PID,'url':'https://codeforces.com/problemset/problem/4/A','title
 def setup_pipeline(app,monkeypatch):
     s=app.state.hermes
     monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',AsyncMock())
-    monkeypatch.setattr(s.renderer,'preflight',AsyncMock())
     monkeypatch.setattr(s.ai,'selection',lambda:{'ready':True,'channel':'api','model':'synthetic'})
     monkeypatch.setattr(s.ai,'configuration_fingerprint',lambda:'ephemeral-fingerprint')
     monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':[{'platform':'codeforces','status':'authenticated','login_verified':True}]})
@@ -35,20 +35,19 @@ def setup_pipeline(app,monkeypatch):
             'id':PID,'platform':'codeforces','difficulty':1000,'tags':['math'],'title':'Synthetic','contest_id':4})))
         c.execute('INSERT INTO wb_problems VALUES(?,?,?)',(PID,json.dumps(STATEMENT),int(time.time())))
     async def complete(task,provider,model,data,schema):
-        if task=='hermes_selection': value={'problem_id':PID,'reason':'合成选择'}
+        if task=='hermes_selection':
+            constraint=schema.model_json_schema()['properties']['problem_id']
+            assert PID in constraint.get('enum',[constraint.get('const')])
+            with pytest.raises(ValueError):schema.model_validate({'problem_id':'codeforces:999999-Z','reason':'候选外'})
+            value={'problem_id':PID,'reason':'合成选择'}
         elif task=='hermes_solution_report':
             assert data['statement']['id']==PID and 'draft' not in data
-            value=REPORT
+            value={**REPORT,'problem_explanation':EXPLANATION}
         elif task=='translation': value={'blocks':[{'id':b['id'],'text':b['text']} for b in data['blocks']]}
         else: raise AssertionError(task)
         return SimpleNamespace(data=value,provenance={'channel':'api','model':'synthetic','task':task})
     fake=AsyncMock(side_effect=complete)
     monkeypatch.setattr(s.ai,'complete',fake)
-    async def render(statement,directory):
-        directory.mkdir(mode=0o700)
-        (directory/'0.png').write_bytes(b'\x89PNG\r\n\x1a\nSYNTHETIC')
-        return ['0.png'],[]
-    monkeypatch.setattr(s.renderer,'render',AsyncMock(side_effect=render))
     return s,fake
 
 
@@ -82,7 +81,7 @@ def test_request_contract_strict_two_parameters(value):
     with pytest.raises(ValueError):Draw.model_validate(value)
 
 
-def test_full_pipeline_and_idempotency_download_expiry(client):
+def test_full_text_pipeline_and_idempotency(client):
     c,s,fake=client
     headers={'Idempotency-Key':'a'*32}
     r=c.post('/api/hermes/draw',json={'score_range':[800,1200],'topic':'math'},headers=headers)
@@ -91,7 +90,14 @@ def test_full_pipeline_and_idempotency_download_expiry(client):
     assert job['status']=='completed',job
     assert job['result']['report']==REPORT
     assert 'statement' not in job['result']
-    assert c.get(job['result']['screenshots'][0]['url']).content.startswith(b'\x89PNG')
+    explanation=job['result']['problem_explanation']
+    assert explanation['description']==EXPLANATION['description']
+    assert explanation['input_format']==EXPLANATION['input_format']
+    assert explanation['samples']==STATEMENT['samples']
+    assert explanation['original_url']==STATEMENT['url']
+    assert explanation['problem_id']==PID and explanation['language']=='zh-CN'
+    assert job['result']['format']=='text'
+    assert not {'screenshots','artifact_id','expires_at','translation_provenance'} & job['result'].keys()
     count=fake.await_count
     assert c.get('/api/hermes/draws/'+job['id']).status_code==200
     assert fake.await_count==count
@@ -99,19 +105,65 @@ def test_full_pipeline_and_idempotency_download_expiry(client):
     assert c.post('/api/hermes/draw',json={'score_range':[800,1200],'topic':'math'},headers=headers).json()['id']==job['id']
     assert fake.await_count==count
     assert c.post('/api/hermes/draw',json={'score_range':[900,1300]},headers=headers).status_code==409
-    s.expire(job['result']['artifact_id'])
-    assert c.get(job['result']['screenshots'][0]['url']).status_code==410
+    assert c.get('/api/hermes/draws/'+job['id']+'/screenshots/0').status_code==410
     assert c.get('/api/hermes/draws/'+job['id']).json()['result']['report']==REPORT
 
 
-def test_missing_browser_fails_before_paid_ai(client,monkeypatch):
+def test_text_generation_needs_no_browser_or_translation(client,monkeypatch):
+    import builtins
     c,s,fake=client
-    async def unavailable():raise AIError('Hermes 截图组件未安装；尚未调用 AI')
-    monkeypatch.setattr(s.renderer,'preflight',unavailable)
+    original=builtins.__import__
+    def no_renderer(name,*args,**kwargs):
+        if name.startswith(('playwright','markdown_it','acmhermes.render')):
+            raise AssertionError('Text generation must not load optional renderer dependencies')
+        return original(name,*args,**kwargs)
+    monkeypatch.setattr(builtins,'__import__',no_renderer)
     r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'b'*32})
     job=wait(c,r.json()['id'])
-    assert job['status']=='failed' and '尚未调用 AI' in job['error']
+    assert job['status']=='completed',job
+    assert [call.args[0] for call in fake.await_args_list]==['hermes_selection','hermes_solution_report']
+    assert not hasattr(s,'renderer')
+    assert not (s.app.state.settings.data_dir/'hermes-artifacts').exists()
+    capabilities=c.get('/api/hermes/capabilities').json()
+    assert capabilities['output_format']=='text' and 'screenshot_ready' not in capabilities
+
+
+def test_empty_candidates_fail_before_paid_ai(client,monkeypatch):
+    c,s,fake=client
+    monkeypatch.setattr(s,'pool',lambda *a:[])
+    r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'b'*32})
+    job=wait(c,r.json()['id'])
+    assert job['status']=='failed' and '没有符合' in job['error']
     fake.assert_not_awaited()
+
+
+@pytest.mark.parametrize('invalid',['missing','empty_description','model_rewrites_samples'])
+def test_incomplete_problem_explanation_is_not_delivered(client,invalid):
+    c,s,fake=client
+    original=fake.side_effect
+    async def incomplete(task,*args):
+        result=await original(task,*args)
+        if task=='hermes_solution_report':
+            if invalid=='missing':
+                result.data={k:v for k,v in result.data.items() if k!='problem_explanation'}
+            else:
+                result.data={**result.data,'problem_explanation':{**EXPLANATION,
+                    **({'description':''} if invalid=='empty_description' else {'samples':[{'input':'fake','output':'fake'}]})}}
+        return result
+    fake.side_effect=incomplete
+    r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'f'*32})
+    job=wait(c,r.json()['id'])
+    assert job['status']=='failed' and job['result'] is None
+    assert fake.await_count==2  # No automatic retry or separate translation.
+
+
+def test_unreadable_full_statement_never_generates_explanation(client,monkeypatch):
+    c,s,fake=client
+    monkeypatch.setattr(s.app.state.selection_reports,'_read',AsyncMock(side_effect=AIError('官方完整题面读取失败')))
+    r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'f'*32})
+    job=wait(c,r.json()['id'])
+    assert job['status']=='failed' and job['result'] is None
+    assert [call.args[0] for call in fake.await_args_list]==['hermes_selection']
 
 
 def test_no_model_or_idempotency_key_never_queues(client,monkeypatch):
@@ -123,14 +175,14 @@ def test_no_model_or_idempotency_key_never_queues(client,monkeypatch):
 
 
 @pytest.mark.parametrize('failure',['outside','unsuitable','config_change','statement_change'])
-def test_failed_validation_never_delivers_mismatched_artifacts(client,monkeypatch,failure):
+def test_failed_validation_never_delivers_mismatched_text(client,monkeypatch,failure):
     c,s,fake=client
     original=fake.side_effect
     async def fail(task,*args):
         result=await original(task,*args)
         if task=='hermes_selection' and failure=='outside':result.data={'problem_id':'codeforces:99-Z','reason':'bad'}
         if task=='hermes_solution_report':
-            if failure=='unsuitable':result.data={**REPORT,'suitable':False}
+            if failure=='unsuitable':result.data={**result.data,'suitable':False}
             if failure=='config_change':monkeypatch.setattr(s.ai,'configuration_fingerprint',lambda:'changed')
             if failure=='statement_change':
                 with s.db.connect() as db:db.execute('UPDATE wb_problems SET data=?',(json.dumps({**STATEMENT,'title':'changed'}),))
@@ -139,14 +191,23 @@ def test_failed_validation_never_delivers_mismatched_artifacts(client,monkeypatc
     r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'c'*32})
     job=wait(c,r.json()['id'])
     assert job['status']=='failed' and not job['result']
-    s.renderer.render.assert_not_awaited()
+    assert not (s.app.state.settings.data_dir/'hermes-artifacts').exists()
 
 
-def test_screenshot_sanitization_offline_and_keeps_links():
-    markup,images=document({'title':'<bad>','body_html':'<script>secret()</script><p onclick="evil()">文本 $x$</p><img src="https://example.org/p.png"><iframe src="http://127.0.0.1/"/>','samples':[]})
-    assert '<script' not in markup and 'onclick' not in markup and '<iframe' not in markup and '<img' not in markup
-    assert 'https://example.org/p.png' in markup and images==['https://example.org/p.png']
-    assert '&lt;bad&gt;' in markup
+def test_legacy_screenshot_job_keeps_report_without_regeneration(client):
+    c,s,fake=client
+    jid='e'*32
+    old={'report':REPORT,'problem':{'id':PID},'screenshots':['0.png'],'artifact_id':'f'*32,'expires_at':0}
+    with s.db.connect() as db:
+        db.execute('INSERT INTO web_jobs VALUES(?,?,?,?,?,?,?)',
+                   (jid,'hermes_draw','completed',0,0,json.dumps(old),None))
+    result=c.get('/api/hermes/draws/'+jid).json()['result']
+    assert result['report']==REPORT
+    assert result['format']=='legacy_report' and result['problem_explanation'] is None
+    assert 'screenshots' not in result and 'artifact_id' not in result
+    assert '不会自动重新调用 AI' in result['notice']
+    assert c.get('/api/hermes/draws/'+jid+'/screenshots/0').status_code==410
+    fake.assert_not_awaited()
 
 
 def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
@@ -171,5 +232,5 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         assert job['status']=='completed',job
         member,_=auth('/api/auth/register',{'username':'member','password':'Synthetic-password-123','invitation':invite})
         assert c.get('/api/hermes/draws/'+job['id'],headers=member).status_code==404
-        assert c.get(job['result']['screenshots'][0]['url'],headers=member).status_code==404
+        assert c.get('/api/hermes/draws/'+job['id']+'/screenshots/0',headers=member).status_code==404
         assert c.get('/api/hermes/capabilities',headers={'Cookie':''}).status_code==401

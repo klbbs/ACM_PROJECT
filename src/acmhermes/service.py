@@ -3,20 +3,14 @@ import asyncio
 import json
 import re
 import shutil
-import time
-import uuid
 
 from fastapi import Header, HTTPException
-from fastapi.responses import FileResponse
 from acmweb.catalog import recommendation_candidates, refresh_recommendation_sessions
 from acmweb.codex_bridge import AIError
 from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
 from acmweb.training_topics import TOPICS, matches_topic
-from acmweb.translations import Document, Translate
-from .models import Choice, Draw, SolutionReport
-from .render import ScreenshotRenderer
+from .models import Choice, Draw, SolutionReport, candidate_choice
 
-TTL = 1800
 MAX_RUN_SECONDS = 600
 
 
@@ -25,25 +19,13 @@ class Hermes:
         self.app = app
         self.db, self.ai = app.state.database, app.state.ai
         self.jobs, self.accounts = app.state.jobs, app.state.account_config
-        self.renderer = ScreenshotRenderer()
-        self.directory = app.state.settings.data_dir/'hermes-artifacts'
-        self.timers = {}
-        # Artifacts belong to this process's short-lived translation handoff.
-        # Persistent reports remain private in the existing job database.
-        if self.directory.exists():
-            for child in self.directory.iterdir():
+        # An upgrade still honors the previous promise that private screenshots
+        # do not survive process restarts. Never create new artifact directories.
+        legacy_directory = app.state.settings.data_dir/'hermes-artifacts'
+        if legacy_directory.is_dir() and not legacy_directory.is_symlink():
+            for child in legacy_directory.iterdir():
                 if re.fullmatch(r'[a-f0-9]{32}', child.name):
                     shutil.rmtree(child, ignore_errors=True)
-
-    def expire(self, rid):
-        timer = self.timers.pop(rid, None)
-        if timer:
-            timer.cancel()
-        shutil.rmtree(self.directory/rid, ignore_errors=True)
-
-    def close(self):
-        for rid in list(self.timers):
-            self.expire(rid)
 
     def pool(self, request, preferred_ids=None):
         low, high = request.score_range
@@ -71,15 +53,13 @@ class Hermes:
             def guard():
                 if self.ai.configuration_fingerprint() != fingerprint:
                     raise AIError('Hermes 生成期间 AI 配置已变化，未交付混用模型的结果；请重新发起')
-            await self.renderer.preflight()
-            guard()
             await refresh_recommendation_sessions(self.accounts)
             guard()
             pool = self.pool(request)
             if not pool:
                 raise AIError('没有符合分数区间、题型、日期和已登录平台条件的未完成题；请同步平台题库并检测登录，不会放宽条件或编造题目')
             chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
-                {'candidates':pool,'score_range':list(request.score_range),'topic':topic_context},Choice)
+                {'candidates':pool,'score_range':list(request.score_range),'topic':topic_context},candidate_choice(p['id'] for p in pool))
             guard()
             choice = Choice.model_validate(chosen.data)
             candidate = next((p for p in pool if p['id'] == choice.problem_id),None)
@@ -98,14 +78,6 @@ class Hermes:
                 raise AIError('完整题面阅读后未确认符合要求，未交付该题；不会自动付费换题')
             if re.search(r'```|#include|\bint\s+main\s*\(|public\s+static\s+void\s+main',json.dumps(report)):
                 raise AIError('报告包含完整程序，未交付；本接口只返回解题分析报告')
-            doc = Document(statement)
-            if doc.blocks:
-                translated, translation_provenance = await self.app.state.translations.translate_ai(
-                    Translate(engine='ai',provider=selection['channel'],model=selection['model'],consent=True),doc.blocks)
-                chinese = doc.apply(translated)
-            else:
-                chinese, translation_provenance = statement, {'notice':'没有需要翻译的自然语言'}
-            guard()
             # Revalidate eligibility and the precise full-statement fingerprint
             # after all paid work; never silently replace a changed problem.
             await refresh_recommendation_sessions(self.accounts)
@@ -113,24 +85,17 @@ class Hermes:
             if choice.problem_id not in {p['id'] for p in self.pool(request,[choice.problem_id])}:
                 raise AIError('题目资格已变化（登录、日期、已完成或对战），未交付结果')
             if reports._cached(choice.problem_id)[1] != statement_hash:
-                raise AIError('生成期间题面已变化，未交付不匹配的翻译或报告')
-            rid = uuid.uuid4().hex
-            self.directory.mkdir(parents=True,mode=0o700,exist_ok=True)
-            directory = self.directory/rid
-            try:
-                files, image_links = await self.renderer.render(chinese,directory)
-                guard()
-                # The translator's personal statement is never persisted. Only
-                # transient screenshots exist until expiry or process shutdown.
-                expires = int(time.time())+TTL
-                self.timers[rid] = asyncio.get_running_loop().call_later(TTL,self.expire,rid)
-                return {'artifact_id':rid,'expires_at':expires,'problem':candidate,'selection_reason':choice.reason,
-                        'report':report,'report_provenance':response.provenance,
-                        'translation_provenance':translation_provenance,'screenshots':files,'image_links':image_links,
-                        'notice':'完整 AI 解题报告含剧透；静态阅读生成，未运行或提交代码，不计签到。截图30分钟后过期；图片仅保留原链接。'}
-            except BaseException:
-                self.expire(rid)
-                raise
+                raise AIError('生成期间题面已变化，未交付不匹配的题目说明或报告')
+            explanation = report.pop('problem_explanation')
+            # Samples come from this exact official statement, not from model
+            # paraphrasing. The explanation is part of the private AI report,
+            # not a separate full-page translation or a shared translation.
+            explanation.update(problem_id=choice.problem_id, language='zh-CN',
+                original_url=statement['url'], constraints=list(report['constraints']),
+                samples=[dict(sample) for sample in statement['samples']])
+            return {'format':'text','problem':candidate,'selection_reason':choice.reason,
+                    'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
+                    'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
         return await asyncio.wait_for(pipeline(),MAX_RUN_SECONDS)
 
     def job(self,jid):
@@ -141,10 +106,11 @@ class Hermes:
         value=dict(row)
         value['result']=json.loads(value['result']) if value['result'] else None
         result=value['result']
-        if result:
-            result['screenshots']=[{'index':i,'url':f'/api/hermes/draws/{jid}/screenshots/{i}'}
-                                   for i,_ in enumerate(result['screenshots'])]
-            result['artifacts_expired']=time.time()>=result['expires_at']
+        if result and 'screenshots' in result:
+            for key in ('screenshots','artifact_id','expires_at','artifacts_expired','translation_provenance','image_links'):
+                result.pop(key,None)
+            result.update(format='legacy_report', problem_explanation=None,
+                notice='此历史任务仅保留原解题报告，尚未生成新版中文题目说明；请结合原题阅读。截图功能已移除，不会自动重新调用 AI。')
         return value
 
 
@@ -155,7 +121,7 @@ def register(app):
 
     @app.get('/api/hermes/capabilities')
     async def capabilities():
-        return {'enabled':True,'screenshot_ready':await service.renderer.available(),
+        return {'enabled':True,'output_format':'text',
                 'score_range':{'minimum':800,'maximum':3500,'reference':'CF rating；其他平台使用已注明来源的区间估计，未知分数排除'},
                 'topics':[{'id':t['id'],'title':t['title']} for t in TOPICS.values()],
                 'auth':'使用本人 ACM Lab 会话；多人模式的写请求需 X-ACM-Request 和 CSRF 校验',
@@ -166,7 +132,6 @@ def register(app):
         selection=service.ai.selection()
         if not selection['ready']:
             raise HTTPException(400,'请先在连接与设置保存可用的默认 AI 模型')
-        # Do not require a live browser just to replay an existing request.
         return service.jobs.start('hermes_draw',{'request':payload.model_dump(),'provider':selection['channel'],'model':selection['model']},request_key=idempotency_key)
 
     @app.get('/api/hermes/draws/{jid}')
@@ -183,13 +148,5 @@ def register(app):
 
     @app.get('/api/hermes/draws/{jid}/screenshots/{index}')
     def screenshot(jid:str,index:int):
-        result=service.job(jid)['result']
-        if not result or index < 0 or index >= len(result['screenshots']):
-            raise HTTPException(404,'截图不存在')
-        if result['artifacts_expired']:
-            service.expire(result['artifact_id'])
-            raise HTTPException(410,'个人题面截图已过期，请重新发起选题；报告仍可读取')
-        path=service.directory/result['artifact_id']/f'{index}.png'
-        if not path.is_file():
-            raise HTTPException(410,'截图已清理或服务已重启，报告仍可读取')
-        return FileResponse(path,media_type='image/png',filename=f'problem-{index+1}.png')
+        service.job(jid)  # Authenticate ownership before explaining deprecation.
+        raise HTTPException(410,'截图功能已移除，请读取本任务的中文题目说明和解题报告')

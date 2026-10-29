@@ -1,7 +1,7 @@
 """Task policies shared by every model transport. Payloads are untrusted data."""
 import json
 
-PROMPT_VERSION = '2026-10-28.1'
+PROMPT_VERSION = '2026-10-29.1'
 INITIAL_SELECTION_POLICY = (
     '本阶段的 candidates 仅是元信息初选，不能据此宣称已经读过题目正文、理解全部约束或确认模板适用性。'
     '返回的是待逐题阅读的候选草案；服务端还必须取得每道官方完整题面并通过 selection_read_report 阅读确认，才能最终入选。'
@@ -17,6 +17,9 @@ TASK_POLICIES = {
     'hermes_solution_report': (
         '用户明确要求将题目交给 Hermes，并主动请求完整中文解题报告，允许展示算法步骤和正确性说明。'
         '先阅读 statement 中提供的完整官方题面、输入输出、约束和全部样例，再生成同一 problem_id 的报告；不能根据标签或题号猜题。'
+        'problem_explanation 是可以直接告诉用户的中文题目说明，独立于题解：title 为中文标题，description 忠实说明已知条件、操作、变量含义、目标与需要求出的结果，'
+        'input_format 和 output_format 说明实际输入输出格式，notes 说明题意歧义或重要注意事项。保留数学含义、量词、否定、下标及变量，不省略关键条件；不要在题目说明里泄露算法步骤或答案。'
+        '这不是逐字翻译，也不生成图片；不要要求浏览器、截图或额外翻译服务。样例由服务器从原题附上，不要重新编造或改写样例。'
         'problem_id 必须精确一致；suitable 表示完整阅读后是否符合用户要求及是否有足够证据讲解。topic_fit 说明方法与用户题型的关系，无题型时说明训练价值。'
         'summary 概括问题，constraints 只列实际约束，approach 给可执行的高层算法步骤，correctness 给对外可理解的数学/不变量论证，不输出内部思维链。'
         'complexity 定义变量并给时间空间界；sample_walkthrough 解释给出的样例，不编造样例或假装运行；pitfalls 列边界、数据类型和实现注意点；alternative_approaches 说明其他思路与取舍。'
