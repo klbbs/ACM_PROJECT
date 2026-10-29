@@ -241,3 +241,29 @@ for line in sys.stdin:
         finally:
             await bridge.close()
     asyncio.run(run())
+
+
+def test_cancelling_generation_interrupts_only_the_exact_known_turn():
+    class WaitingBridge(EventBridge):
+        def __init__(self):
+            super().__init__([])
+            self.started=asyncio.Event()
+            self.interrupts=[]
+        async def call(self,method,params=None,timeout=30):
+            if method=='turn/interrupt':
+                self.interrupts.append(params)
+                return {}
+            result=await super().call(method,params,timeout)
+            if method=='turn/start':self.started.set()
+            return result
+    async def run():
+        bridge=WaitingBridge()
+        try:
+            task=asyncio.create_task(bridge.generate('synthetic','synthetic',{}))
+            await bridge.started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):await task
+            assert bridge.interrupts==[{'threadId':'thread-test','turnId':'current'}]
+            assert not bridge.streams and not bridge.inference_lock.locked()
+        finally:bridge.scratch.cleanup()
+    asyncio.run(run())

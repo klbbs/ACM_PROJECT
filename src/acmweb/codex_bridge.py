@@ -329,6 +329,13 @@ class CodexBridge:
                     try:await self.call("turn/interrupt",{"threadId":thread_id,"turnId":turn_id},5)
                     except AIError:pass
                 raise AIError("AI 分析超时，已请求中断") from exc
+            except asyncio.CancelledError:
+                # Cancel only this exact turn, never another task or the shared
+                # account process. This is best effort, not a billing reversal.
+                if turn_id:
+                    try:await self.call("turn/interrupt",{"threadId":thread_id,"turnId":turn_id},5)
+                    except AIError:pass
+                raise
             finally:
                 self.streams.pop(thread_id,None)
 

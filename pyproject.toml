@@ -14,6 +14,7 @@ dev = ["pytest>=8,<9"]
 browser = ["playwright==1.64.0"]
 # Compatibility extra: the text-only Hermes module needs only core dependencies.
 hermes = []
+hermes-image = ["playwright==1.64.0", "markdown-it-py>=3,<5"]
 
 [project.scripts]
 ojcrawl = "ojcrawler.cli:main"
@@ -25,6 +26,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 acmweb = ["training_topic_catalog.json", "browser_extension/*.json", "browser_extension/*.js", "browser_extension/*.html", "browser_extension/*.css", "userscripts/*.js"]
+acmhermes = ["assets/*", "assets/fonts/*.woff2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

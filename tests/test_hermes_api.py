@@ -122,7 +122,7 @@ def test_text_generation_needs_no_browser_or_translation(client,monkeypatch):
     job=wait(c,r.json()['id'])
     assert job['status']=='completed',job
     assert [call.args[0] for call in fake.await_args_list]==['hermes_selection','hermes_solution_report']
-    assert not hasattr(s,'renderer')
+    assert s.image_renderer is None
     assert not (s.app.state.settings.data_dir/'hermes-artifacts').exists()
     capabilities=c.get('/api/hermes/capabilities').json()
     assert capabilities['output_format']=='text' and 'screenshot_ready' not in capabilities
@@ -230,7 +230,239 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={**admin,'Idempotency-Key':'d'*32})
         job=wait(c,r.json()['id'],admin)
         assert job['status']=='completed',job
+        fake_renderer(service)
+        r=c.post('/api/hermes/draw/image',json={'score_range':[800,1200]},headers={**admin,'Idempotency-Key':'8'*32})
+        image_job=wait(c,r.json()['id'],admin)
+        assert image_job['status']=='completed',image_job
+        image_url=image_job['result']['screenshots'][0]['url']
+        assert c.get(image_url,headers=admin).status_code==200
+        assert c.post('/api/hermes/stop',json={},headers={**admin,'X-CSRF-Token':'bad'}).status_code==403
         member,_=auth('/api/auth/register',{'username':'member','password':'Synthetic-password-123','invitation':invite})
         assert c.get('/api/hermes/draws/'+job['id'],headers=member).status_code==404
         assert c.get('/api/hermes/draws/'+job['id']+'/screenshots/0',headers=member).status_code==404
+        assert c.get(image_url,headers=member).status_code==404
+        assert c.get('/api/hermes/requests/'+'8'*32,headers=member).status_code==404
+        assert c.post('/api/hermes/draws/'+image_job['id']+'/cancel',json={},headers=member).status_code==404
+        assert c.post('/api/hermes/requests/'+'8'*32+'/cancel',json={},headers=member).status_code==404
+        assert c.get('/api/hermes/draws',headers=member).json()['total']==0
+        assert c.post('/api/hermes/stop',json={},headers=member).json()['requested_count']==0
+        # Both draw formats share the paid-work quota. Emergency stop remains
+        # available when that quota is exhausted (normal auth/CSRF still apply).
+        from fastapi import HTTPException
+        original_limit=app.state.identities.limit
+        def limit(key,*args):
+            if key.startswith('cost:'):raise HTTPException(429,'synthetic cost limit')
+            return original_limit(key,*args)
+        monkeypatch.setattr(app.state.identities,'limit',limit)
+        for path in ('/api/hermes/draw','/api/hermes/draw/image'):
+            assert c.post(path,json={'score_range':[800,1200]},headers={**admin,'Idempotency-Key':'7'*32}).status_code==429
+        assert c.post('/api/hermes/stop',json={},headers=admin).status_code==200
         assert c.get('/api/hermes/capabilities',headers={'Cookie':''}).status_code==401
+
+
+def start(c,key='1',path='/api/hermes/draw'):
+    r=c.post(path,json={'score_range':[800,1200]},headers={'Idempotency-Key':key*32})
+    assert r.status_code==200,r.text
+    return r.json()['id']
+
+
+def stopped(c,jid):
+    for _ in range(100):
+        job=c.get('/api/hermes/draws/'+jid).json()
+        if job['control']['stop_state']=='stopped':return job
+        time.sleep(.01)
+    pytest.fail('Local synthetic task cleanup did not stop')
+
+
+@pytest.mark.parametrize('stage',['selecting','reading_statement','generating_report'])
+def test_cancel_at_each_paid_pipeline_boundary(client,monkeypatch,stage):
+    import threading
+    c,s,fake=client
+    entered=threading.Event()
+    original=fake.side_effect
+    async def blocked(task,*args):
+        if (stage=='selecting' and task=='hermes_selection') or (stage=='generating_report' and task=='hermes_solution_report'):
+            entered.set()
+            await asyncio.Event().wait()
+        return await original(task,*args)
+    fake.side_effect=blocked
+    if stage=='reading_statement':
+        async def read(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        monkeypatch.setattr(s.app.state.selection_reports,'_read',read)
+    jid=start(c)
+    assert entered.wait(2)
+    assert c.get('/api/hermes/draws/'+jid).json()['control']['stage']==stage
+    response=c.post('/api/hermes/draws/'+jid+'/cancel',json={})
+    assert response.status_code==200
+    job=stopped(c,jid)
+    assert job['status']=='interrupted' and job['result'] is None
+    assert job['control']['cancel_requested']
+    assert job['control']['upstream_cancellation']=='best_effort'
+    count=fake.await_count
+    assert c.post('/api/hermes/draws/'+jid+'/cancel',json={}).status_code==200
+    assert fake.await_count==count
+    # A late success/progress writer cannot resurrect a cancelled result.
+    s.jobs.update(jid,'completed',{'report':'late secret'})
+    assert c.get('/api/hermes/draws/'+jid).json()['result'] is None
+
+
+def test_queued_cancel_before_coroutine_runs(tmp_path,monkeypatch):
+    async def run():
+        app=create_app(Settings(data_dir=tmp_path,enable_codex=False,enable_hermes=True))
+        s,fake=setup_pipeline(app,monkeypatch)
+        job=s.jobs.start('hermes_draw',{'request':{'score_range':[800,1200]},'provider':'api','model':'synthetic'})
+        s.control.track(job['id'])
+        task=s.jobs.tasks[job['id']][1]
+        s.control.cancel(job['id'])
+        await asyncio.gather(task,return_exceptions=True)
+        await asyncio.sleep(0)
+        row=s.job(job['id'])
+        assert row['status']=='interrupted' and row['control']['stop_state']=='stopped'
+        fake.assert_not_awaited()
+        await s.jobs.close()
+        s.close()
+    asyncio.run(run())
+
+
+def test_repeated_stop_does_not_cancel_cleanup_or_accept_late_ai(client):
+    import threading
+    c,s,fake=client
+    entered,cleaning=threading.Event(),threading.Event()
+    release=asyncio.Event()
+    original=fake.side_effect
+    async def delayed(task,*args):
+        if task=='hermes_selection':
+            entered.set()
+            try:await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await release.wait()  # Simulated upstream ignores cancellation until cleanup.
+        return await original(task,*args)
+    fake.side_effect=delayed
+    jid=start(c)
+    assert entered.wait(2)
+    task=s.jobs.tasks[jid][1]
+    c.post('/api/hermes/requests/'+'1'*32+'/cancel',json={})
+    assert cleaning.wait(2)
+    assert c.get('/api/hermes/draws/'+jid).json()['control']['stop_state']=='stopping'
+    assert c.post('/api/hermes/draws/'+jid+'/cancel',json={}).status_code==200
+    task.get_loop().call_soon_threadsafe(release.set)
+    job=stopped(c,jid)
+    assert job['result'] is None and job['status']=='interrupted'
+    assert [call.args[0] for call in fake.await_args_list]==['hermes_selection']
+
+
+def test_stop_all_only_affects_own_hermes_jobs_and_not_future_draws(client):
+    import threading
+    c,s,fake=client
+    entered=threading.Event()
+    original=fake.side_effect
+    async def blocked(*args):
+        entered.set()
+        await asyncio.Event().wait()
+    fake.side_effect=blocked
+    with s.db.connect() as db:
+        db.execute('INSERT INTO web_jobs VALUES(?,?,?,?,?,?,?)',('9'*32,'crawl','running',0,0,None,None))
+    jid=start(c)
+    assert entered.wait(2)
+    result=c.post('/api/hermes/stop',json={}).json()
+    assert result['scope']=='current_user_hermes_jobs' and result['requested_count']==1
+    stopped(c,jid)
+    with s.db.connect() as db:
+        assert db.execute('SELECT status FROM web_jobs WHERE id=?',('9'*32,)).fetchone()[0]=='running'
+    fake.side_effect=original
+    second=wait(c,start(c,'2'))
+    assert second['status']=='completed'
+    assert c.post('/api/hermes/draws/'+second['id']+'/cancel',json={}).json()['control']['cancel_requested'] is False
+    assert c.get('/api/hermes/draws/'+second['id']).json()['result']['report']==REPORT
+    assert c.post('/api/hermes/requests/'+'0'*32+'/cancel',json={}).status_code==404
+    assert c.post('/api/hermes/stop',json={'user_id':'other'}).status_code==422
+
+
+def test_readonly_discovery_progress_list_and_restart_recovery(client,monkeypatch):
+    from acmhermes.control import TaskControl
+    c,s,fake=client
+    refresh=AsyncMock()
+    monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',refresh)
+    assert c.get('/api/hermes/readiness').json()['ai_ready'] is True
+    preview=c.get('/api/hermes/candidates',params={'minimum':800,'maximum':1200}).json()
+    assert preview['count']==1 and preview['cache_only']
+    refresh.assert_not_awaited()
+    fake.assert_not_awaited()
+    assert c.get('/api/hermes/candidates?minimum=1200&maximum=800').status_code==422
+    assert c.get('/api/hermes/draws?limit=101').status_code==422
+    job=wait(c,start(c))
+    listing=c.get('/api/hermes/draws?status=completed').json()
+    assert listing['total']==1 and listing['items'][0]['id']==job['id']
+    assert 'result' not in listing['items'][0] and 'error' not in listing['items'][0]
+    assert listing['items'][0]['control']['stage']=='completed'
+    with s.db.connect() as db:
+        db.execute("UPDATE web_jobs SET status='interrupted',result=NULL WHERE id=?",(job['id'],))
+        db.execute('UPDATE hermes_task_control SET cancel_requested=1,requested_at=1,stopped_at=NULL WHERE job_id=?',(job['id'],))
+    restarted=TaskControl(s.jobs)
+    assert restarted.row(job['id'])['control']['stop_state']=='stopped'
+
+
+def fake_renderer(service,*,failure=False):
+    async def render(statement,directory):
+        assert statement['samples']==STATEMENT['samples']
+        assert REPORT['approach'][0] not in statement['body_html']
+        assert EXPLANATION['description'] in statement['body_html']
+        directory.mkdir(mode=0o700)
+        (directory/'0.png').write_bytes(b'\x89PNG\r\n\x1a\nsynthetic-image')
+        return ['0.png'],[]
+    service.image_renderer=SimpleNamespace(preflight=AsyncMock(side_effect=AIError('截图组件不可用') if failure else None),render=AsyncMock(side_effect=render))
+    return service.image_renderer
+
+
+def test_image_interface_uses_same_question_and_report_with_private_expiring_png(client):
+    c,s,fake=client
+    renderer=fake_renderer(s)
+    jid=start(c,path='/api/hermes/draw/image')
+    job=wait(c,jid)
+    assert job['status']=='completed',job
+    result=job['result']
+    assert result['format']=='image' and result['report']==REPORT
+    assert result['problem_explanation']['description']==EXPLANATION['description']
+    assert [call.args[0] for call in fake.await_args_list]==['hermes_selection','hermes_solution_report']
+    renderer.preflight.assert_awaited_once()
+    url=result['screenshots'][0]['url']
+    assert c.get(url).content.startswith(b'\x89PNG\r\n\x1a\n')
+    assert c.get(url[:-1]+'8').status_code==404
+    assert start(c,path='/api/hermes/draw/image')==jid
+    assert fake.await_count==2
+    assert c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'1'*32}).status_code==409
+    s.expire(result['artifact_id'])
+    assert c.get(url).status_code==410
+    assert c.get('/api/hermes/draws/'+jid).json()['result']['report']==REPORT
+
+
+def test_image_dependency_failure_does_not_spend_ai(client):
+    c,s,fake=client
+    fake_renderer(s,failure=True)
+    job=wait(c,start(c,path='/api/hermes/draw/image'))
+    assert job['status']=='failed' and '截图组件不可用' in job['error']
+    fake.assert_not_awaited()
+
+
+def test_cancelling_renderer_removes_partial_artifact(client):
+    import threading
+    c,s,fake=client
+    entered=threading.Event()
+    renderer=fake_renderer(s)
+    async def partial(statement,directory):
+        directory.mkdir(mode=0o700)
+        (directory/'0.png').write_bytes(b'partial')
+        entered.set()
+        await asyncio.Event().wait()
+    renderer.render.side_effect=partial
+    jid=start(c,path='/api/hermes/draw/image')
+    assert entered.wait(2)
+    c.post('/api/hermes/draws/'+jid+'/cancel',json={})
+    job=stopped(c,jid)
+    assert job['result'] is None
+    assert list(s.directory.iterdir())==[]
+    assert not s.timers
+    assert c.get('/api/hermes/draws/'+jid+'/screenshots/0').status_code==410

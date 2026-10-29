@@ -82,6 +82,9 @@ class Jobs:
         with self.db.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             previous = db.execute('SELECT kind,status FROM web_jobs WHERE id=?', (job_id,)).fetchone()
+            control = getattr(self, 'hermes_control', None)
+            if previous and previous['kind'] == 'hermes_draw' and control:
+                status,result,error = control.filter_update(db,job_id,status,result,error)
             db.execute("UPDATE web_jobs SET status=?,updated_at=?,result=?,error=? WHERE id=?",
                        (status,int(time.time()),json.dumps(result,ensure_ascii=False) if result is not None else None,error,job_id))
         if previous and previous['status'] != status and status in {'completed', 'partial', 'failed', 'interrupted'}:
@@ -170,7 +173,7 @@ class Jobs:
                 result=await self.ai.test_connection()
                 self.update(job_id,"completed",result)
             elif kind == 'hermes_draw':
-                result = await self.run_hermes(payload)
+                result = await self.run_hermes(payload,job_id=job_id)
                 self.update(job_id, 'completed', result)
             elif kind.startswith("wb_"):
                 result=await self.run_workbench(kind,payload)

@@ -56,3 +56,48 @@ def test_sdk_legacy_download_does_not_follow_screenshot_urls(tmp_path):
         folder=sdk.download(job,tmp_path)
         assert '此历史任务尚无中文题目说明' in (folder/'problem.txt').read_text()
         assert '旧报告' in (folder/'solution.txt').read_text()
+
+
+def test_sdk_controls_and_image_download_never_follow_arbitrary_urls(tmp_path):
+    jid,key='a'*32,'b'*32
+    calls=[]
+    def transport(request):
+        calls.append(request)
+        assert request.url.host=='acm.example'
+        path=request.url.path
+        if path.endswith('/screenshots/0'):
+            return httpx.Response(200,content=b'\x89PNG\r\n\x1a\nsynthetic')
+        if request.method=='POST':
+            if path.endswith('/image'):
+                assert json.loads(request.content)=={'score_range':[800,1200],'topic':'math'}
+                assert request.headers['idempotency-key']==key
+            else:
+                assert json.loads(request.content)=={}
+            assert request.headers['x-csrf-token']=='synthetic'
+        return httpx.Response(200,json={'id':jid,'status':'completed'})
+    with httpx.Client(base_url='https://acm.example',headers={'X-CSRF-Token':'synthetic'},transport=httpx.MockTransport(transport)) as session:
+        sdk=HermesClient(session)
+        sdk.draw_image((800,1200),'math',request_key=key)
+        sdk.cancel(jid);sdk.cancel_request(key);sdk.stop_all()
+        sdk.list_jobs(status='completed');sdk.readiness();sdk.candidates((800,1200),'math')
+        job={'id':jid,'status':'completed','result':{'format':'image','report':{},
+            'screenshots':[{'url':'http://127.0.0.1/private'}]}}
+        folder=sdk.download(job,tmp_path)
+        assert (folder/'1.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+        assert calls[-1].url.path==f'/api/hermes/draws/{jid}/screenshots/0'
+        assert any(r.url.path=='/api/hermes/stop' for r in calls)
+        assert any(r.url.path=='/api/hermes/requests/'+key+'/cancel' for r in calls)
+
+
+def test_sdk_waits_for_cleanup_after_interrupt_status(monkeypatch):
+    replies=iter([
+        {'status':'interrupted','control':{'cancel_requested':True,'stop_state':'stopping'}},
+        {'status':'interrupted','control':{'cancel_requested':True,'stop_state':'stopped'}}])
+    calls=[]
+    def transport(request):
+        calls.append(request)
+        return httpx.Response(200,json=next(replies))
+    monkeypatch.setattr('acmhermes.client.time.sleep',lambda _:None)
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        assert HermesClient(session).wait_stopped('a'*32)['control']['stop_state']=='stopped'
+    assert len(calls)==2
