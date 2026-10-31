@@ -9,6 +9,7 @@ class Draw(BaseModel):
     model_config = ConfigDict(extra='forbid')
     score_range: tuple[Score, Score]
     topic: str | None = Field(default=None, min_length=1, max_length=80)
+    exclude_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=200)]] = Field(default_factory=list, max_length=10000)
 
     @model_validator(mode='after')
     def ordered(self):
@@ -16,6 +17,12 @@ class Draw(BaseModel):
             raise ValueError('score_range must be ordered')
         if self.topic is not None and not self.topic.strip():
             raise ValueError('topic must not be blank')
+        from acmweb.problem_sources import normalize
+        from acmweb.codex_bridge import AIError
+        try:
+            self.exclude_ids = sorted({normalize(pid) for pid in self.exclude_ids})
+        except AIError:
+            raise ValueError('exclude_ids must contain supported problem IDs') from None
         return self
 
 

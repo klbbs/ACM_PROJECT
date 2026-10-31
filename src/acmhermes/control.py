@@ -3,10 +3,13 @@ import asyncio
 import time
 from fastapi import HTTPException
 from acmweb.runtime_logs import emit_event
+from acmweb.codex_bridge import AIError
+from .memory import DrawMemory
 
 TERMINAL = {'completed','failed','interrupted','partial'}
 STAGES = {'queued':'等待处理','validating':'检查配置','preparing_image':'检查图片组件',
           'checking_sessions':'检查平台登录','syncing_submissions':'同步历史提交并排除已做题',
+          'syncing_catalog':'同步 Codeforces 题库',
           'selecting':'AI 选题','reading_statement':'读取完整题面',
           'generating_report':'AI 阅读并生成说明与报告','revalidating':'核对题目资格',
           'rendering_image':'生成题目图片','completed':'已完成','failed':'未完成','interrupted':'已中断'}
@@ -28,6 +31,7 @@ class TaskControl:
             # previous process no longer has a local coroutine to wait for.
             c.execute("""UPDATE hermes_task_control SET stopped_at=? WHERE cancel_requested=1
                 AND stopped_at IS NULL AND job_id IN(SELECT id FROM web_jobs WHERE status='interrupted')""",(int(time.time()),))
+        self.memory=DrawMemory(self.db)
 
     @staticmethod
     def decorate(row):
@@ -77,6 +81,11 @@ class TaskControl:
         control=c.execute('SELECT cancel_requested FROM hermes_task_control WHERE job_id=?',(jid,)).fetchone()
         if control and control[0]:
             return 'interrupted',None,STOP_MESSAGE
+        if status == 'completed':
+            try:
+                self.memory.record(c,jid,result)
+            except AIError as exc:
+                status,result,error='failed',None,str(exc)
         if status in TERMINAL:
             c.execute('UPDATE hermes_task_control SET stage=? WHERE job_id=?',(status,jid))
         return status,result,error

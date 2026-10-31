@@ -1,6 +1,6 @@
 # Hermes 可选接入模块
 
-`acmhermes` 默认不加载、不开放接口。启用后，Hermes 使用本人的默认 AI 从真实题库选一道题，阅读完整官方题面，返回中文题目说明与独立解题报告。提供文字、图片两个入口及任务控制接口；不运行代码、不代交、不修改训练任务、签到或榜单。
+`acmhermes` 默认不加载、不开放接口。启用后，服务从符合条件的真实题库随机抽一道题，使用本人的默认 AI 阅读完整官方题面，返回中文题目说明与独立解题报告。提供文字、图片两个入口及任务控制接口；不运行代码、不代交、不修改训练任务、签到或榜单。
 
 ## 按需启用
 
@@ -18,14 +18,15 @@
 | `POST /api/hermes/draw/image` | 同样返回文字与报告，额外生成中文题目说明 PNG |
 
 ```json
-{"score_range": [1200, 1600], "topic": "binary-search"}
+{"score_range": [1200, 1600], "topic": "binary-search", "exclude_ids": ["codeforces:4-A"]}
 ```
 
 - `score_range` 必填，两个整数，800～3500，下限不大于上限，采用 CF rating 参考口径。
 - `topic` 可省略或为 null；支持 capabilities 中的专题 ID，或题库真实标签，如 `math`。细类沿用已核验的方法适用性证据，不强行用通用标签替代细类。
+- `exclude_ids` 可省略，最多 10000 个规范题号，如 `codeforces:4-A`。这是额外排除清单，不替代服务端的历史提交和已抽取记录。适合 Hermes 将本地记忆在抽题前提交；不要等付费报告生成后再发现重复、自动收费重抽。
 - 从本人已验证登录的平台筛选，遵守最早日期、已完成、跳过及对战占用规则。其他平台采用带来源的难度区间估计，按区间重叠筛选，不宣称官方等价。未知难度排除。
-- 每次只选一道。AI 输出 schema 限定候选题号，读取完整题面后确认适用性；不自动付费换题或重试模型。
-- 使用本人在连接与设置保存的默认 AI，业务参数不能指定其他用户、提供方或模型。正常流程包含两次 AI 调用：初选、完整题面阅读并生成中文说明/报告。图片复用同一说明，不额外调用翻译。
+- 每次只选一道。服务使用操作系统随机源，先形成最多 60 道平台均衡的随机候选，再随机抽取一道；AI 的 schema 只允许这道题号，不能反复偏选同一道题。此策略不表示所有平台全库等概率。正常完成的抽取会持久记录并从后续新 roll 中排除。
+- 使用本人在连接与设置保存的默认 AI，业务参数不能指定其他用户、提供方或模型。正常流程包含两次 AI 调用：对已随机抽中的单题确认理由、完整题面阅读并生成中文说明/报告。图片复用同一说明，不额外调用翻译。不自动付费换题或重试模型。
 
 ### 抽题前同步提交、排除已做题
 
@@ -34,6 +35,12 @@
 同步中可看到 `control.stage: "syncing_submissions"`。分页不完整、访问失败或同步锁正被占用时，在付费 AI 初选前终止；已经读到的官方记录保留用于后续排除，独立进度不推进，不把未知历史当作“从未做过”。切换平台凭据后正在执行的抽题也会停止交付，防止混用身份。
 
 `result.history_sync` 提供本次各账号的读取范围、数量及覆盖说明。此处完整是对应可读取来源的分页完整：CF 私有 Gym/Mashup、洛谷不可见记录和牛客未归档比赛等并不保证覆盖；AtCoder 的公开提交索引可能延迟。不会为了通过而绕过平台防护或编造“未做过”。已经完整同步但没有候选时，会明确报无符合条件题目。
+
+### Codeforces 题库同步
+
+本人已验证平台包含 CF 时，首次抽题或距离上次本模块成功同步超过 6 小时，会自动读取官方 `problemset.problems` 和 `contest.list(gym=false)`。只将已结束比赛中具有 rating、可靠日期的公开题目用于 CF 抽题，未评级题和所有 Gym 并不保证覆盖。此前的少量题面缓存不能充当已同步完整公开列表的证据。
+
+`control.stage: "syncing_catalog"` 显示同步阶段，成功结果中的 `catalog_sync` 提供来源、数量、更新时间与缓存状态。响应异常、截断或缺少可靠日期时保留旧缓存并停止本次抽题，不使用几道旧缓存反复凑题；未验证 CF 的用户仍只能从其本人其他已验证平台筛选，不借题库同步放宽登录要求。此路径不发送平台 Cookie 或 API Key。
 
 `GET /api/hermes/candidates?minimum=1200&maximum=1600&topic=binary-search` 可只读预览最多 60 道当前缓存候选及难度证据。不检测登录、不刷新题库、不调用模型、不锁定候选；count 是该预览数量，不是全库总数，正式抽题仍会重新核验。
 
@@ -53,16 +60,39 @@ Content-Type: application/json
 
 调用方保留本次幂等键。同一键、同一参数及输出方式重放返回原任务；更换参数或输出方式冲突返回 409。失败或中断任务不会因重放再次付费。响应丢失时先 `GET /api/hermes/requests/{request_key}` 恢复，不要另发新抽题。
 
+**一次新 roll 必须生成一个新键。** 使用旧键恢复得到同一道题是幂等恢复，不是新抽题。同一任务反复查询也不会触发重新随机选择。
+
+## Hermes 本地题号记忆
+
+`GET /api/hermes/problem-memory?limit=500` 返回当前用户私有工作区的题号记录：
+
+```json
+{
+  "scope": "不透明的当前用户工作区范围",
+  "revision": "本次记录快照版本",
+  "items": [
+    {"problem_id": "codeforces:4-A", "attempted": true, "solved": true, "drawn": false, "skipped": false}
+  ],
+  "next_after": null
+}
+```
+
+`attempted` 表示已有练习或提交记录，`solved` 表示已做出，`drawn` 表示已抽取，`skipped` 表示已跳过；同一道题可有多个标志。接口只返回题号与这些标志，不返回 Cookie、Key、密码、源码或报告。
+
+有下一页时，将 `next_after` 作为下一次 `after`，并携带第一页面的 `revision`。拉取期间记录变化返回 409，应重新执行只读同步；不要拼接不同版本的页面。`scope` 不同时不得共用本地缓存，换用户或站点后重新同步。同一用户切换所绑定的平台账号时，工作区保留既有题号并保守排除；Cookie 续期不会清空历史。
+
+SDK 的 `sync_memory(path)` 完整分页成功后，以私有文件权限原子替换指定 JSON；失败保留旧文件。它只同步已有服务器记录，不代替抽题时的官方历史同步。`memory_ids(path)` 会先读取当前 scope，身份不符直接拒绝；`draw(..., memory_path=path)` / `draw_image(..., memory_path=path)` 自动执行该检查并发送额外排除题号，且不自动重试付费任务。服务器自身仍会排除历史记录与已抽取题；本地缓存是第二层保护。
+
 ## 任务结果与进度
 
 POST 返回 `{ "id": "任务UUID", "status": "queued" }`。轮询 `GET /api/hermes/draws/{id}`，状态为 queued/running/completed/failed/interrupted；生成预算最长 600 秒。GET 不调用 AI。
 
-`control.stage` 和 `stage_title` 提供当前阶段：配置检查、图片组件检查（仅图片）、登录检查、历史提交同步、AI 选题、完整题面读取、AI 说明与报告、资格复核、图片生成（仅图片）等。阶段不代表百分比。
+`control.stage` 和 `stage_title` 提供当前阶段：配置检查、图片组件检查（仅图片）、登录检查、历史提交同步、CF 题库同步、系统随机抽题、AI 说明与报告、资格复核、图片生成（仅图片）等。阶段不代表百分比。
 
 成功的 `result` 包含：
 
 - `format`：text 或 image。
-- `problem`、`selection_reason`：真实题号、链接、难度证据与选择理由。
+- `problem`、`selection_reason`：真实题号、链接、难度证据与选择理由；`selection_strategy: "system_random_without_replacement"` 标明服务端随机及去重策略。
 - `problem_explanation`：可直接告诉用户的中文标题、条件/变量/目标、输入输出、约束、注意事项及官方链接。它是 AI 阅读说明，不是官方逐字译文，不含解题步骤。
 - `problem_explanation.samples`：直接附加同一官方题面的样例，保留空格、换行，禁止模型改写。
 - `report`：独立的完整解题报告，含思路、正确性、复杂度、样例解释、陷阱、其他方法与限制；包含剧透。
@@ -105,8 +135,10 @@ SDK 使用已登录且设置好 CSRF 请求头的 `httpx.Client`，不保存密�
 from acmhermes.client import HermesClient
 
 api = HermesClient(session)
+api.sync_memory("./private/hermes-problem-memory.json")  # 此文件不要放入 Git 或公开目录
 key = api.request_key()  # 在 Hermes 私密任务上下文保留
-job = api.draw((1200, 1600), topic="binary-search", request_key=key)
+job = api.draw((1200, 1600), topic="binary-search", request_key=key,
+               memory_path="./private/hermes-problem-memory.json")
 # 图片模式：api.draw_image((1200, 1600), request_key=另一个新键)
 job = api.wait(job["id"])
 if job["status"] == "completed":
@@ -122,4 +154,4 @@ job = api.wait_stopped(job["id"])  # 区分已请求停止与本地已停止
 # 超时只继续查状态，不自动重启任务。
 ```
 
-其他方法：`status(id)`、`recover(key)`、`list_jobs(...)`、`readiness()`、`candidates((low, high), topic)`。Hermes 的具体 skill/工具注册由接入方完成，本项目提供 API 与 SDK。
+其他方法：`status(id)`、`recover(key)`、`list_jobs(...)`、`readiness()`、`candidates((low, high), topic)`、`memory(...)`。每次新 roll 使用 `request_key()` 生成新键；网络超时则保留原键并恢复。Hermes 的具体 skill/工具注册由接入方完成，本项目提供 API 与 SDK。

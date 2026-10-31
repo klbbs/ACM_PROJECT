@@ -4,8 +4,10 @@ It does not store passwords, cookies or API keys, follow result URLs, execute
 report content, or retry a paid draw request. Normal ACM Lab login/CSRF applies.
 """
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import time
 import uuid
 
@@ -19,20 +21,113 @@ class HermesClient:
         response.raise_for_status()
         return response.json()
 
-    def draw(self, score_range, topic=None, *, request_key):
-        return self._draw('/api/hermes/draw',score_range,topic,request_key)
+    def draw(self, score_range, topic=None, *, request_key, exclude_ids=None, memory_path=None):
+        return self._draw('/api/hermes/draw',score_range,topic,request_key,exclude_ids,memory_path)
 
-    def draw_image(self,score_range,topic=None,*,request_key):
-        return self._draw('/api/hermes/draw/image',score_range,topic,request_key)
+    def draw_image(self,score_range,topic=None,*,request_key,exclude_ids=None,memory_path=None):
+        return self._draw('/api/hermes/draw/image',score_range,topic,request_key,exclude_ids,memory_path)
 
-    def _draw(self,path,score_range,topic,request_key):
+    def _draw(self,path,score_range,topic,request_key,exclude_ids=None,memory_path=None):
         """Keep request_key on the Hermes side to recover an uncertain response."""
         from .models import Draw
-        body=Draw(score_range=score_range,topic=topic).model_dump(exclude_none=True)
         if not re.fullmatch(r'[a-f0-9]{32}',request_key):
             raise ValueError('request_key must be a UUID hex string')
+        exclusions=list(exclude_ids or [])
+        if memory_path is not None:
+            exclusions.extend(self.memory_ids(memory_path))
+        exclusions=list(dict.fromkeys(exclusions))
+        body=Draw(score_range=score_range,topic=topic,exclude_ids=exclusions).model_dump(exclude_none=True)
+        if not exclusions:body.pop('exclude_ids',None)
         return self._json('POST',path,json=body,
                           headers={'Idempotency-Key':request_key})
+
+    def memory(self,*,after=None,limit=500,revision=None):
+        """Read one page of this authenticated user's canonical problem memory."""
+        if type(limit) is not int or not 1<=limit<=1000:
+            raise ValueError('memory limit must be between 1 and 1000')
+        params={'limit':limit}
+        if after is not None:params['after']=after
+        if revision is not None:params['revision']=revision
+        return self._json('GET','/api/hermes/problem-memory',params=params)
+
+    @staticmethod
+    def _memory_page(document):
+        from acmweb.codex_bridge import AIError
+        from acmweb.problem_sources import normalize
+        if not isinstance(document,dict) or any(
+                not isinstance(document.get(key),str) or not 1<=len(document[key])<=200
+                for key in ('scope','revision')):
+            raise ValueError('invalid problem memory identity')
+        items=document.get('items')
+        if not isinstance(items,list):raise ValueError('invalid problem memory items')
+        checked=[]
+        for item in items:
+            if not isinstance(item,dict):raise ValueError('invalid problem memory item')
+            pid=item.get('problem_id')
+            try:
+                valid=isinstance(pid,str) and 1<=len(pid)<=200 and normalize(pid)==pid
+            except (AIError,AttributeError,TypeError,ValueError):valid=False
+            if not valid:raise ValueError('invalid canonical problem ID in memory')
+            flags={key:item.get(key) for key in ('attempted','solved','drawn','skipped')}
+            if any(type(value) is not bool for value in flags.values()):
+                raise ValueError('invalid problem memory flags')
+            checked.append({'problem_id':pid,**flags})
+        cursor=document.get('next_after')
+        if cursor is not None and (not isinstance(cursor,str) or not checked or cursor!=checked[-1]['problem_id']):
+            raise ValueError('invalid problem memory cursor')
+        return {'scope':document['scope'],'revision':document['revision'],
+                'items':checked,'next_after':cursor}
+
+    def sync_memory(self,output_path):
+        """Atomically replace an explicitly chosen private cache after all pages succeed.
+
+        A 409 means the server snapshot changed; the previous cache remains intact.
+        The caller may retry this read-only sync; paid draws are never retried here.
+        """
+        items=[];after=None;revision=None;scope=None;seen=set()
+        while True:
+            page=self._memory_page(self.memory(after=after,revision=revision))
+            if scope is not None and (page['scope']!=scope or page['revision']!=revision):
+                raise ValueError('problem memory changed during sync; synchronize again')
+            scope,revision=page['scope'],page['revision']
+            previous=after
+            for item in page['items']:
+                pid=item['problem_id']
+                if pid in seen or (previous is not None and pid<=previous):
+                    raise ValueError('problem memory pagination is inconsistent')
+                seen.add(pid);items.append(item)
+                previous=pid
+            after=page['next_after']
+            if after is None:break
+        document={'scope':scope,'revision':revision,'items':items,'next_after':None}
+        path=Path(output_path)
+        path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        temporary=None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=path.parent,
+                    prefix='.'+path.name+'.',delete=False) as stream:
+                temporary=Path(stream.name)
+                os.fchmod(stream.fileno(),0o600)
+                json.dump(document,stream,ensure_ascii=False,indent=2)
+                stream.flush();os.fsync(stream.fileno())
+            os.replace(temporary,path)
+        finally:
+            if temporary is not None:temporary.unlink(missing_ok=True)
+        return document
+
+    def memory_ids(self,path):
+        """Validate cache ownership before sending its IDs in a new paid draw."""
+        document=self._memory_page(json.loads(Path(path).read_text(encoding='utf-8')))
+        if document['next_after'] is not None:
+            raise ValueError('problem memory cache is incomplete; synchronize again')
+        current=self._memory_page(self.memory(limit=1))
+        if document['scope']!=current['scope']:
+            raise ValueError('problem memory belongs to another user workspace; synchronize again')
+        ids=list(dict.fromkeys(item['problem_id'] for item in document['items']
+            if any(item[key] for key in ('attempted','solved','drawn','skipped'))))
+        if len(ids)>10000:
+            raise ValueError('local exclusions exceed 10000 IDs; use server-side memory or explicit exclusions')
+        return ids
 
     def recover(self, request_key):
         if not re.fullmatch(r'[a-f0-9]{32}',request_key):

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+import secrets
 import shutil
 import html
 import time
@@ -10,7 +11,7 @@ from typing import Literal
 
 from fastapi import Header, HTTPException, Query
 from fastapi.responses import FileResponse
-from acmweb.catalog import recommendation_candidates, refresh_recommendation_sessions
+from acmweb.catalog import recommendation_candidates, refresh_recommendation_sessions, _canonical
 from acmweb.codex_bridge import AIError
 from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
 from acmweb.training_topics import TOPICS, matches_topic
@@ -60,6 +61,10 @@ class Hermes:
         from .history import sync_history
         return await sync_history(self.db,self.accounts)
 
+    async def ensure_catalog(self):
+        from .catalog import ensure_catalog
+        return await ensure_catalog(self.db,self.accounts)
+
     @staticmethod
     def image_statement(explanation):
         # Render the same AI question explanation as the text endpoint, not the
@@ -78,8 +83,9 @@ class Hermes:
         reference = cf_reference(self.db)
         topic = TOPICS.get(request.topic or '')
         methods = self.app.state.topic_feasibility.approved_map(topic['id']) if topic else {}
+        excluded=self.control.memory.drawn_ids() | set(request.exclude_ids)
         def eligible(p):
-            return overlaps(estimate(p, reference), low, high) and (
+            return _canonical(p['platform'],p['id']) not in excluded and overlaps(estimate(p, reference), low, high) and (
                 not request.topic or ((matches_topic(p,topic) or p['id'] in methods) if topic else
                     request.topic.casefold() in {str(t).casefold() for t in p.get('tags', [])}))
         rows = recommendation_candidates(self.db, self.accounts, low, high, limit=60, predicate=eligible,
@@ -127,17 +133,22 @@ class Hermes:
             # A long initial full-history read may outlive login evidence.
             await refresh_recommendation_sessions(self.accounts)
             guard()
+            self.control.stage(job_id,'syncing_catalog')
+            catalog=await self.ensure_catalog()
+            guard()
             pool = self.pool(request)
             if not pool:
-                raise AIError('没有符合分数区间、题型、日期和已登录平台条件的未完成题；请同步平台题库并检测登录，不会放宽条件或编造题目')
+                raise AIError('没有符合分数区间、题型、日期和已登录平台条件的未完成且未推荐题；已排除历史提交、已交付题和客户端记录。请调整范围，不会重复推荐或编造题目')
             self.control.stage(job_id,'selecting')
+            # Model preferences are not randomness. Draw one eligible ID with
+            # the OS RNG; the model can explain this choice, never replace it.
+            candidate=secrets.choice(pool)
             chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
-                {'candidates':pool,'score_range':list(request.score_range),'topic':topic_context},candidate_choice(p['id'] for p in pool))
+                {'candidates':[candidate],'score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
             guard()
             choice = Choice.model_validate(chosen.data)
-            candidate = next((p for p in pool if p['id'] == choice.problem_id),None)
-            if not candidate:
-                raise AIError('AI 选择了候选列表之外的题目，未生成题面或报告')
+            if choice.problem_id != candidate['id']:
+                raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
             reports = self.app.state.selection_reports
             self.control.stage(job_id,'reading_statement')
             statement, statement_hash = await reports._read(choice.problem_id)
@@ -171,7 +182,8 @@ class Hermes:
                 samples=[dict(sample) for sample in statement['samples']])
             result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
-                    'history_sync':history,
+                    'history_sync':history,'catalog_sync':catalog,
+                    'selection_strategy':'system_random_without_replacement',
                     'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
             if output_format=='image':
                 self.control.stage(job_id,'rendering_image')
@@ -220,7 +232,9 @@ def register(app):
         return {'enabled':True,'output_format':'text','output_formats':['text','image'],
                 'endpoints':{'text':'/api/hermes/draw','image':'/api/hermes/draw/image',
                     'cancel':'/api/hermes/draws/{job_id}/cancel','cancel_request':'/api/hermes/requests/{request_key}/cancel',
-                    'stop_all':'/api/hermes/stop','list':'/api/hermes/draws','readiness':'/api/hermes/readiness','candidates':'/api/hermes/candidates'},
+                    'stop_all':'/api/hermes/stop','list':'/api/hermes/draws','readiness':'/api/hermes/readiness','candidates':'/api/hermes/candidates',
+                    'problem_memory':'/api/hermes/problem-memory'},
+                'selection_strategy':'system_random_without_replacement','exclude_ids_limit':10000,
                 'score_range':{'minimum':800,'maximum':3500,'reference':'CF rating；其他平台使用已注明来源的区间估计，未知分数排除'},
                 'topics':[{'id':t['id'],'title':t['title']} for t in TOPICS.values()],
                 'auth':'使用本人 ACM Lab 会话；多人模式的写请求需 X-ACM-Request 和 CSRF 校验',
@@ -230,7 +244,10 @@ def register(app):
         selection=service.ai.selection()
         if not selection['ready']:
             raise HTTPException(400,'请先在连接与设置保存可用的默认 AI 模型')
-        data={'request':payload.model_dump(),'provider':selection['channel'],'model':selection['model']}
+        request=payload.model_dump()
+        if not request['exclude_ids']:
+            request.pop('exclude_ids')  # Keep existing idempotency fingerprints.
+        data={'request':request,'provider':selection['channel'],'model':selection['model']}
         # Keep the old text request fingerprint compatible with existing keys.
         if output_format=='image':
             data['output_format']='image'
@@ -269,6 +286,11 @@ def register(app):
         items=service.pool(Draw(score_range=(minimum,maximum),topic=topic))
         return {'items':items,'count':len(items),'limit':60,'cache_only':True,
                 'notice':'仅预览当前缓存与登录证据，非全库总数；不调用 AI、不检测登录、不锁定候选'}
+
+    @app.get('/api/hermes/problem-memory')
+    def memory(after:str|None=Query(default=None,max_length=200),limit:int=Query(default=500,ge=1,le=1000),
+               revision:str|None=Query(default=None,min_length=64,max_length=64,pattern=r'^[a-f0-9]{64}$')):
+        return service.control.memory.read(after,limit,revision)
 
     @app.get('/api/hermes/draws/{jid}')
     def status(jid:str):

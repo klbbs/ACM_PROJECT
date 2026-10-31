@@ -26,6 +26,7 @@ STATEMENT={'id':PID,'url':'https://codeforces.com/problemset/problem/4/A','title
 
 def setup_pipeline(app,monkeypatch):
     s=app.state.hermes
+    monkeypatch.setattr(s,'ensure_catalog',AsyncMock(return_value={'platform':'codeforces','status':'cached','count':1}))
     monkeypatch.setattr(s,'sync_history',AsyncMock(return_value={'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}))
     monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',AsyncMock())
     monkeypatch.setattr(s.ai,'selection',lambda:{'ready':True,'channel':'api','model':'synthetic'})
@@ -231,6 +232,11 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={**admin,'Idempotency-Key':'d'*32})
         job=wait(c,r.json()['id'],admin)
         assert job['status']=='completed',job
+        # Text and image share delivery memory, so the next image must use a
+        # different eligible question rather than delivering the first again.
+        next_pid='codeforces:7-A'
+        add_candidate(service,next_pid)
+        fake.side_effect=generic_complete
         fake_renderer(service)
         r=c.post('/api/hermes/draw/image',json={'score_range':[800,1200]},headers={**admin,'Idempotency-Key':'8'*32})
         image_job=wait(c,r.json()['id'],admin)
@@ -246,6 +252,10 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         assert c.post('/api/hermes/draws/'+image_job['id']+'/cancel',json={},headers=member).status_code==404
         assert c.post('/api/hermes/requests/'+'8'*32+'/cancel',json={},headers=member).status_code==404
         assert c.get('/api/hermes/draws',headers=member).json()['total']==0
+        member_memory=c.get('/api/hermes/problem-memory',headers=member).json()
+        owner_memory=c.get('/api/hermes/problem-memory',headers=admin).json()
+        assert member_memory['items']==[] and member_memory['scope']!=owner_memory['scope']
+        assert {i['problem_id'] for i in owner_memory['items']}=={PID,next_pid}
         assert c.post('/api/hermes/stop',json={},headers=member).json()['requested_count']==0
         # Both draw formats share the paid-work quota. Emergency stop remains
         # available when that quota is exhausted (normal auth/CSRF still apply).
@@ -265,6 +275,23 @@ def start(c,key='1',path='/api/hermes/draw'):
     r=c.post(path,json={'score_range':[800,1200]},headers={'Idempotency-Key':key*32})
     assert r.status_code==200,r.text
     return r.json()['id']
+
+
+def add_candidate(service,pid):
+    with service.db.connect() as db:
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)',('codeforces',pid,json.dumps({
+            'id':pid,'platform':'codeforces','difficulty':1000,'tags':['math'],'title':'Synthetic','contest_id':int(pid.split(':')[1].split('-')[0])})))
+        db.execute('INSERT INTO wb_problems VALUES(?,?,?)',(pid,json.dumps({**STATEMENT,'id':pid,
+            'url':'https://codeforces.com/problemset/problem/'+pid.split(':')[1].replace('-','/')}),int(time.time())))
+
+
+async def generic_complete(task,provider,model,data,schema):
+    if task=='hermes_selection':
+        assert len(data['candidates'])==1  # The model cannot choose a preferred ID.
+        value={'problem_id':data['candidates'][0]['id'],'reason':'系统随机题目的训练理由'}
+    else:
+        value={**REPORT,'problem_id':data['statement']['id'],'problem_explanation':EXPLANATION}
+    return SimpleNamespace(data=schema.model_validate(value).model_dump(),provenance={'channel':'api','model':'synthetic'})
 
 
 def stopped(c,jid):
@@ -565,3 +592,93 @@ def test_newly_verified_platform_cannot_enter_pool_without_history_sync(client,m
     job=wait(c,start(c))
     assert job['status']=='failed' and '新验证账号尚未同步提交' in job['error']
     fake.assert_not_awaited()
+
+
+def test_consecutive_rolls_without_submissions_never_repeat_even_across_image_and_text(client,monkeypatch):
+    c,s,fake=client
+    add_candidate(s,'codeforces:7-A')
+    fake.side_effect=generic_complete
+    sampled=[]
+    def pick(pool):
+        sampled.append({p['id'] for p in pool})
+        return min(pool,key=lambda p:p['id'])
+    monkeypatch.setattr('acmhermes.service.secrets.choice',pick)
+    first=wait(c,start(c,'1'))
+    assert first['status']=='completed',first
+    # No official submission was created; delivery memory alone removes it.
+    fake_renderer(s)
+    second=wait(c,start(c,'2',path='/api/hermes/draw/image'))
+    assert second['status']=='completed',second
+    a,b=first['result']['problem']['id'],second['result']['problem']['id']
+    assert a!=b and sampled==[{PID,'codeforces:7-A'},{b}]
+    assert second['result']['selection_strategy']=='system_random_without_replacement'
+    assert s.control.memory.drawn_ids()=={a,b}
+    third=wait(c,start(c,'3'))
+    assert third['status']=='failed' and '未推荐题' in third['error']
+    assert fake.await_count==4  # No paid re-roll when the pool is exhausted.
+    # Recovering the same idempotency key is deliberately the same old job.
+    assert start(c,'1')==first['id']
+
+
+def test_client_exclusions_are_checked_before_paid_ai_and_exposed_via_memory(client):
+    c,s,fake=client
+    r=c.post('/api/hermes/draw',json={'score_range':[800,1200],
+        'exclude_ids':['https://codeforces.com/contest/4/problem/a']},headers={'Idempotency-Key':'1'*32})
+    assert r.status_code==200,r.text
+    job=wait(c,r.json()['id'])
+    assert job['status']=='failed' and '客户端记录' in job['error']
+    fake.assert_not_awaited()
+    assert s.control.memory.drawn_ids()==set()  # Client assertion is not AC evidence.
+    assert c.get('/api/hermes/problem-memory').json()['items']==[]
+    assert c.post('/api/hermes/draw',json={'score_range':[800,1200],'exclude_ids':['not-a-problem']},
+        headers={'Idempotency-Key':'2'*32}).status_code==422
+
+
+def test_draw_memory_survives_process_reconstruction_and_get_cannot_spend_ai(client):
+    from acmhermes.memory import DrawMemory
+    c,s,fake=client
+    first=wait(c,start(c))
+    assert first['status']=='completed'
+    count=fake.await_count
+    # Simulate the new process's memory migration over the same private DB.
+    s.control.memory=DrawMemory(s.db)
+    assert s.pool(Draw(score_range=(800,1200)))==[]
+    result=c.get('/api/hermes/problem-memory?limit=1').json()
+    assert result['items']==[{'problem_id':PID,'drawn':True,'attempted':False,'solved':False,'skipped':False}]
+    assert fake.await_count==count
+    assert c.get('/api/hermes/problem-memory?revision='+'0'*64).status_code==409
+
+
+def test_failed_or_cancelled_task_does_not_consume_delivered_question(client,monkeypatch):
+    c,s,fake=client
+    original=fake.side_effect
+    async def fail(task,*args):
+        if task=='hermes_solution_report':raise AIError('合成报告失败')
+        return await original(task,*args)
+    fake.side_effect=fail
+    assert wait(c,start(c))['status']=='failed'
+    assert s.control.memory.drawn_ids()==set()
+    fake.side_effect=original
+    second=wait(c,start(c,'2'))
+    assert second['status']=='completed',second
+
+
+def test_catalog_failure_stops_before_model_and_reports_sync_stage(client,monkeypatch):
+    c,s,fake=client
+    monkeypatch.setattr(s,'ensure_catalog',AsyncMock(side_effect=AIError('Codeforces 官方题库同步未完成')))
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '官方题库同步未完成' in job['error']
+    fake.assert_not_awaited()
+
+
+def test_model_cannot_override_system_random_id_with_another_eligible_problem(client,monkeypatch):
+    c,s,fake=client
+    add_candidate(s,'codeforces:7-A')
+    monkeypatch.setattr('acmhermes.service.secrets.choice',lambda pool:next(p for p in pool if p['id']==PID))
+    async def malicious(task,*args):
+        assert task=='hermes_selection'
+        return SimpleNamespace(data={'problem_id':'codeforces:7-A','reason':'我偏好另一题'})
+    fake.side_effect=malicious
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '随机抽取不一致' in job['error']
+    assert fake.await_count==1 and s.control.memory.drawn_ids()==set()

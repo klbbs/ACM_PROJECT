@@ -101,3 +101,90 @@ def test_sdk_waits_for_cleanup_after_interrupt_status(monkeypatch):
     with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
         assert HermesClient(session).wait_stopped('a'*32)['control']['stop_state']=='stopped'
     assert len(calls)==2
+
+
+def memory_item(pid,**flags):
+    return {'problem_id':pid,'attempted':False,'solved':False,'drawn':False,'skipped':False,**flags}
+
+
+def test_sdk_syncs_private_paginated_memory_and_sends_exclusions(tmp_path):
+    calls=[]
+    first=memory_item('codeforces:4-A',solved=True)
+    second=memory_item('codeforces:5-A',drawn=True)
+    def transport(request):
+        calls.append(request)
+        if request.method=='POST':
+            assert request.url.path=='/api/hermes/draw/image'
+            assert json.loads(request.content)=={'score_range':[800,1200],
+                'exclude_ids':['codeforces:4-A','codeforces:5-A','codeforces:6-A']}
+            return httpx.Response(200,json={'id':'a'*32})
+        assert request.url.path=='/api/hermes/problem-memory'
+        params=request.url.params
+        if params.get('limit')=='1':
+            return httpx.Response(200,json={'scope':'user-one','revision':'newer',
+                'items':[first],'next_after':'codeforces:4-A'})
+        if params.get('after'):
+            assert params['after']=='codeforces:4-A' and params['revision']=='r1'
+            return httpx.Response(200,json={'scope':'user-one','revision':'r1',
+                'items':[second],'next_after':None})
+        assert 'revision' not in params
+        return httpx.Response(200,json={'scope':'user-one','revision':'r1',
+            'items':[first],'next_after':'codeforces:4-A'})
+    path=tmp_path/'one'/'memory.json'
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        sdk=HermesClient(session)
+        snapshot=sdk.sync_memory(path)
+        assert snapshot['items']==[first,second]
+        assert json.loads(path.read_text())==snapshot
+        assert path.stat().st_mode&0o777==0o600
+        sdk.draw_image((800,1200),request_key='b'*32,
+            exclude_ids=['codeforces:6-A','codeforces:4-A'],memory_path=path)
+    assert len([request for request in calls if request.method=='POST'])==1
+
+
+@pytest.mark.parametrize('failure',['revision','scope','transport','malformed'])
+def test_sdk_sync_failure_keeps_existing_cache(tmp_path,failure):
+    path=tmp_path/'memory.json';path.write_text('original private cache')
+    count=0
+    def transport(request):
+        nonlocal count
+        count+=1
+        if count==1:
+            return httpx.Response(200,json={'scope':'one','revision':'r1',
+                'items':[memory_item('codeforces:4-A',attempted=True)],'next_after':'codeforces:4-A'})
+        if failure=='transport':raise httpx.ReadTimeout('synthetic read failure')
+        if failure=='revision':return httpx.Response(409,json={'detail':'memory changed'})
+        if failure=='scope':return httpx.Response(200,json={'scope':'two','revision':'r1','items':[],'next_after':None})
+        return httpx.Response(200,json={'scope':'one','revision':'r1',
+            'items':[memory_item('not canonical',solved=True)],'next_after':None})
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        with pytest.raises((ValueError,httpx.HTTPError)):HermesClient(session).sync_memory(path)
+    assert count==2 and path.read_text()=='original private cache'
+    assert list(tmp_path.iterdir())==[path]
+
+
+def test_sdk_refuses_other_identity_cache_before_paid_request(tmp_path):
+    path=tmp_path/'memory.json'
+    path.write_text(json.dumps({'scope':'other-user','revision':'r1',
+        'items':[memory_item('codeforces:4-A',solved=True)],'next_after':None}))
+    calls=[]
+    def transport(request):
+        calls.append(request)
+        assert request.method=='GET'
+        return httpx.Response(200,json={'scope':'current-user','revision':'r1','items':[],'next_after':None})
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        with pytest.raises(ValueError,match='another user'):
+            HermesClient(session).draw((800,1200),request_key='b'*32,memory_path=path)
+    assert len(calls)==1
+
+
+def test_sdk_exclusions_no_automatic_paid_retry():
+    calls=[]
+    def transport(request):
+        calls.append(request)
+        assert json.loads(request.content)['exclude_ids']==['codeforces:4-A']
+        return httpx.Response(503,json={'detail':'synthetic upstream failure'})
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        with pytest.raises(httpx.HTTPStatusError):
+            HermesClient(session).draw((800,1200),request_key='c'*32,exclude_ids=['codeforces:4-A'])
+    assert len(calls)==1
