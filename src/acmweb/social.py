@@ -245,25 +245,42 @@ class Social:
 
     async def claim(self, uid, value, *, automatic=False):
         child = await self.workspaces.get(uid)
-        checks = child.state.credential_checks
-        result = next((r for r in checks.statuses()['items'] if r['platform'] == value.platform and r['handle'] == value.handle and r.get('login_verified')), None)
-        if not result:
-            raise HTTPException(409, '请先在“连接与设置”检测此账号，确认登录身份后再用于榜单或对战')
-        _, fingerprint = checks.credential(value.platform, value.handle)
-        key = value.handle.casefold() if value.platform == 'codeforces' else value.handle
-        with self.users.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if automatic and db.execute('SELECT 1 FROM social_account_optouts WHERE user_id=? AND platform=? AND account_key=?', (uid, value.platform, key)).fetchone():
-                return {'ok': False}
-            old = db.execute('SELECT user_id,credential_hash,handle FROM social_accounts WHERE platform=? AND account_key=?', (value.platform, key)).fetchone()
-            if old and old['user_id'] != uid:
-                raise HTTPException(409, '此平台身份已被其他站内用户认领，请联系管理员核实；不能重复参加榜单或对战')
-            if automatic and old and secrets.compare_digest(old['credential_hash'], fingerprint) and old['handle'] == value.handle:
-                return {'ok': True}
-            db.execute('INSERT INTO social_accounts VALUES(?,?,?,?,?,?) ON CONFLICT(platform,account_key) DO UPDATE SET handle=excluded.handle,credential_hash=excluded.credential_hash,verified_at=excluded.verified_at', (value.platform, key, value.handle, uid, fingerprint, int(time.time())))
-            if not automatic:
-                db.execute('DELETE FROM social_account_optouts WHERE user_id=? AND platform=? AND account_key=?', (uid, value.platform, key))
-        return {'ok': True}
+        return self.claim_checked(uid, child.state.credential_checks, value, automatic=automatic)
+
+    def claim_checked(self, uid, checks, value, *, automatic=False):
+        """Persist only fresh evidence for this authenticated workspace's credential."""
+        # Keep the credential stable through the ownership transaction.
+        # A concurrent save cannot reuse old evidence for a changed cookie.
+        with checks.accounts.lock:
+            result = next((r for r in checks.statuses()['items'] if r['platform'] == value.platform and r['handle'] == value.handle and r.get('login_verified')), None)
+            if not result:
+                raise HTTPException(409, '请先在“连接与设置”检测此账号，确认登录身份后再用于榜单或对战')
+            _, fingerprint = checks.credential(value.platform, value.handle)
+            key = value.handle.casefold() if value.platform == 'codeforces' else value.handle
+            with self.users.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if automatic and db.execute('SELECT 1 FROM social_account_optouts WHERE user_id=? AND platform=? AND account_key=?', (uid, value.platform, key)).fetchone():
+                    return {'ok': False}
+                old = db.execute('SELECT user_id,credential_hash,handle FROM social_accounts WHERE platform=? AND account_key=?', (value.platform, key)).fetchone()
+                if old and old['user_id'] != uid:
+                    raise HTTPException(409, '此平台身份已被其他站内用户认领，请联系管理员核实；不能重复参加榜单或对战')
+                if automatic and old and secrets.compare_digest(old['credential_hash'], fingerprint) and old['handle'] == value.handle:
+                    return {'ok': True}
+                db.execute('INSERT INTO social_accounts VALUES(?,?,?,?,?,?) ON CONFLICT(platform,account_key) DO UPDATE SET handle=excluded.handle,credential_hash=excluded.credential_hash,verified_at=excluded.verified_at', (value.platform, key, value.handle, uid, fingerprint, int(time.time())))
+                if not automatic:
+                    db.execute('DELETE FROM social_account_optouts WHERE user_id=? AND platform=? AND account_key=?', (uid, value.platform, key))
+            return {'ok': True}
+
+    def verified_connection(self, uid, checks, platform, handle):
+        try:
+            result = self.claim_checked(uid, checks, AccountClaim(platform=platform, handle=handle), automatic=True)
+        except HTTPException as error:
+            if error.status_code == 409:
+                return {'status': 'conflict', 'message': '此平台身份已被其他用户认领，未自动关联；请联系管理员核实'}
+            raise
+        if not result.get('ok'):
+            return {'status': 'opted_out', 'message': '你已主动解除此身份认领；可到个人主页重新认领'}
+        return {'status': 'claimed', 'message': '平台身份已自动关联，可用于榜单与对战；公开设置保持不变'}
 
     async def solved(self, uid, day):
         child = await self.workspaces.get(uid)
@@ -558,6 +575,7 @@ class Social:
 def register(app, identities, workspaces, require):
     social = Social(identities, workspaces)
     app.state.social = social
+    workspaces.verified_connection = social.verified_connection
 
     @app.get('/api/social/me')
     async def me(request: Request):

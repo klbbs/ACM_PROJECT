@@ -29,6 +29,9 @@ class AccountInput(BaseModel):
 class AccountList(BaseModel):
     model_config = ConfigDict(extra='forbid')
     items: list[AccountInput] = Field(max_length=20)
+    # Opt in for connecting clients; legacy scripts can still save configuration
+    # without unexpectedly contacting an external platform.
+    auto_check: bool = Field(default=False, strict=True)
 
 
 def normalize_handle(platform, value):

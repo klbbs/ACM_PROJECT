@@ -6,7 +6,8 @@ from acmweb.runtime_logs import emit_event
 
 TERMINAL = {'completed','failed','interrupted','partial'}
 STAGES = {'queued':'等待处理','validating':'检查配置','preparing_image':'检查图片组件',
-          'checking_sessions':'检查平台登录','selecting':'AI 选题','reading_statement':'读取完整题面',
+          'checking_sessions':'检查平台登录','syncing_submissions':'同步历史提交并排除已做题',
+          'selecting':'AI 选题','reading_statement':'读取完整题面',
           'generating_report':'AI 阅读并生成说明与报告','revalidating':'核对题目资格',
           'rendering_image':'生成题目图片','completed':'已完成','failed':'未完成','interrupted':'已中断'}
 STOP_MESSAGE = '用户已急停 Hermes 抽题流程，结果未交付；已发出的上游请求只能尽力中断，无法保证撤销或免除费用'

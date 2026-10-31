@@ -1,4 +1,6 @@
 """Read-only, fixed-origin credential checks; never retain upstream page contents."""
+import asyncio
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -198,6 +200,124 @@ def diagnostics(result):
 class CredentialChecks:
     def __init__(self,accounts):
         self.accounts=accounts;self.cache={};self.lock=threading.Lock();self.last={}
+        self.on_verified = None
+        self.connection_tasks = {}
+        self.connections = {}
+        self.connection_requests = {}
+        self.connection_slots = asyncio.Semaphore(2)
+        self.closed = False
+
+    def remember_result(self, result, digest):
+        """Publish evidence and claim only while the checked credential is current."""
+        with getattr(self.accounts, 'lock', nullcontext()):
+            try:
+                _, current = self.credential(result['platform'], result['handle'])
+            except HTTPException:
+                return result
+            if current != digest or self.closed:
+                return result
+            key = (result['platform'], result['handle'])
+            with self.lock:
+                self.cache[key] = (digest, result)
+            result = self.notify_verified(result)
+            with self.lock:
+                self.cache[key] = (digest, result)
+            return result
+
+    def notify_verified(self, result):
+        """Only an exact, fresh official credential check can link an identity."""
+        if self.closed or not result.get('login_verified') or self.on_verified is None:
+            return result
+        try:
+            outcome = self.on_verified(result['platform'], result['handle'])
+        except Exception:
+            # Saving a verified session remains successful if the separate
+            # community database is temporarily unavailable. Never expose an
+            # exception (which could include private configuration).
+            outcome = {'status': 'unavailable', 'message': '登录已验证，身份关联暂未完成，请稍后重新检测'}
+        return dict(result, identity_claim=outcome)
+
+    def schedule_connections(self):
+        """Start bounded, observable checks without blocking account saving."""
+        if self.closed:
+            return []
+        accounts = self.accounts.public()['items']
+        present = {(account['platform'], account['handle']) for account in accounts}
+        for key in set(self.connection_requests) - present:
+            self.connection_requests.pop(key, None)
+            self.connections.pop(key, None)
+        for account in accounts:
+            if not account.get('has_cookie') or account.get('cookie_info', {}).get('status') == 'invalid':
+                continue
+            key = (account['platform'], account['handle'])
+            _, digest = self.credential(*key)
+            self.connection_requests[key] = digest
+            active = self.connection_tasks.get(key)
+            if active and not active.done():
+                if self.connections.get(key, (None,))[0] != digest:
+                    self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'queued'})
+                continue
+            previous = self.connections.get(key)
+            with self.lock:
+                cached = self.cache.get(key)
+            if (previous and previous[0] == digest and previous[1]['status'] == 'checked'
+                    and cached and cached[0] == digest and time.time() - cached[1]['checked_at'] < 60):
+                continue
+            self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'queued'})
+            task = asyncio.create_task(self._connect_after_cooldown(key, digest))
+            self.connection_tasks[key] = task
+            task.add_done_callback(lambda done, key=key: self.connection_tasks.pop(key, None)
+                                   if self.connection_tasks.get(key) is done else None)
+        return self.statuses().get('connections', [])
+
+    async def _connect(self, key, digest):
+        try:
+            async with self.connection_slots:
+                # A save during an in-flight check replaces the pending
+                # credential, but never bypasses the per-account cooldown.
+                if self.connection_requests.get(key) != digest:
+                    return
+                self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'checking'})
+                result = await asyncio.to_thread(self.check, *key, _expected_digest=digest)
+            self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'checked',
+                                             'login_verified': result.get('login_verified', False)})
+        except HTTPException as error:
+            # A cooldown is explicit and retryable, not evidence of login.
+            self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'failed',
+                'message': '登录检测暂未完成，请等待后手动检测' if error.status_code == 429 else '账号已更改，请重新连接'})
+        except asyncio.CancelledError:
+            self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'interrupted',
+                                             'message': '连接检测中断，请重新检测'})
+            raise
+        except Exception:
+            self.connections[key] = (digest, {'platform': key[0], 'handle': key[1], 'status': 'failed',
+                                             'message': '登录检测失败，请稍后手动检测'})
+        finally:
+            following = self.connection_requests.get(key)
+            if not self.closed and following and following != digest:
+                # Defer the newest saved credential until the old request has
+                # returned; never run duplicate checks for the same account.
+                self.connections[key] = (following, {'platform': key[0], 'handle': key[1], 'status': 'queued'})
+                task = asyncio.create_task(self._connect_after_cooldown(key, following))
+                self.connection_tasks[key] = task
+                task.add_done_callback(lambda done: self.connection_tasks.pop(key, None)
+                                       if self.connection_tasks.get(key) is done else None)
+
+    async def _connect_after_cooldown(self, key, digest):
+        with self.lock:
+            retry_at = self.last.get(key, 0) + 10
+            cached = self.cache.get(key)
+            if cached and cached[1].get('reason') == 'rate_limited':
+                retry_at = max(retry_at, cached[1]['checked_at'] + cached[1]['retry_after_seconds'])
+        await asyncio.sleep(max(0, retry_at - time.time()))
+        await self._connect(key, digest)
+
+    async def close(self):
+        self.closed = True
+        tasks = list(self.connection_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def credential(self,platform,handle):
         account=next((a for a in self.accounts.document().get('accounts',[]) if a.get('platform')==platform and a.get('handle')==handle),None)
@@ -208,12 +328,15 @@ class CredentialChecks:
         return cookie,digest
 
     def statuses(self):
-        items=[]
+        items=[];connections=[]
         for a in self.accounts.document().get('accounts',[]):
             _,digest=self.credential(a['platform'],a['handle'])
             with self.lock:cached=self.cache.get((a['platform'],a['handle']))
             if cached and cached[0]==digest and time.time()-cached[1]['checked_at']<300:items.append(dict(cached[1],cached=True))
-        return {'items':items}
+            connection = self.connections.get((a['platform'], a['handle']))
+            if connection and connection[0] == digest:
+                connections.append(dict(connection[1]))
+        return {'items':items, **({'connections':connections} if self.connections else {})}
 
     def remember_verified(self, platform, handle, cookie):
         """Cache only the exact credential just verified by official login."""
@@ -235,22 +358,29 @@ class CredentialChecks:
                 part.strip().partition('=')[0] == 'JSESSIONID' and part.strip().partition('=')[2]
                 for part in cookie.split(';'))}
         diagnostics(result)
-        with self.lock:
-            self.cache[(platform, handle)] = (digest, result)
+        self.remember_result(result, digest)
         return True
 
-    def check(self,platform,handle,force_refresh=False):
+    def check(self,platform,handle,force_refresh=False, *, _expected_digest=None):
         cookie,digest=self.credential(platform,handle); key=(platform,handle);now=time.time()
+        if _expected_digest is not None and digest != _expected_digest:
+            raise HTTPException(409, '账号已更改，请重新连接')
         with self.lock:
             cached=self.cache.get(key)
-            if not force_refresh and cached and cached[0]==digest and now-cached[1]['checked_at']<60:return dict(cached[1],cached=True)
+            reuse = not force_refresh and cached and cached[0]==digest and now-cached[1]['checked_at']<60
+            if reuse:
+                cached_result = dict(cached[1], cached=True)
+            else:
+                cached_result = None
             retry_at=self.last.get(key,0)+10
             if cached and cached[1].get('reason')=='rate_limited':
                 retry_at=max(retry_at,cached[1]['checked_at']+cached[1]['retry_after_seconds'])
-            if now<retry_at:
+            if not reuse and now<retry_at:
                 remaining=max(1,int(retry_at-now+0.999))
                 raise HTTPException(429,f'检测过于频繁，请等待 {remaining} 秒后重试',headers={'Retry-After':str(remaining)})
-            self.last[key]=now
+            if not reuse:self.last[key]=now
+        if cached_result is not None:
+            return self.remember_result(cached_result, digest)
         result={'platform':platform,'handle':handle,'checked_at':int(now),'status':'missing','login_verified':False,'public_reachable':False,'auto_submit_supported':False,'submission_method':'official_page','reason':'missing_cookie','retry_after_seconds':10,'cached':False}
         identity=None
         if platform=='codeforces':
@@ -312,8 +442,7 @@ class CredentialChecks:
             except (UnicodeError, ValueError, LookupError):result.update(status='unknown',reason='page_changed')
             finally:SLOTS.release()
         diagnostics(result)
-        with self.lock:self.cache[key]=(digest,result)
-        return dict(result)
+        return dict(self.remember_result(result, digest))
 
 
 def register(app,accounts):

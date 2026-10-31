@@ -76,6 +76,7 @@ class Workspaces:
         self.apps = {}
         self.lock = asyncio.Lock()
         self.process_slots = asyncio.Semaphore(4)
+        self.verified_connection = None
 
     def budget(self):
         count = sum(not task.done() for app, _ in self.apps.values() for _,task in app.state.jobs.tasks.values())
@@ -100,6 +101,10 @@ class Workspaces:
                 app = self.factory(child)
                 app.state.internal_token = child.access_token
                 app.state.multi_child = True
+                checks = app.state.credential_checks
+                checks.on_verified = lambda platform, handle: (
+                    self.verified_connection(uid, checks, platform, handle)
+                    if self.verified_connection else None)
                 # The owner is derived from this authenticated workspace, not
                 # from any upload payload sent by the browser.
                 app.state.translations.owner = uid
@@ -168,7 +173,7 @@ def create_multi_app(settings, factory):
                 await workspaces.close()
                 emit_event(event_log, 'service.stopped', mode='multi')
 
-    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.21.6',lifespan=lifespan,docs_url=None,openapi_url=None)
+    app = SecureFastAPI(production=settings.production,title='ACM Lab users',version='0.21.7',lifespan=lifespan,docs_url=None,openapi_url=None)
     app.state.identities, app.state.workspaces = identities,workspaces
     app.state.event_log = event_log
 
@@ -266,7 +271,7 @@ def create_multi_app(settings, factory):
 
     @app.get('/api/health')
     def health():
-        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.21.6','mode':'multi-user'}
+        return {'status':'ok'} if settings.production else {'status':'ok','version':'0.21.7','mode':'multi-user'}
 
     @app.get('/api/auth/status')
     def status(request:Request):
@@ -299,12 +304,21 @@ def create_multi_app(settings, factory):
         return {'ok':True}
 
     @app.post('/api/auth/login')
-    def login(payload:LoginCredentials,response:Response,request:Request):
+    async def login(payload:LoginCredentials,response:Response,request:Request):
         peer = request.client.host if request.client else 'unknown'
         identities.limit('login-source:'+digest(peer+'\0'+payload.username.lower()),10,900)
-        user = identities.authenticate(payload.username.lower(),payload.password)
+        user = await asyncio.to_thread(identities.authenticate,payload.username.lower(),payload.password)
         set_session(response,user['id'])
-        return {'ok':True}
+        # A new ACM/Hermes connection resumes verification of this user's saved
+        # platform credentials. Ordinary reads remain network-free.
+        try:
+            child = await workspaces.get(user['id'])
+            connections = child.state.credential_checks.schedule_connections()
+        except Exception:
+            # Platform configuration cannot turn a successful site login into
+            # an authentication failure, or leak private configuration errors.
+            return {'ok': True, 'connection_message': '登录成功，平台连接暂未开始检测；请在连接与设置中重试'}
+        return {'ok':True, 'connection_checks':connections}
 
     @app.post('/api/auth/logout')
     async def logout(request:Request,response:Response):

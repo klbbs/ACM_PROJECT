@@ -140,6 +140,8 @@ def setup_manager(tmp_path, platform='luogu'):
 def test_luogu_page_then_same_context_verified_binding_without_secret_response(tmp_path):
     async def run():
         manager, factory = setup_manager(tmp_path, 'luogu')
+        claims = []
+        manager.checker.on_verified = lambda platform, handle: claims.append((platform, handle))
         try:
             started = await manager.start('owner', 'luogu')
             assert started['status'] == 'human_required'
@@ -147,6 +149,7 @@ def test_luogu_page_then_same_context_verified_binding_without_secret_response(t
             assert 0 < started['expires_in'] <= IDLE_SECONDS
             assert factory.browser.context.page.visits == [LOGIN_URLS['luogu']]
             assert not manager.accounts.path.exists()
+            assert claims == []
             assert (await manager.screenshot('owner', started['login_id'])).startswith(b'\x89PNG')
             await manager.interact('owner', started['login_id'], 'text', text=PASSWORD)
             assert factory.browser.context.page.keyboard.events == [('text', PASSWORD)]
@@ -158,6 +161,7 @@ def test_luogu_page_then_same_context_verified_binding_without_secret_response(t
             assert verification.visits == [URLS['luogu']] and verification.closed
             assert manager.accounts.document()['accounts'][0]['cookie'] == 'session=' + SECRET
             assert manager.checker.statuses()['items'][0]['login_verified'] is True
+            assert claims == [('luogu', '123')]
             assert SECRET not in json.dumps(result) and PASSWORD not in json.dumps(result)
             assert PASSWORD not in manager.accounts.path.read_text()
             assert manager.flow is None

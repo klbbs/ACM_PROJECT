@@ -26,10 +26,11 @@ STATEMENT={'id':PID,'url':'https://codeforces.com/problemset/problem/4/A','title
 
 def setup_pipeline(app,monkeypatch):
     s=app.state.hermes
+    monkeypatch.setattr(s,'sync_history',AsyncMock(return_value={'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}))
     monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',AsyncMock())
     monkeypatch.setattr(s.ai,'selection',lambda:{'ready':True,'channel':'api','model':'synthetic'})
     monkeypatch.setattr(s.ai,'configuration_fingerprint',lambda:'ephemeral-fingerprint')
-    monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':[{'platform':'codeforces','status':'authenticated','login_verified':True}]})
+    monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':[{'platform':'codeforces','handle':'Owner','status':'authenticated','login_verified':True}]})
     with s.db.connect() as c:
         c.execute('INSERT INTO problem_catalog VALUES(?,?,?)',('codeforces',PID,json.dumps({
             'id':PID,'platform':'codeforces','difficulty':1000,'tags':['math'],'title':'Synthetic','contest_id':4})))
@@ -466,3 +467,101 @@ def test_cancelling_renderer_removes_partial_artifact(client):
     assert list(s.directory.iterdir())==[]
     assert not s.timers
     assert c.get('/api/hermes/draws/'+jid+'/screenshots/0').status_code==410
+
+
+def test_history_sync_failure_never_calls_paid_ai(client,monkeypatch):
+    c,s,fake=client
+    monkeypatch.setattr(s,'sync_history',AsyncMock(side_effect=AIError('历史提交同步未完整，暂不抽题')))
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '历史提交同步未完整' in job['error']
+    fake.assert_not_awaited()
+
+
+def test_synced_old_solved_question_is_removed_before_ai_selection(client,monkeypatch):
+    from ojcrawler.models import Collection,Submission
+    from ojcrawler.storage import Store
+    c,s,fake=client
+    async def sync():
+        store=Store(s.db.path)
+        try:store.save('synthetic',int(time.time()),Collection('codeforces','Owner',
+            submissions=[Submission('old','4-a',1,'AC')],complete=True),capture_snapshot=False)
+        finally:store.close()
+        return {'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}
+    monkeypatch.setattr(s,'sync_history',sync)
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '没有符合' in job['error']
+    fake.assert_not_awaited()
+
+
+def test_account_changes_during_ai_do_not_deliver_unsynced_identity(client,monkeypatch):
+    c,s,fake=client
+    original=fake.side_effect
+    async def change(task,*args):
+        result=await original(task,*args)
+        monkeypatch.setattr(s.accounts,'revision',lambda:'new-account')
+        return result
+    fake.side_effect=change
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '平台配置已变化' in job['error'] and not job['result']
+
+
+def test_history_stage_can_be_cancelled_before_any_ai(client,monkeypatch):
+    import threading
+    c,s,fake=client
+    entered=threading.Event()
+    async def sync():
+        entered.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(s,'sync_history',sync)
+    jid=start(c)
+    assert entered.wait(2)
+    assert c.get('/api/hermes/draws/'+jid).json()['control']['stage']=='syncing_submissions'
+    c.post('/api/hermes/draws/'+jid+'/cancel',json={})
+    assert stopped(c,jid)['result'] is None
+    fake.assert_not_awaited()
+
+
+def test_new_draw_after_external_submission_cannot_repeat_the_solved_problem(client,monkeypatch):
+    from ojcrawler.models import Collection,Submission
+    from ojcrawler.storage import Store
+    c,s,fake=client
+    first=wait(c,start(c))
+    assert first['status']=='completed' and first['result']['problem']['id']==PID
+    other='codeforces:7-A'
+    with s.db.connect() as db:
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)',('codeforces',other,json.dumps({
+            'id':other,'platform':'codeforces','difficulty':1000,'tags':['math'],'title':'Next synthetic','contest_id':7})))
+        db.execute('INSERT INTO wb_problems VALUES(?,?,?)',(other,json.dumps({**STATEMENT,'id':other,'url':'https://codeforces.com/problemset/problem/7/A'}),int(time.time())))
+    async def sync():
+        store=Store(s.db.path)
+        try:store.save('after-external-ac',int(time.time()),Collection('codeforces','Owner',
+            submissions=[Submission('old','4-A',1,'AC')],complete=True),capture_snapshot=False)
+        finally:store.close()
+        return {'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}
+    async def choose_new(task,provider,model,data,schema):
+        if task=='hermes_selection':
+            assert {p['id'] for p in data['candidates']}=={other}
+            value={'problem_id':other,'reason':'只选未做题'}
+        else:
+            assert data['statement']['id']==other
+            value={**REPORT,'problem_id':other,'problem_explanation':EXPLANATION}
+        return SimpleNamespace(data=schema.model_validate(value).model_dump(),provenance={'channel':'api','model':'synthetic'})
+    monkeypatch.setattr(s,'sync_history',sync)
+    fake.side_effect=choose_new
+    second=wait(c,start(c,'2'))
+    assert second['status']=='completed',second
+    assert second['result']['problem']['id']==other
+    assert second['result']['history_sync']['complete']
+
+
+def test_newly_verified_platform_cannot_enter_pool_without_history_sync(client,monkeypatch):
+    c,s,fake=client
+    rows=[{'platform':'codeforces','handle':'Owner','status':'authenticated','login_verified':True}]
+    monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':list(rows)})
+    async def sync():
+        rows.append({'platform':'atcoder','handle':'Other','status':'authenticated','login_verified':True})
+        return {'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}
+    monkeypatch.setattr(s,'sync_history',sync)
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '新验证账号尚未同步提交' in job['error']
+    fake.assert_not_awaited()

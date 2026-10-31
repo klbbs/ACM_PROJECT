@@ -64,6 +64,7 @@ function browserAction(result: any) {
 export function PlatformConnections({ revision, run, onError, onBound }: any) {
   const [items, setItems] = useState<any[]>([])
   const [checks, setChecks] = useState<Record<string, any>>({})
+  const [connections, setConnections] = useState<Record<string, any>>({})
   const epoch = useRef(0)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [nowcoderMethod, setNowcoderMethod] = useState<'qr' | 'cookie'>('qr')
@@ -88,25 +89,63 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
   useEffect(() => {
     const current = ++epoch.current
     let alive = true
+    let timer: number | undefined
     setChecks({})
+    setConnections({})
     setBusy({})
+    const applyChecks = (results: any) => {
+      if (!alive || epoch.current !== current) return
+      setChecks(Object.fromEntries(results.items.map((v: any) => [`${v.platform}:${v.handle}`, v])))
+      const pending = results.connections || []
+      setConnections(Object.fromEntries(pending.map((v: any) => [`${v.platform}:${v.handle}`, v])))
+      if (pending.some((v: any) => ['queued', 'checking'].includes(v.status)))
+        timer = window.setTimeout(() => {
+          api('/accounts/checks')
+            .then(applyChecks)
+            .catch((e: Error) => {
+              if (alive && epoch.current === current) {
+                setConnections((previous) =>
+                  Object.fromEntries(
+                    Object.entries(previous).map(([key, value]) => [
+                      key,
+                      ['queued', 'checking'].includes(value.status)
+                        ? {
+                            ...value,
+                            status: 'failed',
+                            message: '暂时无法更新检测进度，可手动重新检测。',
+                          }
+                        : value,
+                    ]),
+                  ),
+                )
+                onError(e.message)
+              }
+            })
+        }, 1500)
+    }
     Promise.all([api('/platforms'), api('/accounts/checks')])
       .then(([platforms, results]) => {
         if (!alive || epoch.current !== current) return
         setItems(platforms.items)
-        setChecks(
-          Object.fromEntries(results.items.map((v: any) => [`${v.platform}:${v.handle}`, v])),
-        )
+        applyChecks(results)
       })
-      .catch((e: Error) => onError(e.message))
+      .catch((e: Error) => {
+        if (alive && epoch.current === current) onError(e.message)
+      })
     return () => {
       alive = false
+      window.clearTimeout(timer)
     }
   }, [revision])
   async function check(platform: string, handle: string, forceRefresh = false) {
     const key = `${platform}:${handle}`
     const current = epoch.current
     setBusy((previous) => ({ ...previous, [key]: true }))
+    setConnections((previous) => {
+      const next = { ...previous }
+      delete next[key]
+      return next
+    })
     try {
       const result = await api('/accounts/check', 'POST', {
         platform,
@@ -116,7 +155,7 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
       if (epoch.current !== current) return
       setChecks((previous) => ({ ...previous, [key]: result }))
     } catch (e: any) {
-      onError(e.message)
+      if (epoch.current === current) onError(e.message)
     } finally {
       if (epoch.current === current) setBusy((previous) => ({ ...previous, [key]: false }))
     }
@@ -215,6 +254,8 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
             )}
             {p.accounts?.map((a: any) => {
               const key = `${p.platform}:${a.handle}`
+              const connection = connections[key]
+              const pending = connection && ['queued', 'checking'].includes(connection.status)
               if (p.platform === 'luogu') {
                 return (
                   <div key={a.handle} className="platform-account-check">
@@ -229,6 +270,19 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
                       使用数字 UID
                       同步可公开访问的资料与提交记录。完成题目后，请在洛谷官方网页交题，再同步记录。
                     </p>
+                    {pending && <p role="status">正在自动检测平台登录并关联身份…</p>}
+                    {connection?.message && <p role="status">{connection.message}</p>}
+                    {checks[key]?.message && <p role="status">{checks[key].message}</p>}
+                    {checks[key]?.identity_claim?.message && (
+                      <p role="status">{checks[key].identity_claim.message}</p>
+                    )}
+                    <button
+                      className="secondary"
+                      disabled={busy[key] || pending}
+                      onClick={() => check(p.platform, a.handle)}
+                    >
+                      {busy[key] || pending ? '正在检测…' : '检测登录状态'}
+                    </button>
                   </div>
                 )
               }
@@ -257,16 +311,19 @@ export function PlatformConnections({ revision, run, onError, onBound }: any) {
                         : a.cookie_info.message}
                     </p>
                   )}
+                  {pending && <p role="status">正在自动检测平台登录并关联身份…</p>}
+                  {connection?.message && <p role="status">{connection.message}</p>}
                   <button
                     className="secondary"
-                    disabled={busy[key]}
+                    disabled={busy[key] || pending}
                     onClick={() => check(p.platform, a.handle)}
                   >
-                    {busy[key] ? '正在检测…' : '检测登录状态'}
+                    {busy[key] || pending ? '正在检测…' : '检测登录状态'}
                   </button>
                   {result && (
                     <div role="status" aria-live="polite">
                       <p>{result.message}</p>
+                      {result.identity_claim?.message && <p>{result.identity_claim.message}</p>}
                       {result.matched_account && <p>平台返回账号：{result.matched_account}</p>}
                       {p.platform === 'codeforces' && result.cookie_diagnostics && (
                         <p className="help">

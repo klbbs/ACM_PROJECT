@@ -122,6 +122,7 @@ def create_app(settings=None):
             app.state.remote_submissions.closed = True
             app.state.nowcoder_qr.close()
             await app.state.browser_login.aclose()
+            await app.state.credential_checks.close()
             await jobs.close()
             if hasattr(app.state, 'hermes'):
                 app.state.hermes.close()
@@ -131,7 +132,7 @@ def create_app(settings=None):
                 emit_event(event_log, 'service.stopped', mode='single')
 
     private_schema = settings.production or settings.isolated
-    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.21.6",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
+    app=SecureFastAPI(production=settings.production,title="ACM Lab API",version="0.21.7",lifespan=lifespan,docs_url=None if private_schema else "/api/docs",openapi_url=None if private_schema else "/api/openapi.json")
     app.state.settings=settings
     app.state.account_config=account_config
     app.state.event_log=event_log
@@ -182,7 +183,7 @@ def create_app(settings=None):
         return JSONResponse({"detail":"请求参数不符合要求","fields":[{"loc":e["loc"],"type":e["type"]} for e in exc.errors()]},status_code=422)
 
     @app.get("/api/health")
-    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.21.6"}
+    def health():return {"status":"ok"} if settings.production else {"status":"ok","version":"0.21.7"}
 
     @app.get("/api/auth/status")
     def auth_status(request:Request):
@@ -222,7 +223,10 @@ def create_app(settings=None):
     async def save_accounts(payload:AccountList):
         if any(kind=='crawl' and not task.done() for kind,task in jobs.tasks.values()):
             raise HTTPException(409,"正在采集，请完成后再修改账号")
-        return account_config.save(payload)
+        result = account_config.save(payload)
+        if payload.auto_check:
+            result['connection_checks'] = app.state.credential_checks.schedule_connections()
+        return result
 
     @app.get("/api/jobs")
     def job_list():return {"items":jobs.list()}

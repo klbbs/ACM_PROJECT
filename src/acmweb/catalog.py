@@ -576,7 +576,58 @@ def refresh_catalog(database, platform=None, on_progress=None):
 
 
 def _canonical(platform, pid):
-    return pid if pid.startswith(platform + ':') else platform + ':' + pid
+    # Crawler history predates the canonical workbench IDs. In particular CF
+    # problemset, contest and gym URLs, and lower-case indices name the same
+    # problem. Compare normalized identities rather than display strings.
+    value = str(pid).strip()
+    try:
+        result = normalize(value if value.startswith(('https://', platform + ':')) else platform + ':' + value)
+        if result.startswith(platform + ':'):
+            return result
+    except AIError:
+        pass
+    # Keep unsupported historical IDs isolated within their original platform;
+    # one malformed history row must not break the entire candidate pool.
+    return value if value.startswith(platform + ':') else platform + ':' + value
+
+
+def _canonical_ids(values):
+    result = set()
+    for value in values:
+        try:
+            result.add(normalize(value))
+        except (AIError, AttributeError, TypeError):
+            result.add(value)
+    return result
+
+
+def _attempt_exclusions(db, allow_attempted):
+    if not allow_attempted:
+        return _canonical_ids(row['problem_id'] for row in db.execute('SELECT DISTINCT problem_id FROM wb_attempts'))
+    # Specialist training may revisit failed attempts, but an officially
+    # accepted remote submission can live solely in wb_attempts until a later
+    # history sync. Never treat an unlinked draft or locally edited verdict as
+    # completion. Collected history wins over an older workbench judgement.
+    rows = db.execute("""SELECT a.problem_id,a.judge_data FROM wb_attempts a
+        WHERE a.verdict='AC' AND a.submission_id IS NOT NULL AND a.handle<>'' AND a.last_synced>0
+        AND NOT EXISTS (SELECT 1 FROM submissions s WHERE s.id=CAST(a.submission_id AS TEXT)
+            AND s.platform=substr(a.problem_id,1,instr(a.problem_id,':')-1)
+            AND CASE WHEN s.platform='codeforces' THEN lower(s.account)=lower(a.handle)
+                     ELSE s.account=a.handle END)""").fetchall()
+    result = set()
+    now = int(time.time())
+    for row in rows:
+        try:
+            platform = row['problem_id'].split(':', 1)[0]
+            judge = json.loads(row['judge_data'] or '{}')
+            timestamp = judge.get('creationTimeSeconds') if platform == 'codeforces' else judge.get('submitted_at')
+            if (judge.get('verdict') in {'OK', 'AC'} and type(timestamp) is int and 0 < timestamp <= now
+                    and judge.get('platform', platform) == platform
+                    and (platform == 'codeforces' or judge.get('source') == 'official_remote_submission')):
+                result.add(_canonical(platform, row['problem_id']))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return result
 
 
 def _pool(database, platform, include_excluded=False, allow_attempted=False):
@@ -586,10 +637,8 @@ def _pool(database, platform, include_excluded=False, allow_attempted=False):
         submission_query = "SELECT DISTINCT platform,problem_id FROM submissions" + (" WHERE verdict='AC'" if allow_attempted else '')
         excluded = {_canonical(row[0], row[1]) for row in db.execute(submission_query)}
         excluded.update(_canonical(row[0], row[1]) for row in db.execute("SELECT platform,problem_id FROM practice_feedback WHERE status IN ('done','skip')"))
-    with database.connect() as db:
-        if not allow_attempted:
-            excluded.update(row[0] for row in db.execute('SELECT DISTINCT problem_id FROM wb_attempts'))
-    excluded.update(database.get('battle_problem_ids', []))
+        excluded.update(_attempt_exclusions(db, allow_attempted))
+    excluded.update(_canonical_ids(database.get('battle_problem_ids', [])))
     merged = {}
     for row in rows:
         problem = json.loads(row[0]); merged[problem['id']] = problem
@@ -599,7 +648,7 @@ def _pool(database, platform, include_excluded=False, allow_attempted=False):
         merged[pid] = _problem(platform, pid.split(':', 1)[1], statement['title'],
             published_at=statement.get('published_at'), published_at_source=statement.get('published_at_source'),
             candidate_source='用户已获取的官方题面缓存')
-    return list(merged.values()) if include_excluded else [p for p in merged.values() if p['id'] not in excluded]
+    return list(merged.values()) if include_excluded else [p for p in merged.values() if _canonical(platform, p['id']) not in excluded]
 
 
 def _date_floor(value):
@@ -666,10 +715,10 @@ def recommendation_candidates(database, accounts, minimum=800, maximum=1600, tag
     platforms = verified_platforms(accounts)
     if not platforms: raise AIError('没有已验证登录的平台；请到连接与设置保存账号并点击“检测登录状态”（检测有效期 5 分钟）')
     floor = max(filter(None, (published_after, prefs.get('published_after'))), default=None)
-    excluded = set(excluded_ids or [])
+    excluded = _canonical_ids(excluded_ids or [])
     pools = [[row for row in candidates(database, minimum, maximum, tags, 100000 if preferred_ids else max(60, limit),
               platform=platform, published_after=floor, predicate=predicate,
-              allow_attempted=allow_attempted, prioritize=prioritize) if row['id'] not in excluded] for platform in platforms]
+              allow_attempted=allow_attempted, prioritize=prioritize) if _canonical(platform, row['id']) not in excluded] for platform in platforms]
     preferred = set(preferred_ids or [])
     if prioritize is not None:
         preferred.update(row['id'] for pool in pools for row in pool if prioritize(row))

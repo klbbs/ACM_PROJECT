@@ -2046,23 +2046,14 @@ function SettingsPage({
   const saveAccounts = async (items: Row[], verifyLast = false) => {
     setAccountSaving(true)
     try {
-      const result = await api('/accounts', 'PUT', { items })
+      const result = await api('/accounts', 'PUT', { items, auto_check: verifyLast })
       setAccounts(result.items)
       setEditingAccount({ platform: 'codeforces', handle: '', cookie: '', enrich: false })
       const target = verifyLast ? result.items[result.items.length - 1] : undefined
       if (target?.cookie_info?.status === 'invalid') {
         onError(`账号配置已保存，但 Cookie 需要修正：${target.cookie_info.message}`)
-      } else if (target?.has_cookie && target.platform !== 'luogu') {
-        onNotice('平台账号已保存，正在使用这份凭据检测登录…')
-        try {
-          const checked = await api('/accounts/check', 'POST', {
-            platform: target.platform,
-            handle: target.handle,
-          })
-          onNotice(`账号已保存；${checked.message}`)
-        } catch (error: any) {
-          onError(`账号已保存，登录检测尚未完成：${error.message}`)
-        }
+      } else if (target?.has_cookie) {
+        onNotice('平台账号已保存，后台正在检测登录；通过后会自动认领平台身份，可在下方查看进度。')
       } else {
         onNotice('平台账号已保存，可同步公开资料；官方交题仍需在平台登录。')
       }

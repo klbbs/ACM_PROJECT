@@ -351,7 +351,7 @@ it.each([
   ['unknown', 'network_error'],
   ['authenticated', 'identity_verified'],
 ])(
-  'keeps Luogu on public synchronization and official submission regardless of cached %s / %s',
+  'shows Luogu check results while preserving public synchronization and official submission for %s / %s',
   async (status, reason) => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -393,15 +393,9 @@ it.each([
       expect(card.textContent).toContain('洛谷官方网页交题，再同步记录')
       const publicAccount = card.querySelector('.platform-account-check')!
       expect(card.querySelector('.browser-platform-login')).not.toBeNull()
-      for (const hidden of [
-        '访问限制',
-        '验证码',
-        '重新检测',
-        '检测登录状态',
-        'HTTP 418',
-        '旧的',
-        '已验证登录',
-      ]) {
+      expect(publicAccount.textContent).toContain('旧的访问限制或登录诊断')
+      expect(publicAccount.textContent).toContain('检测登录状态')
+      for (const hidden of ['HTTP 418', '已验证登录', '请完成验证码并重新获取Cookie后重试']) {
         expect(publicAccount.textContent).not.toContain(hidden)
       }
       expect(card.querySelector('.platform-browser-action')).toBeNull()
@@ -419,3 +413,122 @@ it.each([
     }
   },
 )
+
+it('polls saved background connections and shows the verified identity claim', async () => {
+  vi.useFakeTimers()
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  let reads = 0
+  vi.mocked(api)
+    .mockReset()
+    .mockImplementation(async (path: string) => {
+      if (path === '/platforms')
+        return {
+          items: [{ platform: 'codeforces', accounts: [{ handle: 'Owner', has_cookie: true }] }],
+        } as never
+      if (path === '/accounts/checks') {
+        reads++
+        return reads === 1
+          ? ({
+              items: [],
+              connections: [{ platform: 'codeforces', handle: 'Owner', status: 'checking' }],
+            } as never)
+          : ({
+              items: [
+                {
+                  platform: 'codeforces',
+                  handle: 'Owner',
+                  status: 'authenticated',
+                  login_verified: true,
+                  message: '登录身份已核实',
+                  checked_at: Date.now() / 1000,
+                  identity_claim: {
+                    status: 'claimed',
+                    message: '平台身份已自动关联，可用于榜单与对战；公开设置保持不变',
+                  },
+                },
+              ],
+              connections: [{ platform: 'codeforces', handle: 'Owner', status: 'checked' }],
+            } as never)
+      }
+      throw Error('unexpected request')
+    })
+  try {
+    await act(async () =>
+      root.render(<PlatformConnections revision={1} run={vi.fn()} onError={vi.fn()} />),
+    )
+    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === '正在检测…')!
+    expect(button.disabled).toBe(true)
+    expect(host.textContent).toContain('正在自动检测平台登录并关联身份')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    expect(host.textContent).toContain('已验证登录')
+    expect(host.textContent).toContain('平台身份已自动关联')
+    expect(host.textContent).not.toContain('正在自动检测')
+    expect(reads).toBe(2)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(reads).toBe(2)
+  } finally {
+    await act(async () => root.unmount())
+    vi.useRealTimers()
+    host.remove()
+  }
+})
+
+it('unlocks manual checking after progress polling fails and ignores old progress after editing', async () => {
+  vi.useFakeTimers()
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const onError = vi.fn()
+  let failPoll = false
+  vi.mocked(api)
+    .mockReset()
+    .mockImplementation(async (path: string) => {
+      if (path === '/platforms')
+        return {
+          items: [{ platform: 'atcoder', accounts: [{ handle: 'demo', has_cookie: true }] }],
+        } as never
+      if (path === '/accounts/checks') {
+        if (failPoll) throw Error('progress unavailable')
+        return {
+          items: [],
+          connections: [{ platform: 'atcoder', handle: 'demo', status: 'queued' }],
+        } as never
+      }
+      throw Error('unexpected request')
+    })
+  try {
+    await act(async () =>
+      root.render(<PlatformConnections revision={1} run={vi.fn()} onError={onError} />),
+    )
+    failPoll = true
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    const retry = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === '检测登录状态',
+    )!
+    expect(retry.disabled).toBe(false)
+    expect(onError).toHaveBeenCalledWith('progress unavailable')
+    expect(host.textContent).toContain('可手动重新检测')
+    // Re-rendering accounts cancels the prior revision's queued polling timer.
+    failPoll = false
+    await act(async () =>
+      root.render(<PlatformConnections revision={2} run={vi.fn()} onError={onError} />),
+    )
+    await act(async () => root.unmount())
+    const reads = vi.mocked(api).mock.calls.length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(vi.mocked(api).mock.calls.length).toBe(reads)
+  } finally {
+    vi.useRealTimers()
+    host.remove()
+  }
+})

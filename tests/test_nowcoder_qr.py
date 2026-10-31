@@ -337,6 +337,8 @@ def test_body_caps_timeout_and_checks_flow_during_stream():
 def test_owner_throttle_and_verified_binding(tmp_path):
     async def run():
         value = manager(tmp_path)
+        claims = []
+        value.checker.on_verified = lambda platform, handle: claims.append((platform, handle))
         result = await value.start('owner', True)
         try:
             with pytest.raises(HTTPException) as error:
@@ -344,6 +346,7 @@ def test_owner_throttle_and_verified_binding(tmp_path):
             assert error.value.status_code == 404
             waiting = await value.poll('owner', result['login_id'])
             assert waiting['status'] == 'waiting' and waiting['login_id'] == result['login_id']
+            assert claims == []
             with pytest.raises(HTTPException) as error:
                 await value.poll('owner', result['login_id'])
             assert error.value.status_code == 429
@@ -355,6 +358,7 @@ def test_owner_throttle_and_verified_binding(tmp_path):
             assert result['status'] == 'verified' and result['verified_uid'] == '123'
             assert 'SYNTHETIC' not in str(result)
             assert value.checker.statuses()['items'][0]['login_verified'] is True
+            assert claims == [('nowcoder', '123')]
             assert value.accounts.document()['accounts'][0]['cookie'] == 'test_session=SYNTHETIC'
             assert value.accounts.document()['accounts'][0]['login_method'] == 'qr'
             public = value.accounts.public()['items'][0]

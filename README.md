@@ -1,6 +1,6 @@
 # ACM Lab
 
-当前版本为 0.21.6。修复官方 AI 提交复盘的结构化输出格式，以及 CF 远程提交回执找回、编译语言标签核验和判题刷新状态；已在原提交上完成真实复测。牛客扫码绑定及保存后的会话独立核验通过，无需额外导入 Cookie。
+当前版本为 0.21.7。Hermes 提供文字/图片抽题、进度查询及急停，抽题前同步个人历史并排除已做题；连接后自动检测平台登录并认领已验证身份。工作台可主动评估已通过的代码，检查思路、复杂度与码风。
 
 支持个人训练与受邀成员协作的算法工作台：连接 Codeforces、洛谷、牛客和 AtCoder，聚合提交记录，调用 AI 生成能力分析与训练计划，再从真实题库中选择合适的练习。
 
@@ -167,7 +167,7 @@ AI 选题先根据候选元信息初选，再逐题读取官方题面、交给�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.21.6.zip
+python3 scripts/verify_release.py releases/acm-lab-0.21.7.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。

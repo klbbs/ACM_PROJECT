@@ -13,7 +13,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_bridge import AIError
-from .credential_check import diagnostics, inspect_identity
+from .credential_check import inspect_identity
 from .cookie_validation import valid_cookie
 from .runtime_logs import emit_event
 from ojcrawler.http import browser_headers
@@ -441,13 +441,9 @@ class NowcoderQR:
                     self._event('platform.qr.failed', level='WARNING', reason='binding_failed')
                     self._discard()
                     raise HTTPException(409, str(exc)) from None
-                _, digest = self.checker.credential('nowcoder', uid)
-                result = diagnostics(dict(platform='nowcoder', handle=uid, checked_at=int(time.time()),
-                    status='authenticated', reason='identity_verified', login_verified=True,
-                    public_reachable=True, auto_submit_supported=False, submission_method='official_page',
-                    retry_after_seconds=10, cached=False, matched_account=uid, upstream_status=200))
-                with self.checker.lock:
-                    self.checker.cache[('nowcoder', uid)] = (digest, result)
+                # The verified QR session uses the same identity callback as
+                # Cookie checks/browser login; no second Cookie import needed.
+                self.checker.remember_verified('nowcoder', uid, cookie)
                 self._event('platform.qr.verified', reason='identity_verified')
                 self._discard()
                 return dict(self._result(login_id, 'verified', '牛客当前登录身份已验证并绑定'), verified_uid=uid, accounts=accounts)

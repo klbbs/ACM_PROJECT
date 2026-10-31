@@ -56,6 +56,10 @@ class Hermes:
         for rid in list(self.timers):
             self.expire(rid)
 
+    async def sync_history(self):
+        from .history import sync_history
+        return await sync_history(self.db,self.accounts)
+
     @staticmethod
     def image_statement(explanation):
         # Render the same AI question explanation as the text endpoint, not the
@@ -97,15 +101,30 @@ class Hermes:
             if not selection['ready'] or (selection['channel'],selection['model']) != (payload['provider'],payload['model']):
                 raise AIError('当前默认 AI 配置已变化或不可用，请重新发起 Hermes 请求')
             fingerprint = self.ai.configuration_fingerprint()
+            account_revision = self.accounts.revision()
+            synced_bindings = None
             def guard():
                 self.control.check(job_id)
                 if self.ai.configuration_fingerprint() != fingerprint:
                     raise AIError('Hermes 生成期间 AI 配置已变化，未交付混用模型的结果；请重新发起')
+                if self.accounts.revision() != account_revision:
+                    raise AIError('Hermes 生成期间平台配置已变化，未继续抽题或交付旧账号结果；请重新发起')
+                if synced_bindings is not None:
+                    from .history import bindings
+                    if not set(bindings(self.accounts)).issubset(synced_bindings):
+                        raise AIError('平台登录状态在历史同步后已变化，新验证账号尚未同步提交；请重新抽题，不会使用未同步平台选题')
             if output_format=='image':
                 self.control.stage(job_id,'preparing_image')
                 await self.renderer().preflight()
                 guard()
             self.control.stage(job_id,'checking_sessions')
+            await refresh_recommendation_sessions(self.accounts)
+            guard()
+            self.control.stage(job_id,'syncing_submissions')
+            history=await self.sync_history()
+            synced_bindings={(row['platform'],row['handle']) for row in history['accounts'] if row.get('complete')}
+            guard()
+            # A long initial full-history read may outlive login evidence.
             await refresh_recommendation_sessions(self.accounts)
             guard()
             pool = self.pool(request)
@@ -152,6 +171,7 @@ class Hermes:
                 samples=[dict(sample) for sample in statement['samples']])
             result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
+                    'history_sync':history,
                     'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
             if output_format=='image':
                 self.control.stage(job_id,'rendering_image')
