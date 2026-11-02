@@ -10,6 +10,7 @@ TERMINAL = {'completed','failed','interrupted','partial'}
 STAGES = {'queued':'等待处理','validating':'检查配置','preparing_image':'检查图片组件',
           'checking_sessions':'检查平台登录','syncing_submissions':'同步历史提交并排除已做题',
           'syncing_catalog':'同步 Codeforces 题库',
+          'checking_difficulty':'核对比赛通过率与 Gym 难度',
           'selecting':'AI 选题','reading_statement':'读取完整题面',
           'generating_report':'AI 阅读并生成说明与报告','revalidating':'核对题目资格',
           'rendering_image':'生成题目图片','completed':'已完成','failed':'未完成','interrupted':'已中断'}

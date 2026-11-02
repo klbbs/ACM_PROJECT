@@ -27,6 +27,7 @@ STATEMENT={'id':PID,'url':'https://codeforces.com/problemset/problem/4/A','title
 def setup_pipeline(app,monkeypatch):
     s=app.state.hermes
     monkeypatch.setattr(s,'ensure_catalog',AsyncMock(return_value={'platform':'codeforces','status':'cached','count':1}))
+    monkeypatch.setattr(s,'refresh_evidence',AsyncMock(return_value={'status':'synthetic'}))
     monkeypatch.setattr(s,'sync_history',AsyncMock(return_value={'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}))
     monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',AsyncMock())
     monkeypatch.setattr(s.ai,'selection',lambda:{'ready':True,'channel':'api','model':'synthetic'})
@@ -682,3 +683,115 @@ def test_model_cannot_override_system_random_id_with_another_eligible_problem(cl
     job=wait(c,start(c))
     assert job['status']=='failed' and '随机抽取不一致' in job['error']
     assert fake.await_count==1 and s.control.memory.drawn_ids()==set()
+
+
+def aggregate(population=1000, accepted=300):
+    return {'scope':'contest','source':'codeforces.contest.standings',
+            'observed_at':int(time.time()),'participants':population,'accepted_participants':accepted}
+
+
+def set_catalog(s, pid, **fields):
+    with s.db.connect() as db:
+        old=db.execute('SELECT data FROM problem_catalog WHERE id=?',(pid,)).fetchone()
+        value=json.loads(old[0]) if old else {'id':pid,'platform':'codeforces','title':'Synthetic',
+            'contest_id':int(pid.split(':')[1].split('-')[0]),'tags':['math']}
+        value.update(fields)
+        db.execute('INSERT OR REPLACE INTO problem_catalog VALUES(?,?,?)',('codeforces',pid,json.dumps(value)))
+
+
+def test_roll_rejects_high_pass_rate_even_with_matching_official_rating(client):
+    c,s,fake=client
+    set_catalog(s,PID,difficulty=1800,contest_statistics=aggregate(1000,850))
+    assert s.pool(Draw(score_range=(1800,1800)))==[]
+    r=c.post('/api/hermes/draw',json={'score_range':[1800,1800]},headers={'Idempotency-Key':'a'*32})
+    result=wait(c,r.json()['id'])
+    assert result['status']=='failed'
+    fake.assert_not_awaited()
+
+
+def test_roll_uses_combined_rating_instead_of_prefiltering_by_official_label(client):
+    _,s,_=client
+    set_catalog(s,PID,difficulty=1600,contest_statistics=aggregate())
+    pool=s.pool(Draw(score_range=(1800,1800)))
+    assert [p['id'] for p in pool]==[PID]
+    assert pool[0]['score_evidence']['estimated_rating']==1800
+    assert pool[0]['score_evidence']['official_rating']==1600
+
+
+def test_roll_unrated_gym_requires_evidence_and_respects_date_and_memory(client):
+    _,s,_=client
+    gym='codeforces:100001-A'
+    set_catalog(s,gym,difficulty=None,is_gym=True,contest_statistics=aggregate(),
+        published_at=1600000000,published_at_source='codeforces.contest.startTimeSeconds')
+    request=Draw(score_range=(1900,1900))
+    pool=s.pool(request)
+    assert [p['id'] for p in pool]==[gym]
+    assert pool[0]['score_evidence']['gym_bonus']>0
+    assert s.pool(Draw(score_range=(1900,1900),exclude_ids=[gym]))==[]
+    s.db.set('training',{'published_after':'2026-01-01'})
+    assert s.pool(request)==[]
+    s.db.set('training',{})
+    set_catalog(s,gym,contest_statistics=None)
+    assert s.pool(request)==[]
+
+
+def test_weighted_os_random_uses_gym_bonus_without_changing_rating(monkeypatch):
+    from acmhermes.difficulty import score_candidate
+    from acmhermes.service import Hermes
+    first={'platform':'codeforces','id':'codeforces:10-A','difficulty':1800,
+           'contest_statistics':aggregate()}
+    second={**first,'id':'codeforces:100001-A','is_gym':True}
+    pool=[{**p,'score_evidence':score_candidate(p,1900,1900)} for p in (first,second)]
+    bounds=[]
+    def draw(total):
+        bounds.append(total)
+        return total-1
+    monkeypatch.setattr('acmhermes.service.secrets.randbelow',draw)
+    chosen,strategy=Hermes.choose(pool)
+    assert chosen['id']==second['id'] and strategy=='system_weighted_random_without_replacement'
+    weights=[round(1000*(1+p['score_evidence']['priority_score'])) for p in pool]
+    assert weights[1]>weights[0] and bounds==[sum(weights)]
+    assert pool[0]['score_evidence']['estimated_rating']==pool[1]['score_evidence']['estimated_rating']
+
+
+def test_preview_stays_readonly_and_exposes_explainable_policy(client):
+    c,s,_=client
+    result=c.get('/api/hermes/capabilities').json()
+    assert result['difficulty_policy']['empirical_weight']>.5
+    assert c.get('/api/hermes/candidates?minimum=800&maximum=1200').status_code==200
+    s.refresh_evidence.assert_not_awaited()
+
+
+def test_successful_statistics_sample_does_not_fall_back_to_unchecked_official_question(client):
+    c,s,fake=client
+    set_catalog(s,PID,difficulty=1800,contest_statistics=aggregate(1000,850))
+    set_catalog(s,'codeforces:7-A',difficulty=1800)
+    s.refresh_evidence.return_value={'status':'available','contests_available':1,
+        'checked_contest_ids':[4,7],'available_contest_ids':[4]}
+    response=c.post('/api/hermes/draw',json={'score_range':[1800,1800]},headers={'Idempotency-Key':'b'*32})
+    job=wait(c,response.json()['id'])
+    assert job['status']=='failed'
+    fake.assert_not_awaited()
+
+
+def test_discovery_reserves_space_for_other_official_ratings(client):
+    _,s,_=client
+    for i in range(10,90):set_catalog(s,f'codeforces:{i}-A',difficulty=1800)
+    for i in range(90,100):set_catalog(s,f'codeforces:{i}-A',difficulty=1600)
+    pool=s.pool(Draw(score_range=(1800,1800)),evidence_only=True)
+    assert sum(p['difficulty']==1800 for p in pool)==40
+    assert any(p['difficulty']==1600 for p in pool)
+    assert len(pool)<=60
+
+
+def test_checked_contest_filter_happens_before_random_pool_limit(client):
+    c,s,_=client
+    set_catalog(s,PID,difficulty=1800,contest_statistics=aggregate(1000,350))
+    for i in range(10,90):set_catalog(s,f'codeforces:{i}-A',difficulty=1800)
+    s.refresh_evidence.return_value={'contests_available':1,'available_contest_ids':[4]}
+    pool=s.pool(Draw(score_range=(1800,1800)),qualified_contests={4})
+    assert [p['id'] for p in pool]==[PID]
+    response=c.post('/api/hermes/draw',json={'score_range':[1800,1800]},headers={'Idempotency-Key':'c'*32})
+    job=wait(c,response.json()['id'])
+    assert job['status']=='completed',job
+    assert job['result']['problem']['id']==PID

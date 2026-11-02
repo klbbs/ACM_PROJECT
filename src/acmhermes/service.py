@@ -17,6 +17,7 @@ from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
 from acmweb.training_topics import TOPICS, matches_topic
 from .models import Choice, ControlRequest, Draw, SolutionReport, candidate_choice
 from .control import TaskControl
+from .difficulty import score_candidate
 
 MAX_RUN_SECONDS = 600
 IMAGE_TTL = 1800
@@ -65,6 +66,11 @@ class Hermes:
         from .catalog import ensure_catalog
         return await ensure_catalog(self.db,self.accounts)
 
+    async def refresh_evidence(self, request):
+        from .selection_evidence import refresh_evidence
+        return await refresh_evidence(self.db, self.accounts, self.pool(request, evidence_only=True),
+                                      score_range=request.score_range)
+
     @staticmethod
     def image_statement(explanation):
         # Render the same AI question explanation as the text endpoint, not the
@@ -78,20 +84,58 @@ class Hermes:
         parts.append('<p>原题：'+html.escape(explanation['original_url'])+'</p>')
         return {'title':explanation['title'],'body_html':''.join(parts),'samples':explanation['samples']}
 
-    def pool(self, request, preferred_ids=None):
+    def pool(self, request, preferred_ids=None, *, evidence_only=False, qualified_contests=None):
         low, high = request.score_range
         reference = cf_reference(self.db)
         topic = TOPICS.get(request.topic or '')
         methods = self.app.state.topic_feasibility.approved_map(topic['id']) if topic else {}
         excluded=self.control.memory.drawn_ids() | set(request.exclude_ids)
+        scores = {}
+        def score(p):
+            if p['id'] not in scores:
+                scores[p['id']] = (score_candidate(p, low, high) if p.get('platform') == 'codeforces'
+                                   else estimate(p, reference))
+            return scores[p['id']]
+        def difficulty(p):
+            if evidence_only:
+                # Discovery may inspect a different official rating; only the
+                # final pool must satisfy the requested composite estimate.
+                return p.get('platform') == 'codeforces' and type(p.get('difficulty')) is int
+            return score(p).get('eligible', overlaps(score(p), low, high))
         def eligible(p):
-            return _canonical(p['platform'],p['id']) not in excluded and overlaps(estimate(p, reference), low, high) and (
+            if (qualified_contests is not None and p.get('platform') == 'codeforces'
+                    and p.get('contest_id') not in qualified_contests
+                    and score(p).get('empirical_rating') is None):
+                return False
+            return _canonical(p['platform'],p['id']) not in excluded and (
                 not request.topic or ((matches_topic(p,topic) or p['id'] in methods) if topic else
                     request.topic.casefold() in {str(t).casefold() for t in p.get('tags', [])}))
-        rows = recommendation_candidates(self.db, self.accounts, low, high, limit=60, predicate=eligible,
-                                         preferred_ids=preferred_ids)
-        return [{**row,'score_evidence':estimate(row,reference),
+        if evidence_only:
+            # A nominal-first sort followed by LIMIT would hide every other
+            # rating in a large CF catalog. Reserve a separate discovery slice.
+            rows = recommendation_candidates(self.db, self.accounts, low, high, limit=40, predicate=eligible,
+                difficulty_predicate=lambda p: difficulty(p) and low <= p['difficulty'] <= high)
+            rows += recommendation_candidates(self.db, self.accounts, low, high, limit=20, predicate=eligible,
+                difficulty_predicate=lambda p: difficulty(p) and not low <= p['difficulty'] <= high)
+        else:
+            rows = recommendation_candidates(self.db, self.accounts, low, high, limit=60, predicate=eligible,
+                                             preferred_ids=preferred_ids, difficulty_predicate=difficulty)
+        return [{**row,'score_evidence':score(row),
                  **({'topic_method_evidence':methods[row['id']]} if row['id'] in methods else {})} for row in rows]
+
+    @staticmethod
+    def choose(pool):
+        # Integer OS randomness, positive weight for every eligible candidate.
+        # Gym bonus affects probability only, never its estimated difficulty.
+        weights = [max(1, round(1000 * (1 + row['score_evidence'].get('priority_score', 0)))) for row in pool]
+        if len(set(weights)) == 1:
+            return secrets.choice(pool), 'system_random_without_replacement'
+        position = secrets.randbelow(sum(weights))
+        for row, weight in zip(pool, weights):
+            if position < weight:
+                return row, 'system_weighted_random_without_replacement'
+            position -= weight
+        raise AssertionError('invalid random weight')
 
     async def run(self, payload, *, job_id=None):
         artifacts=[]
@@ -136,13 +180,23 @@ class Hermes:
             self.control.stage(job_id,'syncing_catalog')
             catalog=await self.ensure_catalog()
             guard()
-            pool = self.pool(request)
+            self.control.stage(job_id,'checking_difficulty')
+            contest_evidence = await self.refresh_evidence(request)
+            guard()
+            if contest_evidence.get('contests_available', 0):
+                # Do not usually pick an unchecked official-only task after
+                # paying the cost of examining a bounded contest sample. Known
+                # cached estimates and qualified Gym remain eligible too.
+                checked = set(contest_evidence.get('available_contest_ids', []))
+                pool = self.pool(request, qualified_contests=checked)
+            else:
+                pool = self.pool(request)
             if not pool:
                 raise AIError('没有符合分数区间、题型、日期和已登录平台条件的未完成且未推荐题；已排除历史提交、已交付题和客户端记录。请调整范围，不会重复推荐或编造题目')
             self.control.stage(job_id,'selecting')
             # Model preferences are not randomness. Draw one eligible ID with
             # the OS RNG; the model can explain this choice, never replace it.
-            candidate=secrets.choice(pool)
+            candidate, strategy = self.choose(pool)
             chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
                 {'candidates':[candidate],'score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
             guard()
@@ -182,8 +236,8 @@ class Hermes:
                 samples=[dict(sample) for sample in statement['samples']])
             result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
-                    'history_sync':history,'catalog_sync':catalog,
-                    'selection_strategy':'system_random_without_replacement',
+                    'history_sync':history,'catalog_sync':catalog,'contest_evidence_sync':contest_evidence,
+                    'selection_strategy':strategy,
                     'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
             if output_format=='image':
                 self.control.stage(job_id,'rendering_image')
@@ -234,8 +288,10 @@ def register(app):
                     'cancel':'/api/hermes/draws/{job_id}/cancel','cancel_request':'/api/hermes/requests/{request_key}/cancel',
                     'stop_all':'/api/hermes/stop','list':'/api/hermes/draws','readiness':'/api/hermes/readiness','candidates':'/api/hermes/candidates',
                     'problem_memory':'/api/hermes/problem-memory'},
-                'selection_strategy':'system_random_without_replacement','exclude_ids_limit':10000,
-                'score_range':{'minimum':800,'maximum':3500,'reference':'CF rating；其他平台使用已注明来源的区间估计，未知分数排除'},
+                'selection_strategy':'system_weighted_random_without_replacement','exclude_ids_limit':10000,
+                'difficulty_policy':{'empirical_weight':0.55,'official_weight':0.45,'gym_priority_bonus':0.12,
+                    'minimum_statistics_population':100,'notice':'统计充分时按综合估计筛选；Gym 加分只影响概率，未知难度排除，现场数据不是官方 rating。'},
+                'score_range':{'minimum':800,'maximum':3500,'reference':'CF 综合训练估计；统计不足时保留官方 rating，其他平台用注明来源的估计，未知分数排除'},
                 'topics':[{'id':t['id'],'title':t['title']} for t in TOPICS.values()],
                 'auth':'使用本人 ACM Lab 会话；多人模式的写请求需 X-ACM-Request 和 CSRF 校验',
                 'spoiler':'本接口明确生成完整解题报告，调用即请求获取该题分析；不会自动交题或运行代码'}

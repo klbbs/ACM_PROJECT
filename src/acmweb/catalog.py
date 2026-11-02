@@ -659,13 +659,16 @@ def _date_floor(value):
 
 def candidates(database, minimum=800, maximum=1600, tags=None, limit=60, min_contest=0,
                platform='codeforces', published_after=None, predicate=None, allow_attempted=False,
-               prioritize=None):
+               prioritize=None, difficulty_predicate=None):
     """Low-level per-platform query; UI/AI must use recommendation_candidates."""
     if platform not in PLATFORMS: raise AIError('请选择有效的推荐平台')
     floor = _date_floor(published_after); prefs = database.get('training', {})
     avoided = set(prefs.get('avoid_tags', [])); result = []
     for p in _pool(database, platform, allow_attempted=allow_attempted):
-        if platform == 'codeforces' and (not isinstance(p.get('difficulty'), int) or not minimum <= p['difficulty'] <= maximum or p.get('contest_id', 0) < min_contest): continue
+        if difficulty_predicate is not None:
+            if not difficulty_predicate(p): continue
+        elif platform == 'codeforces' and (not isinstance(p.get('difficulty'), int) or not minimum <= p['difficulty'] <= maximum): continue
+        if platform == 'codeforces' and p.get('contest_id', 0) < min_contest: continue
         if floor is not None and (p.get('published_at_source') not in PUBLISHED_SOURCES or
                 not publication_time(p.get('published_at')) or p['published_at'] < floor): continue
         if tags and not set(tags) & set(p.get('tags', [])): continue
@@ -708,7 +711,8 @@ async def refresh_recommendation_sessions(accounts):
 
 def recommendation_candidates(database, accounts, minimum=800, maximum=1600, tags=None,
                               limit=60, published_after=None, excluded_ids=None, preferred_ids=None,
-                              predicate=None, allow_attempted=False, prioritize=None):
+                              predicate=None, allow_attempted=False, prioritize=None,
+                              difficulty_predicate=None):
     """Mix only recently verified sessions; balanced shuffle prevents CF pool domination."""
     prefs = database.get("training", {})
     if requires_publication_date(prefs): raise AIError(LEGACY_DATE_NOTICE)
@@ -718,7 +722,8 @@ def recommendation_candidates(database, accounts, minimum=800, maximum=1600, tag
     excluded = _canonical_ids(excluded_ids or [])
     pools = [[row for row in candidates(database, minimum, maximum, tags, 100000 if preferred_ids else max(60, limit),
               platform=platform, published_after=floor, predicate=predicate,
-              allow_attempted=allow_attempted, prioritize=prioritize) if _canonical(platform, row['id']) not in excluded] for platform in platforms]
+              allow_attempted=allow_attempted, prioritize=prioritize,
+              difficulty_predicate=difficulty_predicate) if _canonical(platform, row['id']) not in excluded] for platform in platforms]
     preferred = set(preferred_ids or [])
     if prioritize is not None:
         preferred.update(row['id'] for pool in pools for row in pool if prioritize(row))
