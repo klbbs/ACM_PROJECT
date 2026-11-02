@@ -1,6 +1,6 @@
 # ACM Lab
 
-当前版本为 0.21.8。Hermes 改为系统随机抽题，服务端持久排除已推荐题，支持本地题号记忆与额外排除清单；首次或缓存过期自动同步 CF 官方公开带评级题库。保留提交历史同步、自动身份认领、图文题目说明与任务急停。
+当前版本为 0.21.9（补丁）。修复 Hermes 长报告中转超时；抽题结合比赛人数、通过率和发布日期评估难度，支持有可靠统计的 Gym 优先抽取与现场榜单精确匹配。保留历史排重、自动身份认领、图文题目说明与任务急停。
 
 支持个人训练与受邀成员协作的算法工作台：连接 Codeforces、洛谷、牛客和 AtCoder，聚合提交记录，调用 AI 生成能力分析与训练计划，再从真实题库中选择合适的练习。
 
@@ -167,7 +167,7 @@ AI 选题先根据候选元信息初选，再逐题读取官方题面、交给�
 
 ```bash
 python3 scripts/package.py
-python3 scripts/verify_release.py releases/acm-lab-0.21.8.zip
+python3 scripts/verify_release.py releases/acm-lab-0.21.9.zip
 ```
 
 生成 ZIP 与 TAR.GZ，包含前端构建、Python 源码、依赖锁、部署示例、校验清单和构建提交号。文件白名单确保发布包不含 `account.toml`、`.env`、API Key、数据库、原始快照、学习资料或虚拟环境。
