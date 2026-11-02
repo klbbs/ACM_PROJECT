@@ -23,6 +23,7 @@ AI_TIMEOUT_ERROR = 'AI 请求超时；未自动重试，请检查网络或调整
 AI_NETWORK_ERROR = 'AI 网络连接失败；未自动重试，请检查提供方地址和服务器网络'
 AI_JSON_ERROR = 'AI 提供方返回的响应不是有效 JSON；未自动重试'
 AI_STRUCTURE_ERROR = 'AI 提供方返回的 JSON 响应结构不符合协议；未自动重试'
+HERMES_STREAM_MAX_SECONDS = 540
 MODEL_TIMEOUT_ERROR = '模型列表请求超时；请稍后重试或手动填写模型 ID'
 MODEL_NETWORK_ERROR = '模型列表网络连接失败；请检查提供方地址和服务器网络'
 MODEL_JSON_ERROR = '模型列表响应不是有效 JSON；请检查提供方 API 地址'
@@ -478,16 +479,37 @@ class AIProvider:
         metrics = self._request_metrics.get()
         if metrics is None:
             metrics = {}
+        streaming = path == '/responses' and metrics.get('ai_task') in {'hermes_selection','hermes_solution_report'}
+        if streaming:
+            payload['stream'] = True
+            metrics['ai_streaming'] = True
+        def check_status(response):
+            if type(response.status_code) is int and 100 <= response.status_code <= 599:
+                metrics['upstream_status'] = response.status_code
+            if response.status_code != 200:
+                reasons={401:'密钥无效或区域不匹配',403:'账号或模型权限不足',404:'地址或模型不存在',429:'额度不足或触发限流',400:'模型不支持当前参数，请检查输出模式、思考设置和 token 上限',
+                         524:'中转网关等待模型生成超时；增加本站超时不能延长上游网关限制'}
+                raise _ai_failure(f"AI 请求失败，HTTP {response.status_code}：{reasons.get(response.status_code,'服务暂不可用')}（未自动重试）", 'ai_upstream_http')
         try:
             async with httpx.AsyncClient(timeout=config['timeout'],follow_redirects=False) as client:
                 self.authorize_host(config)
-                response=await client.post(self.validate_url(config['base_url'])+path,json=payload,headers=self.headers(config))
-            if type(response.status_code) is int and 100 <= response.status_code <= 599:
-                metrics['upstream_status'] = response.status_code
-            if response.status_code!=200:
-                reasons={401:'密钥无效或区域不匹配',403:'账号或模型权限不足',404:'地址或模型不存在',429:'额度不足或触发限流',400:'模型不支持当前参数，请检查输出模式、思考设置和 token 上限'}
-                raise _ai_failure(f"AI 请求失败，HTTP {response.status_code}：{reasons.get(response.status_code,'服务暂不可用')}（未自动重试）", 'ai_upstream_http')
-            body=response.json()
+                url=self.validate_url(config['base_url'])+path
+                headers=self.headers(config)
+                if streaming:
+                    from .ai_stream import read_responses_stream
+                    async def receive():
+                        async with client.stream('POST',url,json=payload,headers=headers) as response:
+                            check_status(response)
+                            return await read_responses_stream(response)
+                    # The configured HTTP timeout remains an idle I/O limit.
+                    # Active long reports need more time than a non-streamed
+                    # first-byte wait, but must not live forever on heartbeats.
+                    # The parent draw also retains its 600-second total budget.
+                    body=await asyncio.wait_for(receive(),timeout=HERMES_STREAM_MAX_SECONDS)
+                else:
+                    response=await client.post(url,json=payload,headers=headers)
+                    check_status(response)
+                    body=response.json()
             if not isinstance(body,dict):raise ValueError('invalid response')
             self._capture_response_metrics(body)
             if path=='/responses':
@@ -528,7 +550,7 @@ class AIProvider:
             parsed=json.loads(clean)
             if not isinstance(parsed,dict):raise _ai_failure('AI 输出必须为 JSON 对象；请检查 JSON 输出模式后重试', 'ai_invalid_output')
             return json.dumps(parsed,ensure_ascii=False)
-        except httpx.TimeoutException:
+        except (httpx.TimeoutException, asyncio.TimeoutError):
             raise _ai_failure(AI_TIMEOUT_ERROR, 'ai_timeout') from None
         except httpx.HTTPError:
             raise _ai_failure(AI_NETWORK_ERROR, 'ai_network') from None

@@ -79,7 +79,8 @@ REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited'
            'selection_report_cancelled', 'selection_report_configuration_changed',
            'training_selection_timeout', 'training_selection_cancelled',
            'ai_output_truncated', 'ai_empty_final', 'ai_invalid_output',
-           'ai_response_incomplete', 'ai_response_refused', 'ai_upstream_http', 'ai_cancelled', 'ai_task_failed'}
+           'ai_response_incomplete', 'ai_response_refused', 'ai_upstream_http', 'ai_cancelled', 'ai_task_failed',
+           'ai_response_failed', 'ai_stream_interrupted', 'ai_response_too_large'}
 
 
 def known_failure_reason(error):
@@ -145,6 +146,8 @@ def safe_details(details):
         elif key == 'ai_vendor' and isinstance(value, str) and value in {'custom','openai','deepseek','anthropic','gemini','qwen','qwen_global','moonshot','siliconflow','glm'}:
             clean[key] = value
         elif key == 'ai_protocol' and isinstance(value, str) and value in {'chat','responses','anthropic','codex'}:
+            clean[key] = value
+        elif key == 'ai_streaming' and type(value) is bool:
             clean[key] = value
         elif key == 'finish_reason' and isinstance(value, str) and value in {'stop','length','content_filter','tool_calls','incomplete','unknown'}:
             clean[key] = value
