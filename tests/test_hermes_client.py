@@ -188,3 +188,74 @@ def test_sdk_exclusions_no_automatic_paid_retry():
         with pytest.raises(httpx.HTTPStatusError):
             HermesClient(session).draw((800,1200),request_key='c'*32,exclude_ids=['codeforces:4-A'])
     assert len(calls)==1
+
+
+def delivery_event(jid='a'*32,did='b'*32):
+    import hashlib
+    text=json.dumps({'format':'text','report':{'summary':'合成结果'}},ensure_ascii=False)
+    return {'type':'result','protocol':'acm-hermes-receipt-v1','job_id':jid,'delivery_id':did,
+            'result_sha256':hashlib.sha256(text.encode()).hexdigest(),'result_json':text}
+
+
+def test_sdk_persists_before_ack_and_only_retries_same_result():
+    message=delivery_event();calls=[];committed=[]
+    def transport(request):
+        calls.append(request.url.path)
+        assert request.url.path.endswith(('/delivery/stream','/delivery/ack'))
+        if request.url.path.endswith('/ack'):
+            assert committed==[message['delivery_id']]
+            assert json.loads(request.content)['received'] is True
+            return httpx.Response(200,json={**message,'type':'acknowledged','state':'acknowledged'})
+        return httpx.Response(200,content=json.dumps(message)+'\n')
+    def save(job):
+        committed.append(job['delivery']['delivery_id'])
+        assert job['result']['report']['summary']=='合成结果'
+        return True
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        assert HermesClient(session).receive('a'*32,save)['state']=='acknowledged'
+    assert len(calls)==2
+
+
+def test_sdk_ack_response_loss_reconnects_without_repeating_consumer_commit(monkeypatch):
+    message=delivery_event();events=[];handled=[];acks=[]
+    monkeypatch.setattr('acmhermes.client.time.sleep',lambda _:None)
+    def transport(request):
+        events.append(request.url.path)
+        if request.url.path.endswith('/ack'):
+            acks.append(1)
+            if len(acks)==1:raise httpx.ReadTimeout('synthetic lost ACK reply')
+            return httpx.Response(200,json={**message,'type':'acknowledged','state':'acknowledged'})
+        return httpx.Response(200,content=json.dumps(message)+'\n')
+    def commit(job):handled.append(job['delivery']['delivery_id']);return True
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        assert HermesClient(session).receive('a'*32,commit)['state']=='acknowledged'
+    assert handled==[message['delivery_id']] and len(acks)==2 and len(events)==4
+    assert all('/draw' not in p.rsplit('/delivery',1)[-1] for p in events)
+
+
+@pytest.mark.parametrize('kind',['checksum','wrong_job','handler_failure','not_saved'])
+def test_sdk_never_acks_invalid_or_uncommitted_results(kind,monkeypatch):
+    message=delivery_event();requests=[]
+    monkeypatch.setattr('acmhermes.client.time.sleep',lambda _:None)
+    if kind=='checksum':message['result_sha256']='0'*64
+    if kind=='wrong_job':message['job_id']='c'*32
+    def transport(request):
+        requests.append(request.url.path)
+        return httpx.Response(200,content=json.dumps(message)+'\n')
+    def handler(job):
+        if kind=='handler_failure':raise RuntimeError('synthetic storage failure')
+        return None
+    error=RuntimeError if kind=='handler_failure' else TimeoutError if kind=='not_saved' else ValueError
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        with pytest.raises(error):HermesClient(session).receive('a'*32,handler,connections=1)
+    assert all(p.endswith('/delivery/stream') for p in requests)
+
+
+def test_sdk_receives_saved_ack_after_connection_loss_without_new_delivery():
+    message={**delivery_event(),'type':'acknowledged','state':'acknowledged'}
+    def transport(request):
+        assert request.url.path.endswith('/delivery/stream')
+        return httpx.Response(200,content=json.dumps(message)+'\n')
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        result=HermesClient(session).receive('a'*32,lambda _:pytest.fail('already acknowledged'))
+    assert result['state']=='acknowledged'

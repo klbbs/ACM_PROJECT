@@ -284,6 +284,7 @@ class Hermes:
     def job(self,jid):
         value=self.control.row(jid)
         value['result']=json.loads(value['result']) if value['result'] else None
+        value['delivery']=self.control.deliveries.status(jid)
         result=value['result']
         if result and result.get('format')=='image':
             result['screenshots']=[{'index':i,'url':f'/api/hermes/draws/{jid}/screenshots/{i}'} for i,_ in enumerate(result['screenshots'])]
@@ -300,6 +301,8 @@ def register(app):
     service=Hermes(app)
     app.state.hermes=service
     app.state.jobs.run_hermes=service.run
+    from .delivery import register as register_delivery, PROTOCOL, ACK_TIMEOUT
+    register_delivery(app, service)
 
     @app.get('/api/hermes/capabilities')
     async def capabilities():
@@ -307,7 +310,13 @@ def register(app):
                 'endpoints':{'text':'/api/hermes/draw','image':'/api/hermes/draw/image',
                     'cancel':'/api/hermes/draws/{job_id}/cancel','cancel_request':'/api/hermes/requests/{request_key}/cancel',
                     'stop_all':'/api/hermes/stop','list':'/api/hermes/draws','readiness':'/api/hermes/readiness','candidates':'/api/hermes/candidates',
-                    'problem_memory':'/api/hermes/problem-memory'},
+                    'problem_memory':'/api/hermes/problem-memory',
+                    'delivery':'/api/hermes/draws/{job_id}/delivery',
+                    'delivery_stream':'/api/hermes/draws/{job_id}/delivery/stream',
+                    'delivery_ack':'/api/hermes/draws/{job_id}/delivery/ack'},
+                'delivery_protocol':{'name':PROTOCOL,'ack_timeout_seconds':ACK_TIMEOUT,
+                    'semantics':'at_least_once','ack_after':'durable_consumer_commit',
+                    'notice':'结果重发使用同一消息，不重新抽题；调用方必须开启交付流并在本地去重、落盘后确认。'},
                 'selection_strategy':'system_weighted_random_without_replacement','exclude_ids_limit':10000,
                 'difficulty_policy':{'empirical_weight':0.55,'official_weight':0.45,'gym_priority_bonus':0.12,
                     'minimum_statistics_population':100,'notice':'统计充分时按综合估计筛选；Gym 加分只影响概率，未知难度排除，现场数据不是官方 rating。'},

@@ -10,6 +10,8 @@
 
 `GET /api/hermes/capabilities` 返回接口目录、`output_formats: ["text", "image"]`、题型目录与分数口径。`GET /api/hermes/readiness` 只读默认模型配置与本人活跃任务，不请求模型、不检测登录、不启动截图浏览器；它不代表真实上游可用性。
 
+结果可靠交付支持保存后的明确回执，未收到回执则重发同一结果，不重新抽题或调用AI。新接收端使用交付流和ACK接口；原查询接口仍兼容。接入agent务必先读[结果回执协议](HERMES_DELIVERY_PROTOCOL.md)，按消息编号持久去重，在保存成功后才确认。SDK提供 `receive`、`delivery_status` 和 `acknowledge`。
+
 ## 两种抽题入口、相同业务参数
 
 | 请求 | 用途 |

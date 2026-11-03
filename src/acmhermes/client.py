@@ -4,12 +4,15 @@ It does not store passwords, cookies or API keys, follow result URLs, execute
 report content, or retry a paid draw request. Normal ACM Lab login/CSRF applies.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
 import tempfile
 import time
 import uuid
+
+import httpx
 
 
 class HermesClient:
@@ -142,6 +145,97 @@ class HermesClient:
 
     def status(self,job_id):
         return self._json('GET','/api/hermes/draws/'+self._id(job_id))
+
+    def delivery_status(self, job_id):
+        return self._json('GET', '/api/hermes/draws/'+self._id(job_id)+'/delivery')
+
+    def acknowledge(self, job_id, delivery_id, result_sha256):
+        from .delivery import Receipt
+        receipt = Receipt(delivery_id=delivery_id, result_sha256=result_sha256, received=True)
+        reply = self._json('POST', '/api/hermes/draws/'+self._id(job_id)+'/delivery/ack', json=receipt.model_dump())
+        self._delivery_message(reply, job_id)
+        if (reply.get('type') != 'acknowledged' or reply.get('delivery_id') != delivery_id
+                or reply.get('result_sha256') != result_sha256):
+            raise ValueError('receipt response does not match the delivery')
+        return reply
+
+    @staticmethod
+    def _delivery_message(message, job_id):
+        from .delivery import PROTOCOL, MAX_RESULT_BYTES
+        if (not isinstance(message, dict) or message.get('protocol') != PROTOCOL
+                or message.get('job_id') != job_id
+                or not isinstance(message.get('delivery_id'), str)
+                or not re.fullmatch(r'[a-f0-9]{32}', message['delivery_id'])
+                or not isinstance(message.get('result_sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', message['result_sha256'])):
+            raise ValueError('invalid Hermes delivery identity')
+        if message.get('type') == 'result':
+            text = message.get('result_json')
+            if not isinstance(text, str):
+                raise ValueError('missing Hermes result bytes')
+            raw = text.encode('utf-8')
+            if len(raw) > MAX_RESULT_BYTES or hashlib.sha256(raw).hexdigest() != message['result_sha256']:
+                raise ValueError('Hermes delivery checksum mismatch')
+            value = json.loads(text)
+            if not isinstance(value, dict):
+                raise ValueError('invalid Hermes result')
+            return {'id':job_id, 'status':'completed', 'result':value,
+                    'delivery':{k:message[k] for k in ('protocol','delivery_id','result_sha256','result_json')}}
+        if message.get('type') not in {'acknowledged','pending','waiting'}:
+            raise ValueError('unknown Hermes delivery event')
+        if message['type'] == 'acknowledged' and message.get('state') != 'acknowledged':
+            raise ValueError('unconfirmed Hermes receipt')
+        return None
+
+    def receive(self, job_id, handler, *, connections=3):
+        """Receive at least once. ACK only after handler(job) returns exactly True.
+
+        The handler must durably commit and deduplicate by delivery_id. If it
+        raises, no ACK is sent. Transport/ACK loss only reconnects the same job;
+        this method never starts a new draw. An ACK is not an end-user read receipt.
+        """
+        self._id(job_id)
+        if not callable(handler) or type(connections) is not int or not 1 <= connections <= 10:
+            raise ValueError('supply a durable handler and 1..10 delivery connections')
+        handled = set()
+        identity = None
+        for attempt in range(connections):
+            try:
+                with self.client.stream('POST','/api/hermes/draws/'+job_id+'/delivery/stream',
+                                        json={}, follow_redirects=False, timeout=75) as response:
+                    response.raise_for_status()
+                    buffer = b''
+                    for chunk in response.iter_bytes():
+                        buffer += chunk
+                        while b'\n' in buffer:
+                            line, buffer = buffer.split(b'\n', 1)
+                            if len(line) > 4 * 1024 * 1024:
+                                raise ValueError('Hermes delivery frame too large')
+                            if not line.strip(): continue
+                            message = json.loads(line)
+                            job = self._delivery_message(message, job_id)
+                            current = (message['delivery_id'], message['result_sha256'])
+                            if identity is not None and current != identity:
+                                raise ValueError('Hermes delivery changed during reconnect')
+                            identity = current
+                            if message['type'] == 'acknowledged':
+                                return message
+                            if job is not None:
+                                if current not in handled and handler(job) is True:
+                                    handled.add(current)
+                                if current in handled:
+                                    return self.acknowledge(job_id, *current)
+                        if len(buffer) > 4 * 1024 * 1024:
+                            raise ValueError('Hermes delivery frame too large')
+                    if buffer.strip():
+                        raise httpx.ReadError('incomplete Hermes delivery frame; recover same job')
+            except httpx.TransportError:
+                # The ACK may have committed before its response was lost.
+                # Reconnecting observes that receipt or resends the same result.
+                pass
+            if attempt + 1 < connections:
+                time.sleep(min(2, attempt + 1))
+        raise TimeoutError('Hermes receipt not confirmed; reconnect the same job, never create a new draw')
 
     def list_jobs(self,*,status=None,limit=20,offset=0):
         params={'limit':limit,'offset':offset}

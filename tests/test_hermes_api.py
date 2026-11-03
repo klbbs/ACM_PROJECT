@@ -233,6 +233,13 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={**admin,'Idempotency-Key':'d'*32})
         job=wait(c,r.json()['id'],admin)
         assert job['status']=='completed',job
+        dispatch=service.control.deliveries.claim(job['id'])
+        receipt={k:dispatch[k] for k in ('delivery_id','result_sha256')};receipt['received']=True
+        ack_path='/api/hermes/draws/'+job['id']+'/delivery/ack'
+        stream_path='/api/hermes/draws/'+job['id']+'/delivery/stream'
+        assert c.post(ack_path,json=receipt,headers={**admin,'X-CSRF-Token':'bad'}).status_code==403
+        assert c.post(stream_path,json={},headers={**admin,'Origin':'https://different.example'}).status_code==403
+        assert c.post(ack_path,json=receipt,headers=admin).status_code==200
         # Text and image share delivery memory, so the next image must use a
         # different eligible question rather than delivering the first again.
         next_pid='codeforces:7-A'
@@ -246,6 +253,9 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         assert c.get(image_url,headers=admin).status_code==200
         assert c.post('/api/hermes/stop',json={},headers={**admin,'X-CSRF-Token':'bad'}).status_code==403
         member,_=auth('/api/auth/register',{'username':'member','password':'Synthetic-password-123','invitation':invite})
+        assert c.get('/api/hermes/draws/'+job['id']+'/delivery',headers=member).status_code==404
+        assert c.post(ack_path,json=receipt,headers=member).status_code==404
+        assert c.post(stream_path,json={},headers=member).status_code==404
         assert c.get('/api/hermes/draws/'+job['id'],headers=member).status_code==404
         assert c.get('/api/hermes/draws/'+job['id']+'/screenshots/0',headers=member).status_code==404
         assert c.get(image_url,headers=member).status_code==404
@@ -893,3 +903,63 @@ def test_cancel_during_last_login_refresh_never_starts_paid_model(client,monkeyp
     job=stopped(c,jid)
     assert job['status']=='interrupted'
     fake.assert_not_awaited()
+
+
+def test_delivery_stream_repeats_saved_result_until_explicit_receipt(client,monkeypatch):
+    c,s,fake=client
+    job=wait(c,start(c))
+    jid=job['id'];calls=fake.await_count
+    assert c.get(f'/api/hermes/draws/{jid}/delivery').json()['state']=='pending'
+    monkeypatch.setattr('acmhermes.delivery.ACK_TIMEOUT',.03)
+    monkeypatch.setattr('acmhermes.delivery.POLL_INTERVAL',.001)
+    r=c.post(f'/api/hermes/draws/{jid}/delivery/stream',json={})
+    assert r.status_code==200 and r.headers['cache-control']=='no-store'
+    events=[json.loads(line) for line in r.text.splitlines()]
+    results=[e for e in events if e['type']=='result']
+    assert len(results)==3 and events[-1]['type']=='pending'
+    assert len({e['result_json'] for e in results})==1
+    assert len({e['delivery_id'] for e in results})==1
+    assert json.loads(results[0]['result_json'])['report']==job['result']['report']
+    payload={k:results[0][k] for k in ('delivery_id','result_sha256')};payload['received']=True
+    receipt=c.post(f'/api/hermes/draws/{jid}/delivery/ack',json=payload).json()
+    assert receipt['state']=='acknowledged'
+    assert c.post(f'/api/hermes/draws/{jid}/delivery/ack',json=payload).json()==receipt
+    response=c.post(f'/api/hermes/draws/{jid}/delivery/stream',json={})
+    assert [json.loads(line)['type'] for line in response.text.splitlines()]==['acknowledged']
+    assert fake.await_count==calls
+    assert s.control.memory.drawn_ids()=={PID}
+
+
+def test_ack_during_open_stream_stops_retransmission(client,monkeypatch):
+    import threading
+    c,s,_=client;job=wait(c,start(c));jid=job['id']
+    monkeypatch.setattr('acmhermes.delivery.ACK_TIMEOUT',.5)
+    monkeypatch.setattr('acmhermes.delivery.POLL_INTERVAL',.001)
+    seen=threading.Event();messages=[];responses=[]
+    original=s.control.deliveries.claim
+    def claimed(value):
+        message=original(value)
+        if message['type']=='result':messages.append(message);seen.set()
+        return message
+    monkeypatch.setattr(s.control.deliveries,'claim',claimed)
+    def confirm():
+        assert seen.wait(3)
+        payload={k:messages[0][k] for k in ('delivery_id','result_sha256')};payload['received']=True
+        responses.append(c.post(f'/api/hermes/draws/{jid}/delivery/ack',json=payload).status_code)
+    thread=threading.Thread(target=confirm);thread.start()
+    response=c.post(f'/api/hermes/draws/{jid}/delivery/stream',json={})
+    thread.join(3)
+    assert responses==[200]
+    assert json.loads(response.text.splitlines()[-1])['type']=='acknowledged'
+    assert s.control.deliveries.claim(jid)['type']=='acknowledged'
+
+
+def test_delivery_creation_rolls_back_with_failed_exclusion_memory(client,monkeypatch):
+    c,s,fake=client
+    monkeypatch.setattr(s.control.memory,'record',lambda *args:(_ for _ in ()).throw(AIError('synthetic conflict')))
+    job=wait(c,start(c))
+    assert job['status']=='failed'
+    with s.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM hermes_deliveries').fetchone()[0]==0
+        assert db.execute('SELECT COUNT(*) FROM hermes_drawn_problems').fetchone()[0]==0
+    assert c.post(f"/api/hermes/draws/{job['id']}/delivery/stream",json={}).status_code==409

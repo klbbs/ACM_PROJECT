@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from acmweb.runtime_logs import emit_event
 from acmweb.codex_bridge import AIError
 from .memory import DrawMemory
+from .delivery import Deliveries
 
 TERMINAL = {'completed','failed','interrupted','partial'}
 STAGES = {'queued':'等待处理','validating':'检查配置','preparing_image':'检查图片组件',
@@ -33,6 +34,7 @@ class TaskControl:
             c.execute("""UPDATE hermes_task_control SET stopped_at=? WHERE cancel_requested=1
                 AND stopped_at IS NULL AND job_id IN(SELECT id FROM web_jobs WHERE status='interrupted')""",(int(time.time()),))
         self.memory=DrawMemory(self.db)
+        self.deliveries=Deliveries(self.db)
 
     @staticmethod
     def decorate(row):
@@ -83,10 +85,15 @@ class TaskControl:
         if control and control[0]:
             return 'interrupted',None,STOP_MESSAGE
         if status == 'completed':
+            c.execute('SAVEPOINT hermes_completion')
             try:
+                self.deliveries.record(c,jid,result)
                 self.memory.record(c,jid,result)
             except AIError as exc:
+                c.execute('ROLLBACK TO hermes_completion')
                 status,result,error='failed',None,str(exc)
+            finally:
+                c.execute('RELEASE hermes_completion')
         if status in TERMINAL:
             c.execute('UPDATE hermes_task_control SET stage=? WHERE job_id=?',(status,jid))
         return status,result,error
