@@ -171,7 +171,8 @@ def test_saved_ai_choices_remain_visible_only_while_still_eligible(db):
 def test_explicit_selection_renews_expired_sessions_only_and_skips_public_accounts(db):
     checked = []
     class Checks:
-        def statuses(self): return {'items': [{'platform': 'atcoder', 'handle': 'fresh', 'login_verified': True}]}
+        def statuses(self): return {'items': [{'platform': 'atcoder', 'handle': 'fresh', 'login_verified': True,
+                                             'status': 'authenticated', 'checked_at': int(time.time())}]}
         def credential(self, platform, handle): return ('private=value' if handle != 'public' else '', 'fingerprint')
         def check(self, platform, handle): checked.append((platform, handle))
     source = SimpleNamespace(credential_checks=Checks(), document=lambda: {'accounts': [

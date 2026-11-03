@@ -795,3 +795,101 @@ def test_checked_contest_filter_happens_before_random_pool_limit(client):
     job=wait(c,response.json()['id'])
     assert job['status']=='completed',job
     assert job['result']['problem']['id']==PID
+
+
+@pytest.mark.parametrize('slow_phase',['catalog','statistics'])
+def test_draw_renews_real_login_evidence_at_candidate_boundaries(client,monkeypatch,slow_phase):
+    from acmweb import catalog
+    from acmweb.credential_check import CredentialChecks
+    c,s,fake=client
+    clock=[int(time.time())]
+    monkeypatch.setattr(catalog.time,'time',lambda:clock[0])
+    monkeypatch.setattr(s.accounts,'document',lambda:{'accounts':[
+        {'platform':'codeforces','handle':'Owner','cookie':'session=SYNTHETIC'}]})
+    checker=CredentialChecks(s.accounts)
+    monkeypatch.setattr(s.accounts,'credential_checks',checker)
+    _,digest=checker.credential('codeforces','Owner')
+    checker.cache[('codeforces','Owner')]=(digest,{'platform':'codeforces','handle':'Owner',
+        'status':'authenticated','login_verified':True,'checked_at':clock[0]-10})
+    calls=[]
+    class Response:
+        status_code=200;headers={};encoding='utf-8'
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def iter_content(self,chunk_size):
+            yield (b'<div class="lang-chooser"><a href="/profile/Owner">Owner</a>'
+                   b'<a href="/logout">logout</a></div><form action="/settings/general"></form>')
+    class Session:
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def get(self,*args,**kwargs):
+            calls.append(clock[0]);return Response()
+    monkeypatch.setattr('acmweb.credential_check.requests.Session',Session)
+    monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',catalog.refresh_recommendation_sessions)
+    async def refresh_catalog():
+        if slow_phase=='catalog':clock[0]+=291
+        return {'status':'synthetic'}
+    async def statistics(request):
+        assert s.pool(request,evidence_only=True)
+        if slow_phase=='statistics':clock[0]+=291
+        return {'status':'synthetic'}
+    monkeypatch.setattr(s,'ensure_catalog',refresh_catalog)
+    monkeypatch.setattr(s,'refresh_evidence',statistics)
+    fake_renderer(s)
+    job=wait(c,start(c,path='/api/hermes/draw/image'))
+    assert job['status']=='completed',job
+    assert len(calls)==1 and checker.statuses()['items'][0]['checked_at']==clock[0]
+    assert fake.await_count==2
+
+
+def test_draw_unverified_login_stops_before_model_without_looping_checks(client,monkeypatch,tmp_path):
+    from acmweb.runtime_logs import RuntimeLogs
+    c,s,fake=client
+    monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':[]})
+    store=RuntimeLogs(tmp_path/'events')
+    monkeypatch.setattr(s.app.state,'event_log',store)
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '没有已验证登录的平台' in job['error']
+    fake.assert_not_awaited()
+    s.sync_history.assert_not_awaited()
+    events=store.listing()['items']
+    checked=[e for e in events if e['event']=='hermes.sessions_checked']
+    assert len(checked)==1
+    assert checked[0]['details']['session_stage']=='before_history'
+    assert checked[0]['details']['verified_count']==0
+
+
+def test_platform_renewed_before_evidence_requires_its_history_to_be_synced(client,monkeypatch):
+    c,s,fake=client
+    rows=[{'platform':'codeforces','handle':'Owner','status':'authenticated','login_verified':True}]
+    monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':list(rows)})
+    calls=[]
+    async def renew(*args,**kwargs):
+        calls.append(1)
+        if len(calls)==3:
+            rows.append({'platform':'atcoder','handle':'Other','status':'authenticated','login_verified':True})
+        return {}
+    monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',renew)
+    job=wait(c,start(c))
+    assert job['status']=='failed' and '新验证账号尚未同步提交' in job['error']
+    s.refresh_evidence.assert_not_awaited()
+    fake.assert_not_awaited()
+
+
+def test_cancel_during_last_login_refresh_never_starts_paid_model(client,monkeypatch):
+    import threading
+    c,s,fake=client
+    calls=[];entered=threading.Event()
+    async def renew(*args,**kwargs):
+        calls.append(1)
+        if len(calls)==4:
+            entered.set()
+            await asyncio.Event().wait()
+        return {}
+    monkeypatch.setattr('acmhermes.service.refresh_recommendation_sessions',renew)
+    jid=start(c)
+    assert entered.wait(2)
+    assert c.post('/api/hermes/draws/'+jid+'/cancel',json={}).status_code==200
+    job=stopped(c,jid)
+    assert job['status']=='interrupted'
+    fake.assert_not_awaited()

@@ -688,25 +688,55 @@ def verified_platforms(accounts):
                    if row.get('login_verified') and row.get('status') == 'authenticated' and row['platform'] in PLATFORMS})
 
 
-async def refresh_recommendation_sessions(accounts):
-    """Explicit selection jobs may renew expired evidence; GET routes never do I/O."""
+async def refresh_recommendation_sessions(accounts, *, minimum_validity=0):
+    """Renew selection evidence without bypassing the detector's cooldowns.
+
+    A negative result is not a five-minute authentication cache. Retry it once
+    the detector's normal reuse window (or upstream Retry-After) has elapsed.
+    ``minimum_validity`` lets long-running jobs renew authentication before its
+    five-minute evidence window expires; no stale success is inherited on error.
+    GET routes never call this helper or perform network I/O.
+    """
+    summary = dict(checked=0, skipped_fresh=0, skipped_cooldown=0,
+                   skipped_public=0, busy=0, errors=0)
     checker = getattr(accounts, 'credential_checks', None)
     if checker is None or not callable(getattr(checker, 'check', None)) or not callable(getattr(accounts, 'document', None)):
-        return
-    fresh = {(row['platform'], row['handle']) for row in checker.statuses()['items']}
+        return summary
+    statuses = {(row['platform'], row['handle']): row for row in checker.statuses()['items']}
     for account in accounts.document().get('accounts', []):
         key = (account.get('platform'), account.get('handle'))
-        if key[0] not in PLATFORMS or key in fresh: continue
+        if key[0] not in PLATFORMS: continue
         cookie, _ = checker.credential(*key)
-        if not cookie: continue
+        if not cookie:
+            summary['skipped_public'] += 1
+            continue
+        previous = statuses.get(key, {})
+        stamp = previous.get('checked_at')
+        age = time.time() - stamp if type(stamp) in (int, float) else None
+        if age is not None and age >= 0:
+            authenticated = previous.get('status') == 'authenticated' and previous.get('login_verified') is True
+            if authenticated and age < 300 and 300 - age >= minimum_validity:
+                summary['skipped_fresh'] += 1
+                continue
+            cooldown = 60
+            retry_after = previous.get('retry_after_seconds')
+            if (previous.get('reason') == 'rate_limited' and type(retry_after) in (int, float)
+                    and 10 <= retry_after <= 3600):
+                cooldown = max(cooldown, retry_after)
+            if not authenticated and age < cooldown:
+                summary['skipped_cooldown'] += 1
+                continue
         try:
             # A serial background check respects both the checker rate limit and global slots.
             await asyncio.to_thread(checker.check, *key)
+            summary['checked'] += 1
         except HTTPException as exc:
             if exc.status_code != 429: raise
+            summary['busy'] += 1
         except AIError:
             # Configuration errors must not turn mere saved credentials into verified ones.
-            continue
+            summary['errors'] += 1
+    return summary
 
 
 def recommendation_candidates(database, accounts, minimum=800, maximum=1600, tags=None,

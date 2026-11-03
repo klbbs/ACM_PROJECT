@@ -441,6 +441,10 @@ class CredentialChecks:
             except requests.RequestException:result.update(status='unknown',reason='network_error')
             except (UnicodeError, ValueError, LookupError):result.update(status='unknown',reason='page_changed')
             finally:SLOTS.release()
+        # Evidence becomes available only after the bounded official request
+        # and identity parsing finish. Reusing a cached result returns above,
+        # so reads cannot extend the original evidence's lifetime.
+        result['checked_at'] = int(time.time())
         diagnostics(result)
         return dict(self.remember_result(result, digest))
 

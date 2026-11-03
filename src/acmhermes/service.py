@@ -11,7 +11,8 @@ from typing import Literal
 
 from fastapi import Header, HTTPException, Query
 from fastapi.responses import FileResponse
-from acmweb.catalog import recommendation_candidates, refresh_recommendation_sessions, _canonical
+from acmweb.catalog import recommendation_candidates, refresh_recommendation_sessions, verified_platforms, _canonical
+from acmweb.runtime_logs import emit_event
 from acmweb.codex_bridge import AIError
 from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
 from acmweb.training_topics import TOPICS, matches_topic
@@ -163,26 +164,45 @@ class Hermes:
                     from .history import bindings
                     if not set(bindings(self.accounts)).issubset(synced_bindings):
                         raise AIError('平台登录状态在历史同步后已变化，新验证账号尚未同步提交；请重新抽题，不会使用未同步平台选题')
+            async def renew_sessions(checkpoint):
+                # Recheck at the exact boundaries that consume login evidence.
+                # Catalog/standings work may outlive a five-minute check; never
+                # stretch an expired timestamp or accept a negative result.
+                summary = await refresh_recommendation_sessions(self.accounts, minimum_validity=60)
+                verified = len(verified_platforms(self.accounts))
+                emit_event(getattr(self.app.state, 'event_log', None), 'hermes.sessions_checked',
+                    level='INFO' if verified else 'WARNING', job_id=job_id,
+                    session_stage=checkpoint, verified_count=verified,
+                    **({key: summary[key] for key in ('checked','busy','errors','skipped_fresh','skipped_cooldown')
+                        if key in summary} if isinstance(summary, dict) else {}))
+                guard()
+                if not verified:
+                    error = AIError('没有已验证登录的平台；本次登录检测尚未确认有效身份，可能是临时网络失败、平台限制或会话已过期。'
+                                    '凭据未被删除；请等待检测冷却后重试，或到连接与设置查看检测结果')
+                    error.reason = 'hermes_session_unavailable'
+                    raise error
             if output_format=='image':
                 self.control.stage(job_id,'preparing_image')
                 await self.renderer().preflight()
                 guard()
             self.control.stage(job_id,'checking_sessions')
-            await refresh_recommendation_sessions(self.accounts)
+            await renew_sessions('before_history')
             guard()
             self.control.stage(job_id,'syncing_submissions')
             history=await self.sync_history()
             synced_bindings={(row['platform'],row['handle']) for row in history['accounts'] if row.get('complete')}
             guard()
             # A long initial full-history read may outlive login evidence.
-            await refresh_recommendation_sessions(self.accounts)
+            await renew_sessions('after_history')
             guard()
             self.control.stage(job_id,'syncing_catalog')
             catalog=await self.ensure_catalog()
             guard()
+            await renew_sessions('before_evidence')
             self.control.stage(job_id,'checking_difficulty')
             contest_evidence = await self.refresh_evidence(request)
             guard()
+            await renew_sessions('before_selection')
             if contest_evidence.get('contests_available', 0):
                 # Do not usually pick an unchecked official-only task after
                 # paying the cost of examining a bounded contest sample. Known
@@ -221,7 +241,7 @@ class Hermes:
             # Revalidate eligibility and the precise full-statement fingerprint
             # after all paid work; never silently replace a changed problem.
             self.control.stage(job_id,'revalidating')
-            await refresh_recommendation_sessions(self.accounts)
+            await renew_sessions('before_delivery')
             guard()
             if choice.problem_id not in {p['id'] for p in self.pool(request,[choice.problem_id])}:
                 raise AIError('题目资格已变化（登录、日期、已完成或对战），未交付结果')

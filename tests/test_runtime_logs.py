@@ -145,3 +145,16 @@ def test_nested_dispatch_records_child_route_once_with_only_known_reason(tmp_pat
     assert rows[0]['details']['route'] == '/api/ai/settings'
     assert rows[0]['details']['reason'] == 'ai_host_not_allowed'
     assert 'PRIVATE' not in json.dumps(rows)
+
+
+def test_hermes_session_diagnostics_only_keep_bounded_safe_values(tmp_path):
+    store=RuntimeLogs(tmp_path/'logs')
+    store.emit('hermes.sessions_checked',job_id='a'*32,session_stage='before_selection',
+        verified_count=1,checked=2,busy=0,errors=0,skipped_fresh=1,skipped_cooldown=0,
+        cookie='PRIVATE',handle='PRIVATE',raw_error='PRIVATE')
+    details=store.listing()['items'][0]['details']
+    assert details['session_stage']=='before_selection' and details['verified_count']==1
+    assert 'PRIVATE' not in json.dumps(details)
+    store.emit('hermes.sessions_checked',session_stage=['PRIVATE'],verified_count=True,
+        checked=-1,busy=10001,errors='PRIVATE')
+    assert store.listing()['items'][0]['details']=={}
