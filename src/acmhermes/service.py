@@ -85,7 +85,7 @@ class Hermes:
         parts.append('<p>原题：'+html.escape(explanation['original_url'])+'</p>')
         return {'title':explanation['title'],'body_html':''.join(parts),'samples':explanation['samples']}
 
-    def pool(self, request, preferred_ids=None, *, evidence_only=False, qualified_contests=None):
+    def pool(self, request, preferred_ids=None, *, evidence_only=False, qualified_contests=None, allowed_platforms=None):
         low, high = request.score_range
         reference = cf_reference(self.db)
         topic = TOPICS.get(request.topic or '')
@@ -104,6 +104,8 @@ class Hermes:
                 return p.get('platform') == 'codeforces' and type(p.get('difficulty')) is int
             return score(p).get('eligible', overlaps(score(p), low, high))
         def eligible(p):
+            if allowed_platforms is not None and p.get('platform') not in allowed_platforms:
+                return False
             if (qualified_contests is not None and p.get('platform') == 'codeforces'
                     and p.get('contest_id') not in qualified_contests
                     and score(p).get('empirical_rating') is None):
@@ -125,9 +127,25 @@ class Hermes:
                  **({'topic_method_evidence':methods[row['id']]} if row['id'] in methods else {})} for row in rows]
 
     @staticmethod
-    def choose(pool):
+    def platform_weights(pool, recent_platforms=()):
+        return {p:max(1, round(1000 / (1 + recent_platforms.count(p)) *
+                              (.5 if recent_platforms and recent_platforms[0] == p else 1)))
+                for p in sorted({row['platform'] for row in pool})}
+
+    @staticmethod
+    def choose(pool, recent_platforms=()):
         # Integer OS randomness, positive weight for every eligible candidate.
         # Gym bonus affects probability only, never its estimated difficulty.
+        platforms = sorted({row['platform'] for row in pool})
+        if len(platforms) > 1:
+            by_platform = Hermes.platform_weights(pool, recent_platforms)
+            weights = [by_platform[p] for p in platforms]
+            position = secrets.randbelow(sum(weights))
+            for platform, weight in zip(platforms, weights):
+                if position < weight:
+                    candidate, _ = Hermes.choose([row for row in pool if row['platform'] == platform])
+                    return candidate, 'system_platform_balanced_random_without_replacement'
+                position -= weight
         weights = [max(1, round(1000 * (1 + row['score_evidence'].get('priority_score', 0)))) for row in pool]
         if len(set(weights)) == 1:
             return secrets.choice(pool), 'system_random_without_replacement'
@@ -138,8 +156,22 @@ class Hermes:
             position -= weight
         raise AssertionError('invalid random weight')
 
+    def recent_platforms(self):
+        with self.db.connect() as db:
+            rows=db.execute("SELECT result FROM web_jobs WHERE kind='hermes_draw' AND status='completed' AND result IS NOT NULL ORDER BY updated_at DESC,id DESC LIMIT 8").fetchall()
+        result=[]
+        for row in rows:
+            try:
+                platform=json.loads(row[0]).get('problem',{}).get('platform')
+            except (ValueError,TypeError,AttributeError):
+                continue
+            if platform in {'codeforces','atcoder','luogu','nowcoder'}:
+                result.append(platform)
+        return result
+
     async def run(self, payload, *, job_id=None):
         artifacts=[]
+        started=time.monotonic()
         async def pipeline():
             self.control.stage(job_id,'validating')
             request = Draw.model_validate(payload['request'])
@@ -154,6 +186,13 @@ class Hermes:
             fingerprint = self.ai.configuration_fingerprint()
             account_revision = self.accounts.revision()
             synced_bindings = None
+            known_bindings = None
+            allowed_platforms = None
+            fallbacks = []
+            def note(platform, step, reason):
+                fallbacks.append({'platform':platform,'stage':step,'reason':reason})
+                emit_event(getattr(self.app.state,'event_log',None),'hermes.platform_skipped',
+                    level='WARNING',job_id=job_id,platform=platform,failure_step=step,reason=reason)
             def guard():
                 self.control.check(job_id)
                 if self.ai.configuration_fingerprint() != fingerprint:
@@ -162,7 +201,7 @@ class Hermes:
                     raise AIError('Hermes 生成期间平台配置已变化，未继续抽题或交付旧账号结果；请重新发起')
                 if synced_bindings is not None:
                     from .history import bindings
-                    if not set(bindings(self.accounts)).issubset(synced_bindings):
+                    if not set(bindings(self.accounts)).issubset(known_bindings or synced_bindings):
                         raise AIError('平台登录状态在历史同步后已变化，新验证账号尚未同步提交；请重新抽题，不会使用未同步平台选题')
             async def renew_sessions(checkpoint):
                 # Recheck at the exact boundaries that consume login evidence.
@@ -191,59 +230,94 @@ class Hermes:
             self.control.stage(job_id,'syncing_submissions')
             history=await self.sync_history()
             synced_bindings={(row['platform'],row['handle']) for row in history['accounts'] if row.get('complete')}
+            known_bindings={(row['platform'],row['handle']) for row in history['accounts']}
+            failed_history={row['platform'] for row in history['accounts'] if not row.get('complete')}
+            allowed_platforms={platform for platform,_ in synced_bindings}-failed_history
+            for platform in sorted(failed_history):
+                note(platform,'history','hermes_history_unavailable')
             guard()
             # A long initial full-history read may outlive login evidence.
             await renew_sessions('after_history')
             guard()
             self.control.stage(job_id,'syncing_catalog')
-            catalog=await self.ensure_catalog()
+            if 'codeforces' in allowed_platforms:
+                try:
+                    catalog=await self.ensure_catalog()
+                except AIError:
+                    guard()
+                    allowed_platforms.discard('codeforces')
+                    catalog={'platform':'codeforces','status':'unavailable','reason':'hermes_catalog_unavailable'}
+                    note('codeforces','catalog','hermes_catalog_unavailable')
+            else:
+                catalog={'platform':'codeforces','status':'not_required'}
             guard()
             await renew_sessions('before_evidence')
             self.control.stage(job_id,'checking_difficulty')
-            contest_evidence = await self.refresh_evidence(request)
+            contest_evidence = (await self.refresh_evidence(request) if 'codeforces' in allowed_platforms
+                                else {'status':'not_required'})
             guard()
             await renew_sessions('before_selection')
-            if contest_evidence.get('contests_available', 0):
-                # Do not usually pick an unchecked official-only task after
-                # paying the cost of examining a bounded contest sample. Known
-                # cached estimates and qualified Gym remain eligible too.
-                checked = set(contest_evidence.get('available_contest_ids', []))
-                pool = self.pool(request, qualified_contests=checked)
-            else:
-                pool = self.pool(request)
+            # Statistics improve known ratings; a finite standings sample must
+            # not erase every otherwise valid CF task in favour of another OJ.
+            pool = self.pool(request, allowed_platforms=allowed_platforms)
             if not pool:
-                raise AIError('没有符合分数区间、题型、日期和已登录平台条件的未完成且未推荐题；已排除历史提交、已交付题和客户端记录。请调整范围，不会重复推荐或编造题目')
-            self.control.stage(job_id,'selecting')
-            # Model preferences are not randomness. Draw one eligible ID with
-            # the OS RNG; the model can explain this choice, never replace it.
-            candidate, strategy = self.choose(pool)
-            chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
-                {'candidates':[candidate],'score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
-            guard()
-            choice = Choice.model_validate(chosen.data)
-            if choice.problem_id != candidate['id']:
-                raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
+                raise AIError('没有符合分数、题型、日期与本轮可用平台条件的未完成且未推荐题；已排除历史提交、已交付题和客户端记录；故障平台已跳过，其他平台也暂无合适候选')
+            candidate_counts={platform:sum(p['platform']==platform for p in pool) for platform in sorted(allowed_platforms)}
+            recent=self.recent_platforms()
+            platform_weights=self.platform_weights(pool,recent)
             reports = self.app.state.selection_reports
-            self.control.stage(job_id,'reading_statement')
-            statement, statement_hash = await reports._read(choice.problem_id)
-            guard()
-            self.control.stage(job_id,'generating_report')
-            response = await self.ai.complete('hermes_solution_report',selection['channel'],selection['model'],
-                {'problem_id':choice.problem_id,'statement':statement,'score_range':list(request.score_range),
-                 'topic':topic_context,'difficulty_evidence':candidate['score_evidence'],
-                 'topic_method_evidence':candidate.get('topic_method_evidence')},SolutionReport)
-            guard()
-            report = SolutionReport.model_validate(response.data).model_dump()
-            if report['problem_id'] != choice.problem_id or not report['suitable']:
-                raise AIError('完整题面阅读后未确认符合要求，未交付该题；不会自动付费换题')
-            if re.search(r'```|#include|\bint\s+main\s*\(|public\s+static\s+void\s+main',json.dumps(report)):
-                raise AIError('报告包含完整程序，未交付；本接口只返回解题分析报告')
+            report_attempts = 0
+            while pool:
+                self.control.stage(job_id,'selecting')
+                candidate, strategy = self.choose(pool, recent)
+                platform=candidate['platform']
+                self.control.stage(job_id,'reading_statement')
+                try:
+                    statement, statement_hash = await reports._read(candidate['id'])
+                except AIError:
+                    guard()
+                    note(platform,'statement','hermes_statement_unavailable')
+                    pool=[p for p in pool if p['platform']!=platform]
+                    continue
+                guard()
+                self.control.stage(job_id,'selecting')
+                chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
+                    {'candidates':[candidate],'score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
+                guard()
+                choice = Choice.model_validate(chosen.data)
+                if choice.problem_id != candidate['id']:
+                    raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
+                self.control.stage(job_id,'generating_report')
+                # Provider failures are not OJ outages: do not blindly charge
+                # again against the same broken model by changing the OJ.
+                response = await self.ai.complete('hermes_solution_report',selection['channel'],selection['model'],
+                    {'problem_id':choice.problem_id,'statement':statement,'score_range':list(request.score_range),
+                     'topic':topic_context,'difficulty_evidence':candidate['score_evidence'],
+                     'topic_method_evidence':candidate.get('topic_method_evidence')},SolutionReport)
+                guard()
+                report_attempts += 1
+                report = SolutionReport.model_validate(response.data).model_dump()
+                if report['problem_id'] != choice.problem_id:
+                    raise AIError('报告题号与本次抽取不一致，未交付结果')
+                if not report['suitable']:
+                    note(platform,'report','hermes_report_unsuitable')
+                    pool=[p for p in pool if p['platform']!=platform]
+                    if report_attempts >= 2 or time.monotonic()-started >= MAX_RUN_SECONDS-60:
+                        break
+                    continue
+                if re.search(r'```|#include|\bint\s+main\s*\(|public\s+static\s+void\s+main',json.dumps(report)):
+                    raise AIError('报告包含完整程序，未交付；本接口只返回解题分析报告')
+                break
+            else:
+                raise AIError('已尝试本轮其他平台，均未取得可用的完整题面或合适报告；请稍后重试')
+            if not report['suitable']:
+                raise AIError('已跨平台尝试，仍未确认适用题目；达到报告次数或总时限预算，已停止调用模型')
             # Revalidate eligibility and the precise full-statement fingerprint
             # after all paid work; never silently replace a changed problem.
             self.control.stage(job_id,'revalidating')
             await renew_sessions('before_delivery')
             guard()
-            if choice.problem_id not in {p['id'] for p in self.pool(request,[choice.problem_id])}:
+            if choice.problem_id not in {p['id'] for p in self.pool(request,[choice.problem_id], allowed_platforms=allowed_platforms)}:
                 raise AIError('题目资格已变化（登录、日期、已完成或对战），未交付结果')
             if reports._cached(choice.problem_id)[1] != statement_hash:
                 raise AIError('生成期间题面已变化，未交付不匹配的题目说明或报告')
@@ -257,7 +331,8 @@ class Hermes:
             result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
                     'history_sync':history,'catalog_sync':catalog,'contest_evidence_sync':contest_evidence,
-                    'selection_strategy':strategy,
+                    'selection_strategy':strategy, 'platform_candidate_counts':candidate_counts,
+                    'platform_weights':platform_weights,'platform_fallbacks':fallbacks,'report_attempts':report_attempts,
                     'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
             if output_format=='image':
                 self.control.stage(job_id,'rendering_image')
@@ -317,7 +392,9 @@ def register(app):
                 'delivery_protocol':{'name':PROTOCOL,'ack_timeout_seconds':ACK_TIMEOUT,
                     'semantics':'at_least_once','ack_after':'durable_consumer_commit',
                     'notice':'结果重发使用同一消息，不重新抽题；调用方必须开启交付流并在本地去重、落盘后确认。'},
-                'selection_strategy':'system_weighted_random_without_replacement','exclude_ids_limit':10000,
+                'selection_strategy':'system_platform_balanced_random_without_replacement','exclude_ids_limit':10000,
+                'platform_policy':{'base_weight':'equal_per_eligible_platform','recent_window':8,
+                    'max_report_attempts':2,'notice':'先抽平台再抽题，近期重复平台降权；故障平台本轮跳过，不放宽已做题和登录要求。'},
                 'difficulty_policy':{'empirical_weight':0.55,'official_weight':0.45,'gym_priority_bonus':0.12,
                     'minimum_statistics_population':100,'notice':'统计充分时按综合估计筛选；Gym 加分只影响概率，未知难度排除，现场数据不是官方 rating。'},
                 'score_range':{'minimum':800,'maximum':3500,'reference':'CF 综合训练估计；统计不足时保留官方 rating，其他平台用注明来源的估计，未知分数排除'},
@@ -370,6 +447,8 @@ def register(app):
             raise HTTPException(422,'请提供有效的分数区间和题型')
         items=service.pool(Draw(score_range=(minimum,maximum),topic=topic))
         return {'items':items,'count':len(items),'limit':60,'cache_only':True,
+                'platform_candidate_counts':{p:sum(row['platform']==p for row in items) for p in verified_platforms(service.accounts)},
+                'platform_weights':service.platform_weights(items,service.recent_platforms()),
                 'notice':'仅预览当前缓存与登录证据，非全库总数；不调用 AI、不检测登录、不锁定候选'}
 
     @app.get('/api/hermes/problem-memory')

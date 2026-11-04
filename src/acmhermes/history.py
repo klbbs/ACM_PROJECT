@@ -83,13 +83,23 @@ def synchronize(database,accounts,stop):
                     client=HistoryClient(stop,interval=config.interval,timeout=config.timeout,retries=0,
                                          cookie=cookie,cookie_host=HOSTS[account.platform])
                     try:
-                        adapter=ADAPTERS[account.platform](client,account.handle,max_pages=config.max_pages,
-                            page_size=config.page_size,enrich=False)
-                        result=adapter.collect(since)
+                        try:
+                            adapter=ADAPTERS[account.platform](client,account.handle,max_pages=config.max_pages,
+                                page_size=config.page_size,enrich=False)
+                            result=adapter.collect(since)
+                        except Exception:
+                            # An OJ outage excludes only that platform for this
+                            # draw. Cancellation is BaseException and propagates.
+                            result=None
                     finally:client.close()
                     if stop.is_set():raise Stopped()
                     if accounts.revision()!=revision:
                         raise AIError('历史同步期间平台配置已变化，未保存旧账号响应或继续抽题')
+                    if result is None:
+                        rows.append({'platform':account.platform,'handle':account.handle,'complete':False,
+                            'count':0,'since':since,'coverage':COVERAGE[account.platform],
+                            'reason':'history_unavailable'})
+                        continue
                     # Keep partial official rows for exclusion, but no profile
                     # replacement or misleading global checkpoint on failure.
                     store.save('hermes-'+uuid.uuid4().hex,started,result,capture_snapshot=False)
@@ -99,12 +109,19 @@ def synchronize(database,accounts,stop):
                     if not result.complete:
                         # Adapter error text is not returned/logged: it may
                         # include private upstream response data.
-                        raise AIError(f'{account.platform} 历史提交同步未完整（可能为访问限制、限流或分页上限），已保留读到的记录；暂不调用 AI 抽题，请同步提交后重试')
+                        row['reason']='history_incomplete'
+                        continue
                     with store.db:
                         store.db.execute('''INSERT INTO hermes_history_sync VALUES(?,?,?)
                             ON CONFLICT(platform,account_key) DO UPDATE SET covered_until=excluded.covered_until''',
                             (account.platform,key,started))
-                return {'complete':True,'accounts':rows,'notice':'已同步当前可读取的账号历史并排除已尝试题；私有/不可见提交及第三方索引延迟无法保证覆盖。'}
+                failed={row['platform'] for row in rows if not row['complete']}
+                usable=sorted({row['platform'] for row in rows if row['complete']}-failed)
+                if not usable:
+                    raise AIError('所有可用平台历史同步未完整，暂时没有可安全排除已做题的平台；请稍后重试')
+                return {'complete':not failed,'accounts':rows,'usable_platforms':usable,
+                    'unavailable_platforms':sorted(failed),
+                    'notice':'仅从本次历史同步完整的平台抽题；故障平台本轮跳过，已读到的记录保留且失败进度不推进。'}
             finally:store.close()
     except RuntimeError:
         raise AIError('另一个提交同步正在运行，请等待结束后重新抽题；未调用 AI') from None

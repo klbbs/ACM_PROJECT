@@ -48,6 +48,16 @@ def test_daily_count_metadata_is_bounded_and_does_not_accept_provider_text(tmp_p
     assert 'PRIVATE' not in (tmp_path / 'logs' / 'runtime.jsonl').read_text()
 
 
+def test_hermes_platform_skip_logs_only_fixed_failure_metadata(tmp_path):
+    store=RuntimeLogs(tmp_path/'logs')
+    store.emit('hermes.platform_skipped',platform='codeforces',failure_step='statement',
+               reason='hermes_statement_unavailable',cookie='PRIVATE',error='PRIVATE')
+    row=store.listing()['items'][0]
+    assert row['details']=={'platform':'codeforces','failure_step':'statement',
+                            'reason':'hermes_statement_unavailable'}
+    assert 'PRIVATE' not in (tmp_path/'logs'/'runtime.jsonl').read_text()
+
+
 def test_training_diagnostics_keep_only_bounded_counts_and_known_mode(tmp_path):
     store = RuntimeLogs(tmp_path / 'logs')
     store.emit('training.selection_failed', level='WARNING',

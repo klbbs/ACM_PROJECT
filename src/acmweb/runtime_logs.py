@@ -19,6 +19,7 @@ user_id_context = contextvars.ContextVar('acm_log_user_id', default=None)
 console = logging.getLogger('acmweb.runtime')
 
 EVENTS = {
+    'hermes.platform_skipped': ('platform', '抽题已跳过暂不可用的平台，继续其他平台'),
     'hermes.sessions_checked': ('platform', '抽题阶段的平台登录证据已检查'),
     'platform.source_failed': ('platform', '官方提交源码读取未完成，请查看固定失败原因'),
     'ai.completed': ('task', 'AI 调用已完成'),
@@ -56,6 +57,7 @@ KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
          'hermes_draw', 'wb_statement', 'wb_sync', 'wb_hint', 'wb_review', 'wb_submission_review',
          'wb_remote_submit', 'wb_remote_refresh', 'wb_problem_submissions'}
 REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited', 'source_login_required', 'source_read_failed',
+           'hermes_history_unavailable', 'hermes_catalog_unavailable', 'hermes_statement_unavailable', 'hermes_report_unsuitable',
            'hermes_session_unavailable',
            'ai_schema_invalid', 'ai_auth_required', 'ai_usage_limit', 'ai_rate_limited',
            'ai_context_limit', 'ai_model_unavailable',
@@ -152,6 +154,8 @@ def safe_details(details):
         elif key == 'ai_streaming' and type(value) is bool:
             clean[key] = value
         elif key == 'session_stage' and isinstance(value, str) and value in {'before_history','after_history','before_evidence','before_selection','before_delivery'}:
+            clean[key] = value
+        elif key == 'failure_step' and isinstance(value, str) and value in {'history','catalog','statement','report'}:
             clean[key] = value
         elif key in {'verified_count','checked','busy','errors','skipped_fresh','skipped_cooldown'} and type(value) is int and 0 <= value <= 10000:
             clean[key] = value

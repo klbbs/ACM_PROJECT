@@ -193,3 +193,27 @@ def test_cancellation_during_host_pacing_prevents_actual_send(monkeypatch):
         with pytest.raises(history.Stopped):client.get('https://codeforces.com/api/user.status')
         assert not sends
     finally:client.close()
+
+
+@pytest.mark.parametrize('failure',['partial','exception'])
+def test_failed_platform_does_not_block_another_complete_platform(state,monkeypatch,failure):
+    db,accounts,seen,outcome=state
+    accounts.credential_checks.statuses=lambda:{'items':[
+        {'platform':p,'handle':h,'status':'authenticated','login_verified':True}
+        for p,h in [('codeforces','Owner'),('atcoder','Other')]]}
+    def cf(since):
+        if failure=='exception':raise RuntimeError('PRIVATE upstream body')
+        return Collection('codeforces','Owner',submissions=[Submission('1','4-A',100,'AC')],complete=False)
+    def at(since):
+        seen.append(('atcoder',since))
+        return Collection('atcoder','Other',submissions=[Submission('2','abc400_a',200,'AC')],complete=True)
+    monkeypatch.setattr(history,'ADAPTERS',{
+        'codeforces':lambda *a,**kw:SimpleNamespace(collect=cf),
+        'atcoder':lambda *a,**kw:SimpleNamespace(collect=at)})
+    result=history.synchronize(db,accounts,threading.Event())
+    assert result['complete'] is False and result['usable_platforms']==['atcoder']
+    assert result['unavailable_platforms']==['codeforces'] and 'PRIVATE' not in str(result)
+    assert seen==[('atcoder',0)]
+    with db.connect() as c:
+        checkpoints=[tuple(row) for row in c.execute('SELECT platform,covered_until FROM hermes_history_sync')]
+    assert checkpoints==[('atcoder',1000)]

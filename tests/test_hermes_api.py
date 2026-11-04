@@ -133,7 +133,7 @@ def test_text_generation_needs_no_browser_or_translation(client,monkeypatch):
 
 def test_empty_candidates_fail_before_paid_ai(client,monkeypatch):
     c,s,fake=client
-    monkeypatch.setattr(s,'pool',lambda *a:[])
+    monkeypatch.setattr(s,'pool',lambda *a,**kw:[])
     r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'b'*32})
     job=wait(c,r.json()['id'])
     assert job['status']=='failed' and '没有符合' in job['error']
@@ -166,7 +166,7 @@ def test_unreadable_full_statement_never_generates_explanation(client,monkeypatc
     r=c.post('/api/hermes/draw',json={'score_range':[800,1200]},headers={'Idempotency-Key':'f'*32})
     job=wait(c,r.json()['id'])
     assert job['status']=='failed' and job['result'] is None
-    assert [call.args[0] for call in fake.await_args_list]==['hermes_selection']
+    fake.assert_not_awaited()
 
 
 def test_no_model_or_idempotency_key_never_queues(client,monkeypatch):
@@ -390,7 +390,7 @@ def test_repeated_stop_does_not_cancel_cleanup_or_accept_late_ai(client):
     task.get_loop().call_soon_threadsafe(release.set)
     job=stopped(c,jid)
     assert job['result'] is None and job['status']=='interrupted'
-    assert [call.args[0] for call in fake.await_args_list]==['hermes_selection']
+    assert fake.await_count==1
 
 
 def test_stop_all_only_affects_own_hermes_jobs_and_not_future_draws(client):
@@ -678,7 +678,7 @@ def test_catalog_failure_stops_before_model_and_reports_sync_stage(client,monkey
     c,s,fake=client
     monkeypatch.setattr(s,'ensure_catalog',AsyncMock(side_effect=AIError('Codeforces 官方题库同步未完成')))
     job=wait(c,start(c))
-    assert job['status']=='failed' and '官方题库同步未完成' in job['error']
+    assert job['status']=='failed' and '故障平台已跳过' in job['error']
     fake.assert_not_awaited()
 
 
@@ -772,16 +772,19 @@ def test_preview_stays_readonly_and_exposes_explainable_policy(client):
     s.refresh_evidence.assert_not_awaited()
 
 
-def test_successful_statistics_sample_does_not_fall_back_to_unchecked_official_question(client):
+def test_finite_statistics_sample_keeps_unknown_official_candidates_but_not_proven_easy(client):
     c,s,fake=client
     set_catalog(s,PID,difficulty=1800,contest_statistics=aggregate(1000,850))
+    add_candidate(s,'codeforces:7-A')
     set_catalog(s,'codeforces:7-A',difficulty=1800)
+    fake.side_effect=generic_complete
     s.refresh_evidence.return_value={'status':'available','contests_available':1,
         'checked_contest_ids':[4,7],'available_contest_ids':[4]}
     response=c.post('/api/hermes/draw',json={'score_range':[1800,1800]},headers={'Idempotency-Key':'b'*32})
     job=wait(c,response.json()['id'])
-    assert job['status']=='failed'
-    fake.assert_not_awaited()
+    assert job['status']=='completed',job
+    assert job['result']['problem']['id']=='codeforces:7-A'
+    assert job['result']['problem']['score_evidence']['kind']=='official'
 
 
 def test_discovery_reserves_space_for_other_official_ratings(client):
@@ -794,13 +797,14 @@ def test_discovery_reserves_space_for_other_official_ratings(client):
     assert len(pool)<=60
 
 
-def test_checked_contest_filter_happens_before_random_pool_limit(client):
+def test_checked_contest_filter_happens_before_random_pool_limit(client,monkeypatch):
     c,s,_=client
     set_catalog(s,PID,difficulty=1800,contest_statistics=aggregate(1000,350))
     for i in range(10,90):set_catalog(s,f'codeforces:{i}-A',difficulty=1800)
     s.refresh_evidence.return_value={'contests_available':1,'available_contest_ids':[4]}
     pool=s.pool(Draw(score_range=(1800,1800)),qualified_contests={4})
     assert [p['id'] for p in pool]==[PID]
+    monkeypatch.setattr(s,'choose',lambda pool,*args:(next(p for p in pool if p['id']==PID),'synthetic'))
     response=c.post('/api/hermes/draw',json={'score_range':[1800,1800]},headers={'Idempotency-Key':'c'*32})
     job=wait(c,response.json()['id'])
     assert job['status']=='completed',job
@@ -963,3 +967,92 @@ def test_delivery_creation_rolls_back_with_failed_exclusion_memory(client,monkey
         assert db.execute('SELECT COUNT(*) FROM hermes_deliveries').fetchone()[0]==0
         assert db.execute('SELECT COUNT(*) FROM hermes_drawn_problems').fetchone()[0]==0
     assert c.post(f"/api/hermes/draws/{job['id']}/delivery/stream",json={}).status_code==409
+
+
+def add_second_platform(s,monkeypatch):
+    from acmweb.difficulty_estimates import ATCODER_POINTS
+    pid='atcoder:abc400_a'
+    rows=[{'platform':p,'handle':h,'status':'authenticated','login_verified':True}
+          for p,h in [('codeforces','Owner'),('atcoder','Other')]]
+    monkeypatch.setattr(s.accounts.credential_checks,'statuses',lambda:{'items':list(rows)})
+    s.sync_history.return_value={'complete':True,'accounts':[
+        {'platform':p,'handle':h,'complete':True} for p,h in [('codeforces','Owner'),('atcoder','Other')]]}
+    with s.db.connect() as db:
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)',('atcoder',pid,json.dumps({
+            'id':pid,'problem_id':'abc400_a','platform':'atcoder','tags':['math'],'title':'Other synthetic',
+            'atcoder_points':200,'atcoder_points_source':ATCODER_POINTS})))
+        db.execute('INSERT INTO wb_problems VALUES(?,?,?)',(pid,json.dumps({**STATEMENT,'id':pid,
+            'url':'https://atcoder.jp/contests/abc400/tasks/abc400_a'}),int(time.time())))
+    return pid
+
+
+@pytest.mark.parametrize('stage',['history','catalog','statement','unsuitable'])
+def test_platform_failure_falls_back_without_losing_healthy_platform(client,monkeypatch,stage):
+    c,s,fake=client;other=add_second_platform(s,monkeypatch)
+    fake.side_effect=generic_complete
+    monkeypatch.setattr(s,'choose',lambda pool,*args:(next((p for p in pool if p['platform']=='codeforces'),pool[0]),'synthetic'))
+    if stage=='history':
+        s.sync_history.return_value={'complete':False,'accounts':[
+            {'platform':'codeforces','handle':'Owner','complete':False},
+            {'platform':'atcoder','handle':'Other','complete':True}]}
+    elif stage=='catalog':
+        s.ensure_catalog.side_effect=AIError('synthetic OJ unavailable')
+    elif stage=='statement':
+        original=s.app.state.selection_reports._read
+        async def read(pid):
+            if pid==PID:raise AIError('synthetic OJ unavailable')
+            return await original(pid)
+        monkeypatch.setattr(s.app.state.selection_reports,'_read',read)
+    else:
+        async def reject_one(task,provider,model,payload,schema):
+            result=await generic_complete(task,provider,model,payload,schema)
+            if task=='hermes_solution_report' and payload['problem_id']==PID:result.data['suitable']=False
+            return result
+        fake.side_effect=reject_one
+    job=wait(c,start(c))
+    assert job['status']=='completed',job
+    assert job['result']['problem']['id']==other
+    assert job['result']['platform_fallbacks'][0]['platform']=='codeforces'
+    assert fake.await_count==(4 if stage=='unsuitable' else 2)
+    assert s.control.memory.drawn_ids()=={other}
+    with s.db.connect() as db:assert db.execute('SELECT COUNT(*) FROM hermes_deliveries').fetchone()[0]==1
+
+
+def test_shared_model_error_does_not_retry_paid_work_on_different_oj(client,monkeypatch):
+    c,s,fake=client;add_second_platform(s,monkeypatch)
+    async def fail(task,*args):
+        if task=='hermes_solution_report':raise AIError('synthetic shared AI outage')
+        return await generic_complete(task,*args)
+    fake.side_effect=fail
+    job=wait(c,start(c))
+    assert job['status']=='failed' and fake.await_count==2
+    assert not s.control.memory.drawn_ids()
+
+
+def test_unsuitable_reports_stop_without_committing_result(client,monkeypatch):
+    c,s,fake=client;add_second_platform(s,monkeypatch)
+    async def reject(task,*args):
+        result=await generic_complete(task,*args)
+        if task=='hermes_solution_report':result.data['suitable']=False
+        return result
+    fake.side_effect=reject
+    job=wait(c,start(c))
+    assert job['status']=='failed' and fake.await_count==4
+    assert not s.control.memory.drawn_ids()
+    with s.db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM hermes_deliveries').fetchone()[0]==0
+
+
+def test_platform_sampling_is_not_proportional_to_candidate_count(monkeypatch):
+    from acmhermes.service import Hermes
+    pool=[{'id':str(i),'platform':'atcoder','score_evidence':{}} for i in range(59)]
+    pool.append({'id':'cf','platform':'codeforces','score_evidence':{'priority_score':2}})
+    bounds=[]
+    def random(total):bounds.append(total);return total-1
+    monkeypatch.setattr('acmhermes.service.secrets.randbelow',random)
+    chosen,strategy=Hermes.choose(pool)
+    assert chosen['platform']=='codeforces' and bounds==[2000]
+    assert strategy=='system_platform_balanced_random_without_replacement'
+    weights=Hermes.platform_weights(pool,['atcoder']*8)
+    assert weights['atcoder']<weights['codeforces']
+    assert Hermes.platform_weights(pool,[])=={'atcoder':1000,'codeforces':1000}
