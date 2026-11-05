@@ -58,6 +58,18 @@ def test_hermes_platform_skip_logs_only_fixed_failure_metadata(tmp_path):
     assert 'PRIVATE' not in (tmp_path/'logs'/'runtime.jsonl').read_text()
 
 
+def test_ai_effective_task_policy_logs_only_known_enums(tmp_path):
+    store=RuntimeLogs(tmp_path/'logs')
+    store.emit('ai.completed',ai_task='selection_read_report',
+               ai_generation_policy='selection_report_final_only',ai_thinking='disabled')
+    assert store.listing()['items'][0]['details']=={
+        'ai_task':'selection_read_report','ai_generation_policy':'selection_report_final_only',
+        'ai_thinking':'disabled'}
+    store.emit('ai.failed',ai_generation_policy='PRIVATE',ai_thinking='PRIVATE',body='PRIVATE')
+    assert store.listing()['items'][0]['details']=={}
+    assert 'PRIVATE' not in (tmp_path/'logs'/'runtime.jsonl').read_text()
+
+
 def test_training_diagnostics_keep_only_bounded_counts_and_known_mode(tmp_path):
     store = RuntimeLogs(tmp_path / 'logs')
     store.emit('training.selection_failed', level='WARNING',

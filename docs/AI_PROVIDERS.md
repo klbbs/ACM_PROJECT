@@ -29,7 +29,7 @@
 | 智谱 GLM 按量 API | `https://open.bigmodel.cn/api/paas/v4` | Chat；模型列表和输出参数 |
 | 自定义网关 | 用户填写 HTTPS 地址 | 可选 Responses、Chat、Claude Messages；服务器需批准域名 |
 
-模型 ID 不写死在项目中：以账号当前模型目录和控制台为准。表中选项需要具体模型支持；项目不会把所有同名厂商模型视为参数相同。Gemini 使用 Gemini API Key；百炼不同区域的 Key/模型不可混用；GLM Coding Plan、其他编程套餐与按量 API 地址/权益可能不同，请按官方文档修改地址并确认权限。
+模型选择以账号当前模型目录和控制台为准，也可手动填写 ID。表中选项需要具体模型支持；项目不会把所有同名厂商模型视为参数相同。Gemini 使用 Gemini API Key；百炼不同区域的 Key/模型不可混用；GLM Coding Plan、其他编程套餐与按量 API 地址/权益可能不同，请按官方文档修改地址并确认权限。
 
 提供方选项变化时会重置协议相关参数，不会自动调用模型。更改协议时思考开关、推理强度和输出模式也会复位，避免把上一种协议的参数带过去。
 
@@ -41,7 +41,11 @@
 - **仅提示约束**：不发送结构化输出参数，适合网关不支持该参数的情况。模型不返回合法 JSON 时任务失败，不自动修复、重复计费或改用其他模型。
 - **思考模式**：DeepSeek 使用 `thinking.type`；Qwen 使用 `enable_thinking`。其他提供方保持模型默认。部分 Qwen 思考模型不支持 JSON 模式，可根据模型文档关闭思考或选择提示约束。
 - **推理强度**：OpenAI Responses 使用 `reasoning.effort`；兼容 Chat 使用 `reasoning_effort`。DeepSeek / Kimi 提供 low/high/max 选择，OpenAI / Gemini 提供 low/medium/high；实际支持范围仍取决于模型。
-- **输出上限/超时/温度**：可调输出 256–32768 token、超时 30–240 秒；默认温度不发送。推理模型可能拒绝 temperature，或将思考计入输出额度。输出被截断不会保存为报告，请检查参数后自行重试。
+- **输出上限/超时/温度**：可调输出 256–32768 token（DeepSeek 可自行设置至 131072）、超时 30–240 秒；默认温度不发送。推理模型可能拒绝 temperature，或将思考计入输出额度。输出被截断不会保存为报告，请检查参数后自行重试。
+
+DeepSeek 的每日/专项选题逐题阅读报告（`selection_read_report`）有一项请求级自动策略：当使用 DeepSeek Chat 的 `deepseek-v4-pro` 或 `deepseek-flash`，且思考模式和推理强度均为 `auto` 时，本次报告请求发送 `thinking.type=disabled`，让原有输出预算用于最终报告。DeepSeek 官方当前默认开启高强度思考，思考可能在最终 JSON 产生前用尽预算；此策略仍要求模型阅读完整题面并输出结构化报告，不跳过阅读或任务校验。实际策略随报告来源记录为 `generation_policy=selection_report_final_only`、`effective_thinking=disabled`。
+
+显式选择思考开/关或任一推理强度时保持用户设置；其他任务、模型 ID、厂商和协议也保持原行为。策略只修改单次请求副本，不保存为用户配置、不增加 token 上限，也不自动重试收费请求。模型被截断时仍如实失败。参数依据于 2026-11-05 核对的 [DeepSeek 官方思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/)。
 
 只解析最终文本。DeepSeek 的 `reasoning_content`、Claude 的 thinking 块不会成为训练报告或小提示。API 不启用工具调用；本次接入没有引入 shell、文件执行或自动编程代理。
 

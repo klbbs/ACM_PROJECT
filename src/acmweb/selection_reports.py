@@ -309,6 +309,9 @@ class SelectionReports:
         provenance = {key: value for key, value in getattr(response, 'provenance', {}).items()
                       if key in {'channel', 'provider', 'vendor', 'protocol', 'model', 'task', 'prompt_version'}
                       and isinstance(value, str) and len(value) <= 200}
+        source = getattr(response, 'provenance', {})
+        if source.get('generation_policy') == 'selection_report_final_only' and source.get('effective_thinking') == 'disabled':
+            provenance.update(generation_policy='selection_report_final_only', effective_thinking='disabled')
         prepared = (report_id, pid, int(time.time()), provider, model.strip(), fingerprint,
                     json.dumps(result, ensure_ascii=False), json.dumps(provenance, ensure_ascii=False))
         item['ai_report_id'] = report_id

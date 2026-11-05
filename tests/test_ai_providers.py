@@ -3,7 +3,7 @@ import json
 
 import httpx
 import pytest
-from acmweb.ai import AIProvider, ProviderConfig
+from acmweb.ai import AIProvider, ProviderConfig, ConnectionResult
 from acmweb.database import Database
 from acmweb.settings import Settings
 from acmweb.codex_bridge import AIError
@@ -195,3 +195,106 @@ def test_model_catalog_unauthorized_does_not_fallback_or_echo_secrets(ai, monkey
     with pytest.raises(AIError, match='401') as exc:
         asyncio.run(ai.models('api'))
     assert 'SECRET' not in str(exc.value) and len(calls) == 1
+
+
+@pytest.mark.parametrize('model', ['deepseek-v4-pro', 'deepseek-flash'])
+def test_selection_read_report_auto_preserves_budget_and_saved_config(ai, monkeypatch, model):
+    ai.save(ProviderConfig(vendor='deepseek', base_url='https://api.deepseek.com',
+                           protocol='chat', model=model, api_key='fixture-key', max_output_tokens=8192))
+    saved = ai.db.get('ai', {})
+    fingerprint = ai.configuration_fingerprint()
+    calls = mock_http(monkeypatch, {'choices': [{'finish_reason': 'stop', 'message': {'content': '{"ok":true}'}}]})
+    events = []
+    monkeypatch.setattr('acmweb.ai.emit_event', lambda *args, **fields: events.append(fields))
+    result = asyncio.run(ai.complete('selection_read_report', 'api', model, {}, ConnectionResult))
+    body = calls[0][1]['json']
+    assert body['thinking'] == {'type': 'disabled'}
+    assert body['max_tokens'] == 8192 and 'reasoning_effort' not in body
+    assert len(calls) == 1
+    assert result.provenance['generation_policy'] == 'selection_report_final_only'
+    assert result.provenance['effective_thinking'] == 'disabled'
+    assert events[0]['ai_generation_policy'] == 'selection_report_final_only'
+    assert events[0]['ai_thinking'] == 'disabled'
+    assert ai.db.get('ai', {}) == saved and ai.config()['thinking'] == 'auto'
+    assert ai.configuration_fingerprint() == fingerprint
+    assert ai._request_config.get() is ai._request_metrics.get() is None
+
+
+@pytest.mark.parametrize('task,model,vendor,protocol,thinking,effort', [
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'enabled', 'auto'),
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'disabled', 'auto'),
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'high'),
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'low'),
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'medium'),
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'max'),
+    ('selection_read_report', 'deepseek-reasoner', 'deepseek', 'chat', 'auto', 'auto'),
+    ('selection_read_report', 'deepseek-v4-pro', 'custom', 'chat', 'auto', 'auto'),
+    ('selection_read_report', 'deepseek-v4-pro', 'deepseek', 'responses', 'auto', 'auto'),
+    ('connection_test', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'auto'),
+    ('translation', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'auto'),
+    ('specialist_selection', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'auto'),
+    ('hermes_solution_report', 'deepseek-v4-pro', 'deepseek', 'chat', 'auto', 'auto'),
+])
+def test_selection_read_report_auto_respects_explicit_settings_and_scope(
+        ai, monkeypatch, task, model, vendor, protocol, thinking, effort):
+    ai.save(ProviderConfig(vendor=vendor, base_url='https://api.deepseek.com', protocol=protocol,
+                           model=model, api_key='fixture-key', thinking=thinking, reasoning_effort=effort))
+    reply = ({'status': 'completed', 'output': [{'content': [{'type': 'output_text', 'text': '{"ok":true}'}]}]}
+             if protocol == 'responses' else
+             {'choices': [{'finish_reason': 'stop', 'message': {'content': '{"ok":true}'}}]})
+    calls = mock_http(monkeypatch, reply)
+    result = asyncio.run(ai.complete(task, 'api', model, {}, ConnectionResult))
+    body = calls[0][1]['json']
+    if protocol == 'chat' and vendor == 'deepseek' and thinking != 'auto':
+        assert body['thinking'] == {'type': thinking}
+    else:
+        assert 'thinking' not in body
+    if protocol == 'chat' and effort != 'auto':
+        assert body['reasoning_effort'] == effort
+    assert 'generation_policy' not in result.provenance
+    assert 'effective_thinking' not in result.provenance
+    assert len(calls) == 1
+
+
+def test_auto_report_truncation_does_not_expand_budget_or_retry(ai, monkeypatch):
+    ai.save(ProviderConfig(vendor='deepseek', base_url='https://api.deepseek.com', protocol='chat',
+                           model='deepseek-v4-pro', api_key='fixture-key', max_output_tokens=8192))
+    calls = mock_http(monkeypatch, {'choices': [{'finish_reason': 'length',
+        'message': {'reasoning_content': 'PRIVATE', 'content': ''}}]})
+    with pytest.raises(AIError, match='截断') as exc:
+        asyncio.run(ai.complete('selection_read_report', 'api', 'deepseek-v4-pro', {}, ConnectionResult))
+    assert exc.value.reason == 'ai_output_truncated'
+    assert len(calls) == 1 and calls[0][1]['json']['max_tokens'] == 8192
+    assert calls[0][1]['json']['thinking'] == {'type': 'disabled'}
+    assert ai.config()['thinking'] == 'auto'
+
+
+def test_concurrent_selection_report_policy_does_not_leak_to_other_tasks(ai, monkeypatch):
+    ai.save(ProviderConfig(vendor='deepseek', base_url='https://api.deepseek.com', protocol='chat',
+                           model='deepseek-v4-pro', api_key='fixture-key'))
+    calls = mock_http(monkeypatch, {'choices': [{'finish_reason': 'stop', 'message': {'content': '{"ok":true}'}}]})
+    original = ai._api_generate
+
+    async def scenario():
+        started, resume = asyncio.Event(), asyncio.Event()
+
+        async def delayed(model, prompt, schema):
+            if ai._request_metrics.get()['ai_task'] == 'selection_read_report':
+                started.set()
+                await resume.wait()
+            return await original(model, prompt, schema)
+
+        monkeypatch.setattr(ai, '_api_generate', delayed)
+        report = asyncio.create_task(ai.complete('selection_read_report', 'api', 'deepseek-v4-pro', {}, ConnectionResult))
+        await started.wait()
+        other = await ai.complete('translation', 'api', 'deepseek-v4-pro', {}, ConnectionResult)
+        resume.set()
+        return await report, other
+
+    report, other = asyncio.run(scenario())
+    assert 'thinking' not in calls[0][1]['json']
+    assert calls[1][1]['json']['thinking'] == {'type': 'disabled'}
+    assert report.provenance['generation_policy'] == 'selection_report_final_only'
+    assert 'generation_policy' not in other.provenance
+    assert ai.config()['thinking'] == 'auto'
+    assert ai._request_config.get() is ai._request_metrics.get() is None

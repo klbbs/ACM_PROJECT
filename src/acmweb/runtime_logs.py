@@ -153,6 +153,10 @@ def safe_details(details):
             clean[key] = value
         elif key == 'ai_streaming' and type(value) is bool:
             clean[key] = value
+        elif key == 'ai_generation_policy' and isinstance(value, str) and value in {'configured','selection_report_final_only'}:
+            clean[key] = value
+        elif key == 'ai_thinking' and isinstance(value, str) and value in {'auto','enabled','disabled'}:
+            clean[key] = value
         elif key == 'session_stage' and isinstance(value, str) and value in {'before_history','after_history','before_evidence','before_selection','before_delivery'}:
             clean[key] = value
         elif key == 'failure_step' and isinstance(value, str) and value in {'history','catalog','statement','report'}:

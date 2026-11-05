@@ -100,6 +100,19 @@ def test_reuses_only_complete_official_cache_and_sends_no_draft_fields(setup):
     assert 'PRIVATE-DRAFT' not in material and 'PRIVATE-COOKIE' not in material
 
 
+@pytest.mark.parametrize('policy', ['selection_report_final_only', 'PRIVATE-UNKNOWN'])
+def test_report_keeps_only_recognized_effective_generation_policy(setup,policy):
+    service,db,ai,_,_=setup
+    ai.complete.side_effect=None
+    ai.complete.return_value=SimpleNamespace(data=report(),provenance={
+        'generation_policy':policy,'effective_thinking':'disabled','api_key':'PRIVATE-KEY'})
+    selected=prepare(service)
+    saved=service.get(selected[0]['ai_report_id'])['provenance']
+    assert saved==({'generation_policy':'selection_report_final_only','effective_thinking':'disabled'}
+                   if policy=='selection_report_final_only' else {})
+    assert 'PRIVATE' not in json.dumps(saved)
+
+
 @pytest.mark.parametrize('bad', [
     {'source': 'user_import'}, {'sections': [], 'body_html': '<div></div>'},
     {'render_version': 1}, {'samples': [{'input': '8'}]}, {'samples': None},

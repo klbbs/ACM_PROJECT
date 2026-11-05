@@ -323,18 +323,33 @@ class AIProvider:
             with self.config_lock:
                 config = self.config()
                 key = self.key(config)
+            # These models default to high-effort thinking, which can consume
+            # the whole shared output budget before a short reading report.
+            # Apply only to this captured request; never rewrite user choices,
+            # increase their budget or mutate the saved configuration.
+            parameter_policy = {}
+            if (task == 'selection_read_report' and config['vendor'] == 'deepseek'
+                    and config['protocol'] == 'chat'
+                    and model in {'deepseek-v4-pro', 'deepseek-flash'}
+                    and config['thinking'] == config['reasoning_effort'] == 'auto'):
+                config = {**config, 'thinking': 'disabled'}
+                parameter_policy = {'generation_policy': 'selection_report_final_only',
+                                    'effective_thinking': 'disabled'}
             provenance = {'channel': provider, 'provider': provider, 'endpoint': config['base_url'],
                           'vendor': config['vendor'], 'protocol': config['protocol'], 'model': model}
         else:
             config, key = None, None
+            parameter_policy = {}
             provenance = {'channel': provider, 'provider': provider, 'endpoint': 'codex://official',
                           'vendor': 'openai', 'protocol': 'codex', 'model': model}
-        provenance.update(task=task, prompt_version=PROMPT_VERSION)
+        provenance.update(task=task, prompt_version=PROMPT_VERSION, **parameter_policy)
         config_token = self._request_config.set(config)
         key_token = self._request_key.set(key)
         metrics = {'ai_task': task, 'ai_vendor': provenance['vendor'], 'ai_protocol': provenance['protocol']}
         if config is not None:
             metrics['max_output_tokens'] = config['max_output_tokens']
+            metrics['ai_generation_policy'] = parameter_policy.get('generation_policy', 'configured')
+            metrics['ai_thinking'] = config['thinking']
         metrics_token = self._request_metrics.set(metrics)
         started = time.monotonic()
         try:
