@@ -79,6 +79,6 @@ def estimate(problem, reference=()):
 
 
 def overlaps(evidence, minimum, maximum):
-    return (evidence.get('kind') != 'unknown' and type(evidence.get('minimum')) is int
-            and type(evidence.get('maximum')) is int
+    return (evidence.get('kind') != 'unknown'
+            and all(type(evidence.get(key)) in (int, float) and math.isfinite(evidence[key]) for key in ('minimum', 'maximum'))
             and evidence['maximum'] >= minimum and evidence['minimum'] <= maximum)

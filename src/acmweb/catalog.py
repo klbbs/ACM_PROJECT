@@ -18,7 +18,7 @@ from .problem_sources import normalize, source_url
 from .difficulty_estimates import ATCODER_MODELS, ATCODER_POINTS
 
 PLATFORMS = ('codeforces', 'atcoder', 'luogu', 'nowcoder')
-PUBLISHED_SOURCES = {'codeforces.contest.startTimeSeconds', 'atcoder.archive.time',
+PUBLISHED_SOURCES = {'codeforces.contest.startTimeSeconds', 'atcoder.archive.time', 'kenkoooo.contests.start_epoch_second',
                      'atcoder.contest.startTime', 'luogu.problem.createTime', 'nowcoder.problem.publishTime'}
 LEGACY_DATE_NOTICE = '旧版训练设置仍使用 CF 最小比赛编号，不能可靠换算为发布日期。请在训练偏好中保存真实的最早发布日期，或明确清除旧限制后再生成题目。'
 
@@ -168,12 +168,15 @@ def parse_luogu_catalog(html):
 
 
 def _luogu(client):
-    ordinary = _luogu_page_batch(client, {}, max_pages=8)
-    templates = _luogu_page_batch(client, {'keyword': '模板'}, max_pages=8) if not ordinary.get('error_code') else {
-        'items': [], 'warnings': [], 'truncated': True, 'pages_read': 0}
+    cursor = getattr(client, 'catalog_cursor', {})
+    ordinary = _luogu_page_batch(client, {}, max_pages=8, first_page=cursor.get('ordinary',1))
+    templates = _luogu_page_batch(client, {'keyword': '模板'}, max_pages=8, first_page=cursor.get('templates',1)) if not ordinary.get('error_code') else {
+        'items': [], 'warnings': [], 'truncated': True, 'pages_read': 0,'next_page':cursor.get('templates',1)}
+    client.catalog_cursor = {'ordinary':ordinary['next_page'],'templates':templates['next_page']}
     rows = list({row['id']: row for row in ordinary['items'] + templates['items']}.values())
     warnings = list(dict.fromkeys(ordinary['warnings'] + templates['warnings']))
-    client.catalog_discovery = {'coverage': f"洛谷普通列表与模板列表，本次共 {ordinary['pages_read'] + templates['pages_read']} 页；并非全站镜像",
+    client.catalog_discovery = {'coverage': f"洛谷普通列表从第 {cursor.get('ordinary',1)} 页、模板列表从第 {cursor.get('templates',1)} 页续传，本次共 {ordinary['pages_read'] + templates['pages_read']} 页；再次同步继续后续分页",
+                               'next_page':ordinary['next_page'],
                                'truncated': ordinary['truncated'] or templates['truncated'],
                                'warnings': warnings}
     if warnings: client.catalog_discovery['partial_failure'] = True
@@ -200,7 +203,9 @@ def _luogu_page_batch(client, params, max_pages=3, first_page=1):
         fresh = [row for row in parsed if row['id'] not in seen]
         if not fresh:
             exhausted = not parsed
-            if parsed: warnings.append('官方分页返回重复题目，本次已停止；不能据此认定专题题库已遍历完整')
+            if parsed:
+                pages_read -= 1
+                warnings.append('官方分页返回重复题目，本次已停止并保留续传位置；不能据此认定题库已遍历完整')
             break
         rows.extend(fresh)
         seen.update(row['id'] for row in fresh)
@@ -495,7 +500,9 @@ def parse_nowcoder_catalog(html):
 
 def _nowcoder(client):
     from .expanded_topic_sources import discover_nowcoder
-    found = discover_nowcoder(client, None)
+    first_page=getattr(client,'catalog_cursor',{}).get('ordinary',1)
+    found = discover_nowcoder(client, None, first_page=first_page) if first_page!=1 else discover_nowcoder(client, None)
+    client.catalog_cursor = {'ordinary':found.get('next_page',1)}
     client.catalog_discovery = {key: value for key, value in found.items() if key != 'items'}
     return _official_nowcoder_items(found['items'])
 
@@ -550,20 +557,30 @@ def refresh_catalog(database, platform=None, on_progress=None):
         results[index]['status'] = 'running'
         publish()
         client = Client(timeout=15, retries=0)
+        cursor = database.get('catalog_cursor:'+name,{})
+        client.catalog_cursor = {key:value for key,value in cursor.items()
+            if key in {'ordinary','templates'} and type(value) is int and 1 <= value <= 10000} if isinstance(cursor,dict) else {}
         try:
             rows = DISCOVERY[name](client)
             if not rows: raise CrawlError('官方题库返回空内容或结构变化，保留原缓存')
             _store_catalog_rows(database, name, rows)
+            if name in {'luogu','nowcoder'}:
+                database.set('catalog_cursor:'+name,client.catalog_cursor)
             now = int(time.time()); database.set('catalog_updated_at:' + name, now)
             if name == 'codeforces': database.set('catalog_updated_at', now)
             results[index] = {'platform': name,
-                'status': 'partial' if getattr(client, 'catalog_discovery', {}).get('partial_failure') else 'updated', 'count': len(rows),
+                'status': 'partial' if any(getattr(client, 'catalog_discovery', {}).get(key) for key in ('partial_failure','truncated')) else 'updated', 'count': len(rows),
                 'dated_count': sum(bool(row.get('published_at')) for row in rows), 'updated_at': now,
                 'message': '已补充公开题库元信息并保留既有缓存；是否参与 AI 选题仍需满足登录与筛选条件',
                 'coverage': getattr(client, 'catalog_discovery', {}).get('coverage',
                     'Codeforces 已结束且具有 rating 的官方公开题库' if name == 'codeforces' else '洛谷普通列表及模板列表各最多 8 页；并非全站镜像'),
                 'truncated': bool(getattr(client, 'catalog_discovery', {}).get('truncated', name != 'codeforces')),
                 'warnings': getattr(client, 'catalog_discovery', {}).get('warnings', [])}
+            with database.connect() as db:
+                results[index]['cached_count']=db.execute('SELECT count(*) FROM problem_catalog WHERE platform=?',(name,)).fetchone()[0]
+            for key in ('next_page','total_count'):
+                if getattr(client,'catalog_discovery',{}).get(key) is not None:
+                    results[index][key]=client.catalog_discovery[key]
         except (CrawlError, AIError, KeyError, ValueError, TypeError) as exc:
             code, message = _sync_error(exc)
             results[index] = {'platform': name, 'status': 'failed', 'count': 0,

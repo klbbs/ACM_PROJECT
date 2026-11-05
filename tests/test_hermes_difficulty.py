@@ -32,10 +32,10 @@ def test_high_success_official_1800_is_excluded_instead_of_matching_old_rating()
     assert result['evidence']['pass_rate'] == .85
 
 
-def test_empirical_weight_slightly_outweighs_official_and_centre_rounds_to_hundred():
+def test_empirical_weight_slightly_outweighs_official_without_hundred_rounding():
     result = score(candidate(accepted=300), 1700, 1900)
-    assert result['empirical_rating'] == 1900
-    assert result['estimated_rating'] == 1900
+    assert result['empirical_rating'] == pytest.approx(1865.90)
+    assert result['estimated_rating'] == pytest.approx(1836.24)
     assert result['eligible']
     assert result['confidence'] == 'medium'
 
@@ -52,7 +52,7 @@ def test_gym_requires_evidence_and_gets_bonus_without_changing_rating():
 
 def test_unrated_gym_estimated_from_sufficient_contest_data():
     result = score(candidate(rating=None, accepted=300, gym=True), 1900, 1900)
-    assert result['eligible'] and result['estimated_rating'] == 1900
+    assert result['eligible'] and result['estimated_rating'] == pytest.approx(1865.90)
     assert result['confidence'] == 'low'
     assert result['empirical_weight'] == 1
     assert '不是官方定级' in result['notice']
@@ -138,7 +138,7 @@ def test_submission_rate_is_not_confused_with_participant_success():
     result = score(problem, 1900, 1900)
     assert result['evidence']['pass_rate'] == .3
     assert result['evidence']['submissions'] == 10000
-    assert result['estimated_rating'] == 1900
+    assert result['estimated_rating'] == pytest.approx(1836.24)
 
 
 def test_safe_evidence_drops_unexpected_personal_data_and_leaves_input_unchanged():
@@ -179,7 +179,7 @@ def test_actual_unix_epoch_is_valid_for_statistics_and_publication():
     result = score(candidate(accepted=300), 1900, 1900)
     assert result['evidence']['observed_at'] == NOW - 3600
     assert result['evidence']['age_days'] == 365
-    assert result['empirical_rating'] == 1900
+    assert result['empirical_rating'] == pytest.approx(1865.90)
     assert '启发式' in result['notice']
 
 
@@ -208,7 +208,7 @@ def test_matched_identity_units_and_attempted_counts_are_explained():
         participant_unit='teams', numerator_unit='team', attempted_participants=700,
         complete=True)
     result = score(problem, 1900, 1900)
-    assert result['eligible'] and result['empirical_rating'] == 1900
+    assert result['eligible'] and result['empirical_rating'] == pytest.approx(1865.90)
     evidence = result['evidence']
     assert evidence['participant_unit'] == 'team'
     assert evidence['attempted_participants'] == 700
@@ -230,10 +230,10 @@ def test_old_complete_contest_statistics_are_not_arbitrarily_expired():
     assert '历史完整比赛统计不因年龄自动失效' in result['notice']
 
 
-def test_more_contest_participants_raise_only_sample_priority_not_rating():
+def test_same_success_ratio_has_close_smoothed_ratings_and_larger_sample_priority():
     smaller = score(candidate(accepted=60, population=200), 1900, 1900)
     larger = score(candidate(accepted=300, population=1000), 1900, 1900)
-    assert smaller['estimated_rating'] == larger['estimated_rating'] == 1900
+    assert abs(smaller['estimated_rating'] - larger['estimated_rating']) < 2
     assert larger['priority_score'] > smaller['priority_score']
     assert larger['evidence']['priority_components']['sample_support'] > smaller['evidence']['priority_components']['sample_support']
 
@@ -246,7 +246,7 @@ def test_individuals_unit_from_standings_provider_is_normalized():
     assert result['evidence']['participant_unit'] == 'person'
 
 
-@pytest.mark.parametrize(('gym', 'accepted', 'expected'), [(False, 850, 1300), (True, 300, 1900)])
+@pytest.mark.parametrize(('gym', 'accepted', 'expected'), [(False, 850, 1250), (True, 300, 1865.90)])
 def test_real_provider_parser_output_flows_into_difficulty_without_shape_adapter(gym, accepted, expected):
     # Real producer and consumer, synthetic standings. No model/OJ requests.
     from acmhermes.contest_evidence import _problem_rows
@@ -267,7 +267,7 @@ def test_real_provider_parser_output_flows_into_difficulty_without_shape_adapter
         'startTimeSeconds': NOW - 86400}, 'problems': [problem], 'rows': rows},
         contest_id, gym, NOW - 3600)
     result = score(parsed['problems'][0], 800, 3500)
-    assert result['estimated_rating'] == expected
+    assert result['estimated_rating'] == pytest.approx(expected)
     assert result['empirical_rating'] is not None
     assert result['evidence']['participant_unit'] == ('team' if gym else 'person')
     assert result['evidence']['attempted_participants'] == 1000
@@ -275,3 +275,23 @@ def test_real_provider_parser_output_flows_into_difficulty_without_shape_adapter
     assert not gym or result['official_rating'] is None
     if not gym:
         assert not score(parsed['problems'][0])['eligible']
+
+
+def test_single_target_uses_neighbourhood_and_range_preserves_explicit_bounds():
+    p=candidate(accepted=300)
+    target=score(p,1800,1800)
+    assert target['estimated_rating']==pytest.approx(1836.24)
+    assert target['effective_score_range']==[1700,1900] and target['eligible']
+    assert not score(p,1750,1800)['eligible']
+    assert score(p,800,800)['effective_score_range']==[800,900]
+    assert score(p,3500,3500)['effective_score_range']==[3400,3500]
+
+
+def test_weighted_rating_uses_unrounded_empirical_value():
+    import math
+    p=candidate(rating=1700,accepted=347,population=1201)
+    empirical=1500+300*math.log2((1201-347+1)/(347+1))
+    r=score(p,800,3500)
+    assert r['empirical_rating']==round(empirical,2)
+    assert r['estimated_rating']==round(.45*1700+.55*empirical,2)
+    assert r['estimated_rating']%100!=0

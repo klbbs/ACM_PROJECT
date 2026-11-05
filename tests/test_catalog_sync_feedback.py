@@ -200,3 +200,53 @@ def test_catalog_crawl_reads_full_beijing_day_instead_of_old_watermark(db, monke
     assert jobs.crawl(since_today=True)['complete']
     after = int(datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     assert captured[0] in {before, after}
+
+
+def test_luogu_general_refresh_resumes_and_reports_cumulative_cache(db,monkeypatch):
+    from test_specialist_catalog_coverage import envelope
+    calls=[]
+    class Public:
+        def close(self):pass
+        def get(self,url,params):
+            calls.append(dict(params));page=params['page']
+            key=(2000 if params.get('keyword') else 1000)+page
+            return envelope([{'pid':f'P{key}','name':'Synthetic','tags':[13]}],16,1)
+    monkeypatch.setattr(catalog,'Client',lambda **kwargs:Public())
+    first=catalog.refresh_catalog(db,'luogu')['platforms'][0]
+    assert first['status']=='partial' and first['cached_count']==16 and first['next_page']==9
+    second=catalog.refresh_catalog(db,'luogu')['platforms'][0]
+    assert second['status']=='updated' and second['cached_count']==32
+    assert db.get('catalog_cursor:luogu')=={'ordinary':1,'templates':1}
+    assert [r['page'] for r in calls if not r.get('keyword')]==list(range(1,17))
+
+
+def test_nowcoder_refresh_continues_past_first_400_and_retains_failed_cursor(db,monkeypatch):
+    from test_expanded_topic_sources import nowcoder_page,nowcoder_row
+    calls=[];fail=[False]
+    class Public:
+        def close(self):pass
+        def get(self,url,params):
+            page=params['page'];calls.append(page)
+            if fail[0]:raise CrawlError('HTTP 403 PRIVATE')
+            start=(page-1)*50+1
+            return nowcoder_page([nowcoder_row(str(i),f'Synthetic {i}') for i in range(start,min(start+50,1001))],1000)
+    monkeypatch.setattr(catalog,'Client',lambda **kwargs:Public())
+    first=catalog.refresh_catalog(db,'nowcoder')['platforms'][0]
+    assert first['status']=='partial' and first['cached_count']==400 and first['next_page']==9
+    fail[0]=True
+    assert catalog.refresh_catalog(db,'nowcoder')['platforms'][0]['status']=='failed'
+    assert db.get('catalog_cursor:nowcoder')=={'ordinary':9}
+    fail[0]=False
+    second=catalog.refresh_catalog(db,'nowcoder')['platforms'][0]
+    third=catalog.refresh_catalog(db,'nowcoder')['platforms'][0]
+    assert second['cached_count']==800 and second['next_page']==17
+    assert third['cached_count']==third['total_count']==1000 and third['status']=='updated'
+    assert not third['truncated'] and db.get('catalog_cursor:nowcoder')=={'ordinary':1}
+    assert calls==list(range(1,9))+[9]+list(range(9,21))
+
+
+def test_indexed_atcoder_dates_are_usable_without_claiming_official_source(db):
+    row=add(db,'atcoder','abc400_a',published_at=1760000000,
+        published_at_source='kenkoooo.contests.start_epoch_second')
+    assert catalog.recommendation_candidates(db,accounts('atcoder'),published_after='2025-01-01')[0]['id']==row['id']
+    assert catalog._pool(db,'atcoder')[0]['published_at_source']=='kenkoooo.contests.start_epoch_second'

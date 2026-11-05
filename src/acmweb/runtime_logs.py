@@ -19,6 +19,7 @@ user_id_context = contextvars.ContextVar('acm_log_user_id', default=None)
 console = logging.getLogger('acmweb.runtime')
 
 EVENTS = {
+    'hermes.pool_empty': ('platform', '题库筛选后没有可用候选，请查看分平台筛选统计'),
     'hermes.platform_skipped': ('platform', '抽题已跳过暂不可用的平台，继续其他平台'),
     'hermes.sessions_checked': ('platform', '抽题阶段的平台登录证据已检查'),
     'platform.source_failed': ('platform', '官方提交源码读取未完成，请查看固定失败原因'),
@@ -177,7 +178,7 @@ def safe_details(details):
             clean[key] = value
         elif key in {'requested_count', 'actual_count'} and type(value) is int and 0 <= value <= 1000:
             clean[key] = value
-        elif key in {'template_count', 'candidate_count', 'eligible_count'} and type(value) is int and 0 <= value <= 100000:
+        elif key in {'template_count', 'candidate_count', 'eligible_count', 'cached_count'} and type(value) is int and 0 <= value <= 100000:
             clean[key] = value
         elif key in {'duration_ms', 'warning_count', 'finding_count'} and type(value) is int and 0 <= value <= 86400000:
             clean[key] = value

@@ -724,7 +724,7 @@ def test_roll_uses_combined_rating_instead_of_prefiltering_by_official_label(cli
     set_catalog(s,PID,difficulty=1600,contest_statistics=aggregate())
     pool=s.pool(Draw(score_range=(1800,1800)))
     assert [p['id'] for p in pool]==[PID]
-    assert pool[0]['score_evidence']['estimated_rating']==1800
+    assert pool[0]['score_evidence']['estimated_rating']==pytest.approx(1746.24)
     assert pool[0]['score_evidence']['official_rating']==1600
 
 
@@ -1056,3 +1056,51 @@ def test_platform_sampling_is_not_proportional_to_candidate_count(monkeypatch):
     weights=Hermes.platform_weights(pool,['atcoder']*8)
     assert weights['atcoder']<weights['codeforces']
     assert Hermes.platform_weights(pool,[])=={'atcoder':1000,'codeforces':1000}
+
+
+def test_target_neighbourhood_is_used_for_preview_report_and_result(client):
+    c,s,fake=client
+    original=fake.side_effect
+    async def inspect(task,provider,model,data,schema):
+        assert data['score_range']==[850,1050]
+        assert data['requested_score_range']==[950,950]
+        return await original(task,provider,model,data,schema)
+    fake.side_effect=inspect
+    preview=c.get('/api/hermes/candidates?minimum=950&maximum=950').json()
+    assert preview['effective_score_range']==[850,1050] and preview['count']==1
+    assert preview['diagnostics']['candidate_count']==1
+    response=c.post('/api/hermes/draw',json={'score_range':[950,950]},headers={'Idempotency-Key':'9'*32})
+    assert response.status_code==200
+    job=wait(c,response.json()['id'])
+    assert job['status']=='completed',job
+    assert job['result']['effective_score_range']==[850,1050]
+    assert job['result']['problem']['score_evidence']['estimated_rating']==1000
+
+
+def test_coverage_counts_all_candidates_not_only_the_60_preview(client):
+    c,s,_=client
+    for n in range(5,79):set_catalog(s,f'codeforces:{n}-A',difficulty=1000,tags=['math'])
+    data=c.get('/api/hermes/candidates?minimum=1000&maximum=1000&topic=math').json()
+    diagnostic=data['diagnostics']
+    assert data['count']==60 and diagnostic['candidate_count']==75
+    cf=next(r for r in diagnostic['platforms'] if r['platform']=='codeforces')
+    assert cf['cached_count']==cf['eligible_count']==75
+    assert sum(cf['filter_counts'].values())==0
+
+
+def test_diagnostics_match_original_date_topic_and_exclusion_path(client):
+    from acmhermes.models import Draw
+    _,s,_=client
+    recent={'published_at':1760000000,'published_at_source':'codeforces.contest.startTimeSeconds','tags':['games']}
+    s.db.set('training',{'published_after':'2022-10-14'})
+    set_catalog(s,PID,difficulty=1800,tags=['games'],published_at=1600000000,published_at_source='codeforces.contest.startTimeSeconds')
+    set_catalog(s,'codeforces:5-A',difficulty=1700,**recent)
+    set_catalog(s,'codeforces:6-A',difficulty=1900,**recent)
+    set_catalog(s,'codeforces:7-A',difficulty=2200,**recent)
+    request=Draw(score_range=(1800,1800),topic='luogu-13',exclude_ids=['codeforces:6-A'])
+    found=s.pool(request);d=s.diagnostics(request);cf=d['platforms'][0]
+    assert [r['id'] for r in found]==['codeforces:5-A']
+    assert d['candidate_count']==1
+    assert cf['filter_counts']['before_date']==1 and cf['filter_counts']['difficulty']==1
+    assert cf['filter_counts']['client_or_drawn']==1
+    assert cf['cached_count']==cf['eligible_count']+sum(cf['filter_counts'].values())

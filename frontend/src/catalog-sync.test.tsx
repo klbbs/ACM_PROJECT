@@ -94,7 +94,8 @@ it('explains partial failures, time, current filters and separate login detectio
       expect(host.textContent).toContain('结果时间')
       expect(host.textContent).toContain('100 题早于最早发布日期')
       expect(host.textContent).toContain('不检测 Cookie')
-      expect(host.textContent).toContain('最近 6 场')
+      expect(host.textContent).toContain('公开题目索引')
+      expect(host.textContent).toContain('接着上次分页继续')
       await act(async () => (host.querySelector('button') as HTMLButtonElement).click())
       expect(settings).toHaveBeenCalledOnce()
     },
@@ -192,5 +193,19 @@ it('keeps successful catalog rows visible when personal submission sync fails', 
     expect(host.textContent).toContain('更新 123 题')
     expect(host.textContent).toContain('今日提交同步：未完成')
     expect(host.textContent).toContain('题库结果已保留')
+  })
+})
+
+it('shows cumulative coverage and continuation instead of complete success for a partial batch', async () => {
+  await render({candidateCount: 0,job:{status:'partial',result:{platforms:[{
+    platform:'nowcoder',status:'partial',count:400,cached_count:800,total_count:15000,
+    truncated:true,next_page:17,coverage:'官方题库第9页起读取8页',warnings:['官方列表没有逐题日期'],
+  }]}}},host=>{
+    expect(host.textContent).toContain('已同步一部分')
+    expect(host.textContent).toContain('本批更新 400 题')
+    expect(host.textContent).toContain('累计缓存 800 题')
+    expect(host.textContent).toContain('来源报告共 15000 题')
+    expect(host.textContent).toContain('从第 17 页继续')
+    expect(host.textContent).toContain('官方列表没有逐题日期')
   })
 })

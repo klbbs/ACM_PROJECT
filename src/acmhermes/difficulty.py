@@ -40,9 +40,13 @@ def _source(value):
     return None
 
 
-def _bucket(value):
-    # Avoid Python's half-even rounding making adjacent boundaries inconsistent.
-    return max(800, min(3500, int(math.floor(value / 100 + 0.5)) * 100))
+def selection_range(minimum, maximum):
+    """A single target means its neighbourhood; explicit intervals stay exact."""
+    return (max(800, minimum - 100), min(3500, maximum + 100)) if minimum == maximum else (minimum, maximum)
+
+
+def _rating(value):
+    return max(800.0, min(3500.0, value))
 
 
 def _gym(problem):
@@ -103,11 +107,13 @@ def score_candidate(problem, requested_min, requested_max, *, now=None):
     official = problem.get('difficulty')
     official = official if _integer(official, 800, 3500) else None
     result = {'kind': 'unknown', 'minimum': None, 'maximum': None,
-              'method': 'contest_success_blend_heuristic_v1', 'source_urls': [],
+              'method': 'contest_success_blend_heuristic_v2', 'source_urls': [],
               'confidence': 'unknown', 'notice': '', 'eligible': False,
               'estimated_rating': None, 'official_rating': official,
               'empirical_rating': None, 'empirical_weight': 0.0,
               'priority_score': 0.0, 'gym_bonus': 0.0, 'reasons': [], 'evidence': {}}
+    lower, upper = selection_range(requested_min, requested_max)
+    result.update(requested_score_range=[requested_min, requested_max], effective_score_range=[lower, upper])
     reasons = result['reasons']
     published = problem.get('published_at')
     if _integer(published, 946684800) and published <= now:
@@ -140,7 +146,7 @@ def score_candidate(problem, requested_min, requested_max, *, now=None):
     if (source and valid_time and valid_scope and enough and valid_identity
             and complete and valid_unit and valid_attempted):
         ratio = (accepted + 1) / (population + 2)
-        empirical = _bucket(1500 + 300 * math.log2((1 - ratio) / ratio))
+        empirical = _rating(1500 + 300 * math.log2((1 - ratio) / ratio))
         result['evidence'].update(participants=population, accepted_participants=accepted,
                                   pass_rate=round(accepted / population, 6),
                                   statistics_scope='contest', observed_at=observed,
@@ -152,7 +158,7 @@ def score_candidate(problem, requested_min, requested_max, *, now=None):
             if _integer(value):
                 result['evidence'][name] = value
         result['source_urls'].append(source)
-        result['empirical_rating'] = empirical
+        result['empirical_rating'] = round(empirical, 2)
         result['empirical_weight'] = EMPIRICAL_WEIGHT if official else 1.0
         reasons.append('使用同一比赛窗口的参赛人数与通过人数；实测统计权重 55%，官方 rating 权重 45%。'
                        if official else '无官方 rating，按比赛窗口通过比例进行初步估计；不是官方定级。')
@@ -171,24 +177,24 @@ def score_candidate(problem, requested_min, requested_max, *, now=None):
             reasons.append('统计来源、时间、比赛窗口或样本量不满足要求；不将累计 AC 人数当作通过率。')
         else:
             reasons.append('缺少可核查的比赛通过率；仅保留已知官方 rating，不编造统计。')
-    center = (_bucket(OFFICIAL_WEIGHT * official + EMPIRICAL_WEIGHT * empirical)
+    center = (OFFICIAL_WEIGHT * official + EMPIRICAL_WEIGHT * empirical
               if official is not None and empirical is not None
               else empirical if empirical is not None else official)
     if official is not None:
         result['source_urls'].append(CF_RATING_SOURCE)
     if center is not None:
         result.update(kind='estimate' if empirical is not None else 'official',
-                      minimum=center, maximum=center, estimated_rating=center,
+                      minimum=round(center, 2), maximum=round(center, 2), estimated_rating=round(center, 2),
                       confidence='medium' if empirical is not None and official is not None else
                       'low' if empirical is not None else 'official',
-                      eligible=requested_min <= center <= requested_max)
+                      eligible=lower <= center <= upper)
         if not result['eligible']:
             reasons.append('综合难度不在请求区间，不能用原始官方 rating 重新放入候选。')
         if result['eligible']:
             # Priority is separate from rating. Gym preference never makes an
             # easy Gym task fit a harder requested score range.
             distance = abs(center - (requested_min + requested_max) / 2)
-            fit = max(0.0, 1 - distance / max(100, requested_max - requested_min))
+            fit = max(0.0, 1 - distance / max(100, upper - lower))
             reliability = min(1.0, population / 1000) if empirical is not None else 0
             bonus = GYM_PRIORITY_BONUS if _gym(problem) else 0.0
             result['gym_bonus'] = bonus

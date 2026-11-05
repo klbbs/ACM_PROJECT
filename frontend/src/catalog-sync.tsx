@@ -8,6 +8,12 @@ type PlatformResult = {
   count?: number
   dated_count?: number
   message?: string
+  cached_count?: number
+  total_count?: number
+  next_page?: number
+  truncated?: boolean
+  coverage?: string
+  warnings?: string[]
 }
 export type CatalogSyncJob = {
   id?: string
@@ -60,6 +66,7 @@ const statusLabels: Record<string, string> = {
   queued: '等待同步',
   running: '正在获取',
   updated: '同步成功',
+  partial: '已同步一部分',
   failed: '同步失败',
 }
 function timestamp(value?: number) {
@@ -85,7 +92,7 @@ export function CatalogSyncPanel({
   const completed = starting
     ? 0
     : (job?.result?.completed_platforms ??
-      results.filter((row) => ['updated', 'failed'].includes(row.status || '')).length)
+      results.filter((row) => ['updated', 'partial', 'failed'].includes(row.status || '')).length)
   const total = job?.result?.total_platforms ?? (results.length || 4)
   const title = requestError
     ? '同步请求未启动'
@@ -154,11 +161,15 @@ export function CatalogSyncPanel({
               <strong>{names[row.platform] || row.platform}</strong>
               <span>
                 {statusLabels[row.status || ''] || '等待同步'}
-                {row.status === 'updated' ? ` · 更新 ${row.count ?? 0} 题` : ''}
+                {['updated','partial'].includes(row.status || '') ? ` · 本批更新 ${row.count ?? 0} 题` : ''}
               </span>
-              {row.status === 'updated' && row.dated_count != null && (
-                <small>有可靠发布日期 {row.dated_count} 题</small>
+              {['updated','partial'].includes(row.status || '') && row.dated_count != null && (
+                <small>本批有来源可追溯的日期 {row.dated_count} 题</small>
               )}
+              {row.cached_count != null && <small>累计缓存 {row.cached_count} 题{row.total_count != null ? `，来源报告共 ${row.total_count} 题` : ''}</small>}
+              {row.coverage && <p>{row.coverage}</p>}
+              {row.truncated && <p>本批尚未覆盖完整列表。{row.next_page && row.next_page > 1 ? `再次同步将从第 ${row.next_page} 页继续。` : '请继续同步或查看来源限制。'}</p>}
+              {row.warnings?.map((warning,index) => <p key={index}>{warning}</p>)}
               {row.message && <p>{row.message}</p>}
             </li>
           ))}
@@ -232,8 +243,9 @@ export function CatalogSyncPanel({
           </li>
         </ol>
         <p>
-          这是有范围的同步：CF 读取已结束比赛的带 rating 题目；AtCoder 读取最近 6 场 ABC / ARC / AGC
-          的题目并补充 Library Practice 模板；洛谷补充官方模板分页，专项选题还可定向补抓专题列表；牛客读取官方列表首页。无法确认发布日期的题目，在启用日期下限时会被排除。访问限制或页面变化可能使单个平台失败，其他平台仍可成功。
+          CF 读取已结束比赛的带 rating 公开题库；AtCoder 读取公开题目索引并补充 Library Practice，比赛日期区分官方与第三方来源。
+          洛谷和牛客分批读取官方列表，再次同步会接着上次分页继续，保留此前缓存；专项训练还可定向补抓专题。
+          题库规模、当前缓存和筛选后题量不同。缺少可追溯发布日期的题目，在启用日期下限时会被排除。访问限制或页面变化可能使单个平台失败，其他平台仍可成功。
         </p>
       </details>
     </section>

@@ -65,6 +65,7 @@ W_ATCODER_MODELS = 'AtCoder 公开难度估计获取失败；难度保持未标�
 W_NOWCODER_PAGE = '牛客第 {page} 页请求失败，已保留此前页面的候选结果'
 W_NOWCODER_FIRST = '牛客官方题库列表获取失败；本次未生成牛客候选，旧题库保持不变'
 W_NOWCODER_SHAPE = '牛客题库页面结构不兼容或超过安全上限，已停止该来源并保留已有结果'
+W_NOWCODER_REPEAT = '牛客分页返回重复内容，已停止并保留续传位置；不能认定完整同步'
 W_NOWCODER_SKIPPED = '牛客页面有 {count} 行不符合官方题目链接格式，已跳过且未猜测元数据'
 W_NOWCODER_NO_DATE = '牛客官方题库列表未提供逐题发布日期；发布日期保持未知，未按题号推断'
 W_NOWCODER_TRUNCATED = '牛客官方题库共 {total} 道，本次按上限只读取了 {count} 道，未声称全量扫描'
@@ -408,9 +409,9 @@ def _parse_nowcoder_page(html):
     return rows, total, skipped, tag_map
 
 
-def _nowcoder_pages(client, params, max_pages, warnings):
+def _nowcoder_pages(client, params, max_pages, warnings, *, first_page=1):
     rows, total, pages, skipped, capped, tag_map = [], None, 0, 0, False, {}
-    for page in range(1, max_pages + 1):
+    for page in range(first_page, first_page + max_pages):
         try:
             html = _get_html(client, NOWCODER_LIST, params={**params, 'page': page})
         except (CrawlError, AIError, _SourceError, ValueError, TypeError, KeyError, AttributeError):
@@ -430,18 +431,23 @@ def _nowcoder_pages(client, params, max_pages, warnings):
             total = page_total
         known = {row['id'] for row in rows}
         fresh = [row for row in parsed if row['id'] not in known]
+        if parsed and not fresh:
+            warnings.append(W_NOWCODER_REPEAT)
+            pages -= 1
+            capped = True
+            break
         rows.extend(fresh)
         if not fresh or len(parsed) < NOWCODER_PAGE_SIZE:
             break
-        if total is not None and len(rows) >= total:
+        if total is not None and (page-1)*NOWCODER_PAGE_SIZE + len(parsed) >= total:
             break
-        capped = page == max_pages
+        capped = page == first_page + max_pages - 1
     if skipped:
         warnings.append(W_NOWCODER_SKIPPED.format(count=skipped))
     return rows, total, pages, capped, tag_map
 
 
-def discover_nowcoder(client, topic=None):
+def discover_nowcoder(client, topic=None, *, first_page=1):
     """Return bounded Nowcoder candidates with official tag evidence.
 
     With a topic, the officially supported ``keyword`` search first discovers
@@ -503,14 +509,15 @@ def discover_nowcoder(client, topic=None):
                     '官方列表无逐题发布日期')
         return _result(verified, coverage, truncated, warnings)
 
-    rows, total, pages, capped, _ = _nowcoder_pages(client, {}, MAX_NOWCODER_PAGES, warnings)
-    truncated = bool(capped and (total is None or len(rows) < total))
+    rows, total, pages, capped, _ = _nowcoder_pages(client, {}, MAX_NOWCODER_PAGES, warnings, first_page=first_page)
+    truncated = bool(capped or any(w.startswith('牛客第 ') or w in {W_NOWCODER_FIRST,W_NOWCODER_SHAPE,W_NOWCODER_REPEAT} for w in warnings))
     if truncated and total is not None:
         warnings.append(W_NOWCODER_TRUNCATED.format(total=total, count=len(rows)))
     if rows:
         warnings.append(W_NOWCODER_NO_DATE)
-    coverage = (f'牛客：官方题库列表前 {pages} 页（每页 {NOWCODER_PAGE_SIZE} 道上限），'
+    coverage = (f'牛客：官方题库列表第 {first_page} 页起读取 {pages} 页（每页 {NOWCODER_PAGE_SIZE} 道上限），'
                 f'共 {len(rows)} 道；官方列表无逐题发布日期')
     if not rows:
         coverage = '牛客：官方题库列表未返回可用候选；未猜测题号或标签'
-    return _result(rows, coverage, truncated, warnings)
+    return {**_result(rows, coverage, truncated, warnings), 'total_count':total,
+            'first_page':first_page,'next_page':first_page+pages if truncated else 1}

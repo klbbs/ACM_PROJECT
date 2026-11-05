@@ -18,7 +18,7 @@ from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
 from acmweb.training_topics import TOPICS, matches_topic
 from .models import Choice, ControlRequest, Draw, SolutionReport, candidate_choice
 from .control import TaskControl
-from .difficulty import score_candidate
+from .difficulty import score_candidate, selection_range
 
 MAX_RUN_SECONDS = 600
 IMAGE_TTL = 1800
@@ -87,6 +87,7 @@ class Hermes:
 
     def pool(self, request, preferred_ids=None, *, evidence_only=False, qualified_contests=None, allowed_platforms=None):
         low, high = request.score_range
+        lower, upper = selection_range(low, high)
         reference = cf_reference(self.db)
         topic = TOPICS.get(request.topic or '')
         methods = self.app.state.topic_feasibility.approved_map(topic['id']) if topic else {}
@@ -102,7 +103,7 @@ class Hermes:
                 # Discovery may inspect a different official rating; only the
                 # final pool must satisfy the requested composite estimate.
                 return p.get('platform') == 'codeforces' and type(p.get('difficulty')) is int
-            return score(p).get('eligible', overlaps(score(p), low, high))
+            return score(p).get('eligible', overlaps(score(p), lower, upper))
         def eligible(p):
             if allowed_platforms is not None and p.get('platform') not in allowed_platforms:
                 return False
@@ -169,12 +170,17 @@ class Hermes:
                 result.append(platform)
         return result
 
+    def diagnostics(self, request, allowed_platforms=None):
+        from .pool_diagnostics import diagnose
+        return diagnose(self,request,allowed_platforms)
+
     async def run(self, payload, *, job_id=None):
         artifacts=[]
         started=time.monotonic()
         async def pipeline():
             self.control.stage(job_id,'validating')
             request = Draw.model_validate(payload['request'])
+            score_window = list(selection_range(*request.score_range))
             output_format=payload.get('output_format','text')
             if output_format not in {'text','image'}:
                 raise AIError('Hermes 输出方式无效')
@@ -261,7 +267,14 @@ class Hermes:
             # not erase every otherwise valid CF task in favour of another OJ.
             pool = self.pool(request, allowed_platforms=allowed_platforms)
             if not pool:
-                raise AIError('没有符合分数、题型、日期与本轮可用平台条件的未完成且未推荐题；已排除历史提交、已交付题和客户端记录；故障平台已跳过，其他平台也暂无合适候选')
+                diagnostics=self.diagnostics(request,allowed_platforms)
+                emit_event(getattr(self.app.state,'event_log',None),'hermes.pool_empty',level='WARNING',
+                    job_id=job_id,candidate_count=diagnostics['candidate_count'],
+                    cached_count=sum(row['cached_count'] for row in diagnostics['platforms']))
+                lower, upper = selection_range(*request.score_range)
+                topic_title = (TOPICS.get(request.topic or '') or {}).get('title',request.topic or '不限专题')
+                suffix = '；故障平台已跳过' if fallbacks else ''
+                raise AIError(f'当前可用平台中没有符合推测分数 {lower}～{upper}、{topic_title}、发布日期及排重条件的未完成且未推荐题{suffix}；已排除客户端记录，候选预览可查看各平台缓存与筛选原因')
             candidate_counts={platform:sum(p['platform']==platform for p in pool) for platform in sorted(allowed_platforms)}
             recent=self.recent_platforms()
             platform_weights=self.platform_weights(pool,recent)
@@ -282,7 +295,7 @@ class Hermes:
                 guard()
                 self.control.stage(job_id,'selecting')
                 chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
-                    {'candidates':[candidate],'score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
+                    {'candidates':[candidate],'score_range':score_window,'requested_score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
                 guard()
                 choice = Choice.model_validate(chosen.data)
                 if choice.problem_id != candidate['id']:
@@ -291,7 +304,7 @@ class Hermes:
                 # Provider failures are not OJ outages: do not blindly charge
                 # again against the same broken model by changing the OJ.
                 response = await self.ai.complete('hermes_solution_report',selection['channel'],selection['model'],
-                    {'problem_id':choice.problem_id,'statement':statement,'score_range':list(request.score_range),
+                    {'problem_id':choice.problem_id,'statement':statement,'score_range':score_window,'requested_score_range':list(request.score_range),
                      'topic':topic_context,'difficulty_evidence':candidate['score_evidence'],
                      'topic_method_evidence':candidate.get('topic_method_evidence')},SolutionReport)
                 guard()
@@ -331,7 +344,8 @@ class Hermes:
             result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
                     'history_sync':history,'catalog_sync':catalog,'contest_evidence_sync':contest_evidence,
-                    'selection_strategy':strategy, 'platform_candidate_counts':candidate_counts,
+                    'selection_strategy':strategy, 'requested_score_range':list(request.score_range),'effective_score_range':score_window,
+                    'platform_candidate_counts':candidate_counts,
                     'platform_weights':platform_weights,'platform_fallbacks':fallbacks,'report_attempts':report_attempts,
                     'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
             if output_format=='image':
@@ -396,6 +410,7 @@ def register(app):
                 'platform_policy':{'base_weight':'equal_per_eligible_platform','recent_window':8,
                     'max_report_attempts':2,'notice':'先抽平台再抽题，近期重复平台降权；故障平台本轮跳过，不放宽已做题和登录要求。'},
                 'difficulty_policy':{'empirical_weight':0.55,'official_weight':0.45,'gym_priority_bonus':0.12,
+                    'single_target_tolerance':100,'rating_precision':'weighted_value_2_decimals',
                     'minimum_statistics_population':100,'notice':'统计充分时按综合估计筛选；Gym 加分只影响概率，未知难度排除，现场数据不是官方 rating。'},
                 'score_range':{'minimum':800,'maximum':3500,'reference':'CF 综合训练估计；统计不足时保留官方 rating，其他平台用注明来源的估计，未知分数排除'},
                 'topics':[{'id':t['id'],'title':t['title']} for t in TOPICS.values()],
@@ -447,6 +462,8 @@ def register(app):
             raise HTTPException(422,'请提供有效的分数区间和题型')
         items=service.pool(Draw(score_range=(minimum,maximum),topic=topic))
         return {'items':items,'count':len(items),'limit':60,'cache_only':True,
+                'diagnostics':service.diagnostics(Draw(score_range=(minimum,maximum),topic=topic)),
+                'requested_score_range':[minimum,maximum],'effective_score_range':list(selection_range(minimum,maximum)),
                 'platform_candidate_counts':{p:sum(row['platform']==p for row in items) for p in verified_platforms(service.accounts)},
                 'platform_weights':service.platform_weights(items,service.recent_platforms()),
                 'notice':'仅预览当前缓存与登录证据，非全库总数；不调用 AI、不检测登录、不锁定候选'}

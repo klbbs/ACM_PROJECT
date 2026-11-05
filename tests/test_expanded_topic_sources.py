@@ -310,7 +310,8 @@ def test_nowcoder_partial_page_failure_keeps_earlier_candidates():
     ])
     result = sources.discover_nowcoder(client)
     assert len(result['items']) == 50
-    assert result['truncated'] is False
+    assert result['truncated'] is True
+    assert result['next_page'] == 2
     serialized = json.dumps(result, ensure_ascii=False)
     assert 'raw-secret' not in serialized and '<html>' not in serialized
     assert any('第 2 页请求失败' in warning for warning in result['warnings'])
