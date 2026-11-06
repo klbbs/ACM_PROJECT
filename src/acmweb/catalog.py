@@ -16,6 +16,7 @@ from ojcrawler.adapters.luogu import page_data
 from .codex_bridge import AIError
 from .problem_sources import normalize, source_url
 from .difficulty_estimates import ATCODER_MODELS, ATCODER_POINTS
+from .catalog_briefs import brief_statistics, CF_STATISTICS, LUOGU_STATISTICS
 
 PLATFORMS = ('codeforces', 'atcoder', 'luogu', 'nowcoder')
 PUBLISHED_SOURCES = {'codeforces.contest.startTimeSeconds', 'atcoder.archive.time', 'kenkoooo.contests.start_epoch_second',
@@ -57,18 +58,30 @@ def _cf(client):
     if data.get('status') != 'OK' or contests.get('status') != 'OK':
         raise CrawlError('CF 官方题库或比赛时间获取失败')
     finished = {p['id']: p for p in contests['result'] if p.get('phase') == 'FINISHED'}
+    # solvedCount is the number of distinct users who solved the task, not
+    # submissions or contest-time acceptance. Read the bulk response once.
+    raw_statistics = data['result'].get('problemStatistics', [])
+    if not isinstance(raw_statistics, list):
+        raw_statistics = []
+    statistics = {(p['contestId'], p['index']): p.get('solvedCount')
+                  for p in raw_statistics if isinstance(p, dict)
+                  and type(p.get('contestId')) is int and isinstance(p.get('index'), str)}
+    observed_at = int(time.time())
     rows = []
     for p in data['result']['problems']:
         if not isinstance(p.get('rating'), int) or p.get('contestId') not in finished: continue
         # The workbench supports standard contest problem indices, not occasional API-only names.
         if not re.fullmatch(r'[1-9]\d{0,4}-[A-Za-z]\d?', f"{p['contestId']}-{p.get('index', '')}"): continue
         contest = finished[p['contestId']]
+        brief = brief_statistics(source=CF_STATISTICS, scope='all_time_users',
+            solved_count=statistics.get((p['contestId'], p['index'])), observed_at=observed_at)
         rows.append(_problem('codeforces', f"{p['contestId']}-{p['index']}", p['name'],
             difficulty=p['rating'], difficulty_source='Codeforces 官方 rating', tags=p.get('tags', []),
             tags_source='codeforces.problemset.problems',
             contest_id=p['contestId'], published_at=publication_time(contest.get('startTimeSeconds')),
             published_at_source='codeforces.contest.startTimeSeconds',
-            publication_note='官方比赛开始时间；不使用比赛编号推测日期'))
+            publication_note='官方比赛开始时间；不使用比赛编号推测日期',
+            **({'brief_statistics': brief} if brief else {})))
     return rows
 
 
@@ -109,14 +122,18 @@ def _enrich_atcoder_difficulties(client, rows):
     if not callable(getattr(client, 'json', None)):
         return rows
     models, points = {}, {}
-    try:
-        data = client.json(ATCODER_MODELS)
-        if isinstance(data, dict) and len(data) <= 50000:
-            models = {pid: row['difficulty'] for pid, row in data.items()
-                      if isinstance(row, dict) and type(row.get('difficulty')) is int
-                      and -10000 <= row['difficulty'] <= 10000 and not row.get('is_experimental')}
-    except (CrawlError, ValueError, TypeError, KeyError):
-        pass
+    cached_models = getattr(client, 'catalog_atcoder_models', None)
+    if isinstance(cached_models, dict):
+        models = cached_models
+    else:
+        try:
+            data = client.json(ATCODER_MODELS)
+            if isinstance(data, dict) and len(data) <= 50000:
+                models = {pid: row['difficulty'] for pid, row in data.items()
+                          if isinstance(row, dict) and type(row.get('difficulty')) is int
+                          and -10000 <= row['difficulty'] <= 10000 and not row.get('is_experimental')}
+        except (CrawlError, ValueError, TypeError, KeyError):
+            pass
     try:
         data = client.json(ATCODER_POINTS)
         if isinstance(data, list) and len(data) <= 50000:
@@ -160,10 +177,13 @@ def parse_luogu_catalog(html):
     for p in entries:
         if not re.fullmatch(r'(?:P|B)\d+', str(p.get('pid', ''))): continue
         stamp = publication_time(p.get('createTime'))
+        brief = brief_statistics(source=LUOGU_STATISTICS, scope='all_time_submissions',
+            submitted_count=p.get('totalSubmit'), accepted_count=p.get('totalAccepted'))
         result.append(_problem('luogu', p['pid'], p.get('name') or p.get('title') or p['pid'],
             native_difficulty=p.get('difficulty'), difficulty_source='洛谷官方难度等级（与 CF rating 不可比）',
             published_at=stamp, published_at_source='luogu.problem.createTime' if stamp else None,
-            tags=[str(x) for x in p.get('tags', [])], tags_source='luogu.official_problem_list'))
+            tags=[str(x) for x in p.get('tags', [])], tags_source='luogu.official_problem_list',
+            **({'brief_statistics': brief} if brief else {})))
     return result
 
 
