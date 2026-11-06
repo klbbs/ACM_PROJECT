@@ -68,6 +68,48 @@ class Hermes:
         from .catalog import ensure_catalog
         return await ensure_catalog(self.db,self.accounts)
 
+    async def public_references(self, problem_id, statement):
+        """Anonymous best-effort materials; failure never replaces the statement."""
+        if not isinstance(statement, dict) or statement.get('id') != problem_id:
+            return []
+        from .references import gather, _url
+        from acmweb.problem_sources import atcoder_contest
+        try:
+            platform, key = problem_id.split(':', 1)
+            if platform == 'codeforces':
+                contest = key.split('-')[0]
+                base = 'https://codeforces.com'
+                paths = {'editorial': r'/blog/entry/[1-9]\d{0,9}',
+                    'accepted_public_code': rf'/(?:contest|gym)/{re.escape(contest)}/submission/[1-9]\d{{0,11}}'}
+            elif platform == 'atcoder':
+                contest = atcoder_contest(key)
+                base = 'https://atcoder.jp'
+                paths = {'editorial': rf'/contests/{re.escape(contest)}/editorial/[1-9]\d{{0,9}}',
+                    'accepted_public_code': rf'/contests/{re.escape(contest)}/submissions/[1-9]\d{{0,11}}'}
+            else:
+                return []
+            values = await gather(problem_id, statement)
+            safe, remaining = [], 8000
+            for value in values[:2] if isinstance(values, list) else []:
+                if (not isinstance(value, dict) or value.get('problem_id') != problem_id or
+                        value.get('kind') not in {'editorial', 'accepted_public_code'} or
+                        any(not isinstance(value.get(key), str) or not value[key].strip()
+                            for key in ('title', 'url', 'excerpt')) or
+                        _url(base, value['url'], paths[value['kind']]) != value['url']):
+                    continue
+                if remaining <= 0:
+                    break
+                safe.append({key: value[key][:limit] for key, limit in
+                    (('problem_id', 120), ('kind', 30), ('title', 200), ('url', 500), ('excerpt', 8000))})
+                safe[-1]['excerpt'] = safe[-1]['excerpt'][:remaining]
+                remaining -= len(safe[-1]['excerpt'])
+                safe[-1]['limitations'] = [item[:300] for item in value.get('limitations', [])[:4] if isinstance(item, str)]
+            return safe
+        except Exception:
+            # asyncio.CancelledError derives from BaseException: user stop and
+            # the parent job deadline must continue propagating.
+            return []
+
     async def refresh_evidence(self, request):
         from .selection_evidence import refresh_evidence
         return await refresh_evidence(self.db, self.accounts, self.pool(request, evidence_only=True),
@@ -293,20 +335,35 @@ class Hermes:
                     pool=[p for p in pool if p['platform']!=platform]
                     continue
                 guard()
-                self.control.stage(job_id,'selecting')
-                chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
-                    {'candidates':[candidate],'score_range':score_window,'requested_score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
-                guard()
-                choice = Choice.model_validate(chosen.data)
-                if choice.problem_id != candidate['id']:
-                    raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
+                # Public references overlap the existing selection call; never
+                # start a separate paid AI summary or leave reads after a stop.
+                reference_task = asyncio.create_task(self.public_references(candidate['id'], statement))
+                try:
+                    self.control.stage(job_id,'selecting')
+                    chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
+                        {'candidates':[candidate],'score_range':score_window,'requested_score_range':list(request.score_range),'topic':topic_context},candidate_choice([candidate['id']]))
+                    guard()
+                    choice = Choice.model_validate(chosen.data)
+                    if choice.problem_id != candidate['id']:
+                        raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
+                    references = await reference_task
+                    guard()
+                finally:
+                    if not reference_task.done():
+                        reference_task.cancel()
+                    try:
+                        await reference_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 self.control.stage(job_id,'generating_report')
                 # Provider failures are not OJ outages: do not blindly charge
                 # again against the same broken model by changing the OJ.
                 response = await self.ai.complete('hermes_solution_report',selection['channel'],selection['model'],
                     {'problem_id':choice.problem_id,'statement':statement,'score_range':score_window,'requested_score_range':list(request.score_range),
                      'topic':topic_context,'difficulty_evidence':candidate['score_evidence'],
-                     'topic_method_evidence':candidate.get('topic_method_evidence')},SolutionReport)
+                     'topic_method_evidence':candidate.get('topic_method_evidence'),
+                     'brief_statistics':candidate.get('brief_statistics'),
+                     'public_references':references},SolutionReport)
                 guard()
                 report_attempts += 1
                 report = SolutionReport.model_validate(response.data).model_dump()
@@ -343,6 +400,7 @@ class Hermes:
                 samples=[dict(sample) for sample in statement['samples']])
             result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
+                    'report_references':[{key:reference[key] for key in ('problem_id','kind','title','url','limitations') if key in reference} for reference in references],
                     'history_sync':history,'catalog_sync':catalog,'contest_evidence_sync':contest_evidence,
                     'selection_strategy':strategy, 'requested_score_range':list(request.score_range),'effective_score_range':score_window,
                     'platform_candidate_counts':candidate_counts,

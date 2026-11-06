@@ -26,6 +26,7 @@ STATEMENT={'id':PID,'url':'https://codeforces.com/problemset/problem/4/A','title
 
 def setup_pipeline(app,monkeypatch):
     s=app.state.hermes
+    monkeypatch.setattr(s,'public_references',AsyncMock(return_value=[]))
     monkeypatch.setattr(s,'ensure_catalog',AsyncMock(return_value={'platform':'codeforces','status':'cached','count':1}))
     monkeypatch.setattr(s,'refresh_evidence',AsyncMock(return_value={'status':'synthetic'}))
     monkeypatch.setattr(s,'sync_history',AsyncMock(return_value={'complete':True,'accounts':[{'platform':'codeforces','handle':'Owner','complete':True}]}))
@@ -804,6 +805,10 @@ def test_checked_contest_filter_happens_before_random_pool_limit(client,monkeypa
     s.refresh_evidence.return_value={'contests_available':1,'available_contest_ids':[4]}
     pool=s.pool(Draw(score_range=(1800,1800)),qualified_contests={4})
     assert [p['id'] for p in pool]==[PID]
+    # The production pool now permits unsampled official ratings. Keep this
+    # synthetic statement in the random preview instead of flakily losing it.
+    original_pool=s.pool
+    monkeypatch.setattr(s,'pool',lambda request,preferred_ids=None,**kwargs:original_pool(request,[PID],**kwargs))
     monkeypatch.setattr(s,'choose',lambda pool,*args:(next(p for p in pool if p['id']==PID),'synthetic'))
     response=c.post('/api/hermes/draw',json={'score_range':[1800,1800]},headers={'Idempotency-Key':'c'*32})
     job=wait(c,response.json()['id'])
