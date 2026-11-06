@@ -5,7 +5,7 @@
 ```python
 from acmhermes.references import gather
 references = await gather(problem_id, statement)
-# 把 references 放入已有完整题面报告任务的输入；不需要另付费总结。
+# 根服务已通过 public_references() 接入，并与现有元信息选择调用并行。
 ```
 
 输入题号必须由既有官方题号规范化器接受，且 `statement['id']` 必须完全一致。题面的 `url`、正文、超链接不参与网络目标构造。返回数组中每条资料包含：
@@ -39,3 +39,13 @@ references = await gather(problem_id, statement)
 `tests/test_hermes_references.py` 使用合成 HTML 和模拟 HTTP，覆盖精确题目分组、官方条目优先、跨题隔离、非官方链接/重定向拒绝、源码提交号与判题匹配、无凭据请求、响应 Cookie 不复用、长度和请求限额、缓存隔离、网络失败、超时及取消。
 
 开发时对 `https://atcoder.jp/contests/abc400/editorial` 与 `https://codeforces.com/contest/2000` 各做一次无凭据、禁重定向的实际读取，均得到 HTTP 403。因此这里只声称模拟路径通过和实际入口受到访问限制，不声称真实官方题解/源码抓取成功；线上没有参考时将保持原完整题面分析。
+
+## 根流程集成
+
+`Hermes.public_references()` 对公开读取的普通异常降级为无参考，取消继续传播。官方完整题面读取成功后才启动参考任务，与既有 `hermes_selection` 模型调用并行；选择失败、题号不符、配置变化或用户急停时，必须取消并等待尚未结束的参考任务，避免后台残留。没有新增付费总结调用，也没有因为参考缺失自动重试。
+
+`hermes_solution_report` 同时获得原始完整题面、`difficulty_evidence`、`brief_statistics` 和 `public_references`。提示词区分累计统计与比赛窗口统计，不让累计提交通过率冒充比赛难度证据；参考只用于辅助高层思路，完整题面和约束仍需独立核对。
+
+最终结果只保留 `report_references` 来源元数据：题号、类型、标题、来源 URL 和限制，不保存或回传参考摘录及公开源码。用户生成的报告仍受禁止整份程序输出的校验。查询已完成任务、幂等恢复及回执重发只读取同一持久结果，不重新抓取参考。
+
+`tests/test_hermes_report_references.py` 以模拟 OJ/AI 检查并行执行、完整题面及简略统计输入、参考失败降级、同题绑定、选择失败和取消清理、来源元数据不含代码、已完成任务与交付重复读取不重抓。
