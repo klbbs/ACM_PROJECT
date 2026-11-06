@@ -1,7 +1,7 @@
 """Read-only, per-user coverage and exclusive rejection counts; no OJ or AI I/O."""
 from acmweb.catalog import PLATFORMS, PUBLISHED_SOURCES, _pool, _canonical, _date_floor, publication_time, verified_platforms
 from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
-from acmweb.training_topics import TOPICS, matches_topic
+from .topics import parse_topics, method_evidence, matches_topics, context
 from .difficulty import score_candidate, selection_range
 
 
@@ -11,8 +11,8 @@ def diagnose(service, request, allowed_platforms=None):
     prefs=service.db.get('training',{})
     floor=_date_floor(prefs.get('published_after'))
     avoided=set(prefs.get('avoid_tags',[]))
-    topic=TOPICS.get(request.topic or '')
-    methods=service.app.state.topic_feasibility.approved_map(topic['id']) if topic else {}
+    topics=parse_topics(request.topic)
+    methods=method_evidence(service, topics)
     excluded=service.control.memory.drawn_ids() | set(request.exclude_ids)
     low,high=request.score_range
     lower,upper=selection_range(low,high)
@@ -34,7 +34,7 @@ def diagnose(service, request, allowed_platforms=None):
                 elif floor is not None and (row.get('published_at_source') not in PUBLISHED_SOURCES or not publication_time(row.get('published_at'))):reason='unknown_date'
                 elif floor is not None and row['published_at']<floor:reason='before_date'
                 elif row.get('tags') and set(row['tags']).issubset(avoided):reason='avoided_tags'
-                elif request.topic and not ((matches_topic(row,topic) or row['id'] in methods) if topic else request.topic.casefold() in {str(t).casefold() for t in row.get('tags',[])}):reason='topic'
+                elif not matches_topics(row,topics,methods):reason='topic'
                 elif _canonical(platform,row['id']) in excluded:reason='client_or_drawn'
             if reason:counts[reason]+=1
             else:eligible+=1
@@ -45,6 +45,6 @@ def diagnose(service, request, allowed_platforms=None):
             'with_known_date':sum(row.get('published_at_source') in PUBLISHED_SOURCES and bool(publication_time(row.get('published_at'))) for row in raw),
             'truncated':coverage.get('truncated'),
             **{key:coverage[key] for key in ('next_page','total_count','coverage') if key in coverage}})
-    return {'requested_score_range':[low,high],'effective_score_range':[lower,upper],
+    return {'topic_query':context(topics),'requested_score_range':[low,high],'effective_score_range':[lower,upper],
             'published_after':prefs.get('published_after'),'candidate_count':sum(row['eligible_count'] for row in result),
             'platforms':result,'notice':'题库缓存总量与符合当前条件的候选量不同；缺少专题、难度或日期证据不会据题号猜测。'}

@@ -15,7 +15,8 @@ from acmweb.catalog import recommendation_candidates, refresh_recommendation_ses
 from acmweb.runtime_logs import emit_event
 from acmweb.codex_bridge import AIError
 from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
-from acmweb.training_topics import TOPICS, matches_topic
+from acmweb.training_topics import TOPICS
+from .topics import MAX_QUERY_LENGTH, parse_topics, method_evidence, matches_topics, context as topic_context_for
 from .models import Choice, ControlRequest, Draw, SolutionReport, candidate_choice
 from .control import TaskControl
 from .difficulty import score_candidate, selection_range
@@ -89,8 +90,8 @@ class Hermes:
         low, high = request.score_range
         lower, upper = selection_range(low, high)
         reference = cf_reference(self.db)
-        topic = TOPICS.get(request.topic or '')
-        methods = self.app.state.topic_feasibility.approved_map(topic['id']) if topic else {}
+        topics = parse_topics(request.topic)
+        methods = method_evidence(self, topics)
         excluded=self.control.memory.drawn_ids() | set(request.exclude_ids)
         scores = {}
         def score(p):
@@ -111,9 +112,7 @@ class Hermes:
                     and p.get('contest_id') not in qualified_contests
                     and score(p).get('empirical_rating') is None):
                 return False
-            return _canonical(p['platform'],p['id']) not in excluded and (
-                not request.topic or ((matches_topic(p,topic) or p['id'] in methods) if topic else
-                    request.topic.casefold() in {str(t).casefold() for t in p.get('tags', [])}))
+            return _canonical(p['platform'],p['id']) not in excluded and matches_topics(p, topics, methods)
         if evidence_only:
             # A nominal-first sort followed by LIMIT would hide every other
             # rating in a large CF catalog. Reserve a separate discovery slice.
@@ -125,7 +124,8 @@ class Hermes:
             rows = recommendation_candidates(self.db, self.accounts, low, high, limit=60, predicate=eligible,
                                              preferred_ids=preferred_ids, difficulty_predicate=difficulty)
         return [{**row,'score_evidence':score(row),
-                 **({'topic_method_evidence':methods[row['id']]} if row['id'] in methods else {})} for row in rows]
+                 **({'topic_method_evidence': (next(iter(methods[row['id']].values())) if len(methods[row['id']])==1
+                     else {'by_topic':methods[row['id']]})} if row['id'] in methods else {})} for row in rows]
 
     @staticmethod
     def platform_weights(pool, recent_platforms=()):
@@ -184,8 +184,8 @@ class Hermes:
             output_format=payload.get('output_format','text')
             if output_format not in {'text','image'}:
                 raise AIError('Hermes 输出方式无效')
-            topic = TOPICS.get(request.topic or '')
-            topic_context = {'id':topic['id'],'title':topic['title']} if topic else request.topic
+            requested_topics = parse_topics(request.topic)
+            topic_context = topic_context_for(requested_topics)
             selection = self.ai.selection()
             if not selection['ready'] or (selection['channel'],selection['model']) != (payload['provider'],payload['model']):
                 raise AIError('当前默认 AI 配置已变化或不可用，请重新发起 Hermes 请求')
@@ -272,7 +272,7 @@ class Hermes:
                     job_id=job_id,candidate_count=diagnostics['candidate_count'],
                     cached_count=sum(row['cached_count'] for row in diagnostics['platforms']))
                 lower, upper = selection_range(*request.score_range)
-                topic_title = (TOPICS.get(request.topic or '') or {}).get('title',request.topic or '不限专题')
+                topic_title = request.topic or '不限专题'
                 suffix = '；故障平台已跳过' if fallbacks else ''
                 raise AIError(f'当前可用平台中没有符合推测分数 {lower}～{upper}、{topic_title}、发布日期及排重条件的未完成且未推荐题{suffix}；已排除客户端记录，候选预览可查看各平台缓存与筛选原因')
             candidate_counts={platform:sum(p['platform']==platform for p in pool) for platform in sorted(allowed_platforms)}
@@ -414,6 +414,8 @@ def register(app):
                     'minimum_statistics_population':100,'notice':'统计充分时按综合估计筛选；Gym 加分只影响概率，未知难度排除，现场数据不是官方 rating。'},
                 'score_range':{'minimum':800,'maximum':3500,'reference':'CF 综合训练估计；统计不足时保留官方 rating，其他平台用注明来源的估计，未知分数排除'},
                 'topics':[{'id':t['id'],'title':t['title']} for t in TOPICS.values()],
+                'topic_query':{'parameter':'topic','separators':[',','，','&','|'],'default_operator':'AND','precedence':['& / comma','|'],'parentheses':False,'maximum_categories':8,
+                    'example':'dp,博弈论','notice':'支持专题 ID、名称、精确别名及 CF 标签，自动去重；空项不允许。'},
                 'auth':'使用本人 ACM Lab 会话；多人模式的写请求需 X-ACM-Request 和 CSRF 校验',
                 'spoiler':'本接口明确生成完整解题报告，调用即请求获取该题分析；不会自动交题或运行代码'}
 
@@ -457,12 +459,16 @@ def register(app):
                 'image_requires_optional_dependencies':True,'notice':'只读配置状态，不调用模型或检测平台登录'}
 
     @app.get('/api/hermes/candidates')
-    def preview(minimum:int=Query(ge=800,le=3500),maximum:int=Query(ge=800,le=3500),topic:str|None=Query(default=None,min_length=1,max_length=80)):
+    def preview(minimum:int=Query(ge=800,le=3500),maximum:int=Query(ge=800,le=3500),topic:str|None=Query(default=None,min_length=1,max_length=MAX_QUERY_LENGTH)):
         if minimum>maximum or topic is not None and not topic.strip():
             raise HTTPException(422,'请提供有效的分数区间和题型')
-        items=service.pool(Draw(score_range=(minimum,maximum),topic=topic))
+        try:
+            request=Draw(score_range=(minimum,maximum),topic=topic)
+        except ValueError:
+            raise HTTPException(422,'题型最多 8 类，以 &/逗号取交集、| 取并集，不支持括号或空项') from None
+        items=service.pool(request)
         return {'items':items,'count':len(items),'limit':60,'cache_only':True,
-                'diagnostics':service.diagnostics(Draw(score_range=(minimum,maximum),topic=topic)),
+                'diagnostics':service.diagnostics(request),'topic_query':topic_context_for(parse_topics(topic)),
                 'requested_score_range':[minimum,maximum],'effective_score_range':list(selection_range(minimum,maximum)),
                 'platform_candidate_counts':{p:sum(row['platform']==p for row in items) for p in verified_platforms(service.accounts)},
                 'platform_weights':service.platform_weights(items,service.recent_platforms()),
