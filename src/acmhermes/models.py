@@ -1,5 +1,6 @@
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator, create_model
+from .topics import MAX_QUERY_LENGTH, parse_topics
 
 Score = Annotated[int, Field(strict=True, ge=800, le=3500)]
 Text = Annotated[str, Field(min_length=1, max_length=4000)]
@@ -8,15 +9,14 @@ Text = Annotated[str, Field(min_length=1, max_length=4000)]
 class Draw(BaseModel):
     model_config = ConfigDict(extra='forbid')
     score_range: tuple[Score, Score]
-    topic: str | None = Field(default=None, min_length=1, max_length=80)
+    topic: str | None = Field(default=None, min_length=1, max_length=MAX_QUERY_LENGTH)
     exclude_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=200)]] = Field(default_factory=list, max_length=10000)
 
     @model_validator(mode='after')
     def ordered(self):
         if self.score_range[0] > self.score_range[1]:
             raise ValueError('score_range must be ordered')
-        if self.topic is not None and not self.topic.strip():
-            raise ValueError('topic must not be blank')
+        parse_topics(self.topic)  # Validate without rewriting legacy request fingerprints.
         from acmweb.problem_sources import normalize
         from acmweb.codex_bridge import AIError
         try:
