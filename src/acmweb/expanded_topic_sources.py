@@ -23,6 +23,7 @@ from ojcrawler.models import CrawlError
 
 from .codex_bridge import AIError
 from .problem_sources import normalize, source_url
+from .catalog_briefs import brief_statistics, NOWCODER_STATISTICS
 
 ATCODER_ORIGIN = 'https://atcoder.jp'
 ATCODER_ARCHIVE = ATCODER_ORIGIN + '/contests/archive'
@@ -335,6 +336,9 @@ def discover_atcoder(client, topic=None):
         warnings.append(W_ATCODER_MODELS)
         models = {}
     _apply_models(rows, models)
+    # Reuse this validated bulk response in catalog enrichment, rather than
+    # downloading the same multi-megabyte model index for a second time.
+    client.catalog_atcoder_models = models
 
     official_matched = sum(1 for row in rows
                            if row['published_at_source'] == 'atcoder.archive.time')
@@ -367,6 +371,34 @@ def _nowcoder_item(key, title, native, tags):
         'tags': tags, 'candidate_source': '牛客官方题库列表（含官方知识点标签）',
         'published_at': None, 'published_at_source': None,
     }
+
+
+def _nowcoder_solved_count(row):
+    """Match an actual public table header, accounting for title colspan=2.
+
+    The current list exposes ``acceptPerson`` (distinct successful users), not
+    submissions. Unknown/missing headers or non-integer cells stay unknown.
+    """
+    table = row.find_parent('table')
+    if table is None:
+        return None
+    headers = table.find_all('th')
+    column = next((index for index, node in enumerate(headers)
+                   if node.get('data-type') == 'acceptPerson'
+                   and _clean(node.get_text(' ', strip=True), 80).startswith('通过人数')), None)
+    if column is None:
+        return None
+    offset = 0
+    for cell in row.find_all('td', recursive=False):
+        raw_span = cell.get('colspan', '1')
+        if not str(raw_span).isdigit() or not 1 <= int(raw_span) <= 10:
+            return None
+        span = int(raw_span)
+        if offset == column and span == 1:
+            text = cell.get_text(strip=True)
+            return int(text.replace(',', '')) if re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)', text) else None
+        offset += span
+    return None
 
 
 def _parse_nowcoder_page(html):
@@ -403,7 +435,12 @@ def _parse_nowcoder_page(html):
                 known = tag_map.setdefault(name.casefold(), [])
                 if raw_id not in known:
                     known.append(raw_id)
-        rows.append(_nowcoder_item(str(key), title, native, tags))
+        item = _nowcoder_item(str(key), title, native, tags)
+        brief = brief_statistics(source=NOWCODER_STATISTICS, scope='all_time_users',
+                                 solved_count=_nowcoder_solved_count(row))
+        if brief:
+            item['brief_statistics'] = brief
+        rows.append(item)
     match = _TOTAL.search(html)
     total = int(match[1].replace(',', '')) if match else None
     return rows, total, skipped, tag_map
