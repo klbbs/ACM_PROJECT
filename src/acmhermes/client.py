@@ -30,6 +30,16 @@ class HermesClient:
     def draw_image(self,score_range,topic=None,*,request_key,exclude_ids=None,memory_path=None):
         return self._draw('/api/hermes/draw/image',score_range,topic,request_key,exclude_ids,memory_path)
 
+    def shared_reports(self, problem_id):
+        """Metadata only, no solution spoilers or paid generation."""
+        return self._json('GET','/api/problem-reports',params={'problem_id':problem_id})
+
+    def shared_report(self, report_id, problem_id):
+        """Caller must obtain spoiler confirmation before requesting the body."""
+        if not re.fullmatch(r'[a-f0-9]{32}',report_id):
+            raise ValueError('invalid shared report ID')
+        return self._json('GET','/api/problem-reports/'+report_id,params={'problem_id':problem_id})
+
     def _draw(self,path,score_range,topic,request_key,exclude_ids=None,memory_path=None):
         """Keep request_key on the Hermes side to recover an uncertain response."""
         from .models import Draw
@@ -315,6 +325,9 @@ class HermesClient:
         lines=[problem['title'], '', '题目要你做什么：', problem['description'],
                '', '输入：',problem['input_format'], '', '输出：',problem['output_format'],
                '', '约束：', *('- '+s for s in problem['constraints'])]
+        assessment=result.get('ai_difficulty_assessment') or {}
+        if type(assessment.get('rating')) in (int,float):
+            lines.insert(1,'AI 推测评分：'+str(assessment['rating'])+'（非官方评级）')
         for i,sample in enumerate(problem.get('samples',[]),start=1):
             lines.extend(['',f'样例 {i} 输入：',sample['input'],f'样例 {i} 输出：',sample['output']])
         if problem.get('notes'):
@@ -326,6 +339,10 @@ class HermesClient:
     def solution(job):
         report=(job.get('result') or {}).get('report') or {}
         lines=['AI 解题报告（含剧透，未运行代码）']
+        assessment=report.get('difficulty_assessment') or {}
+        if assessment:
+            lines.extend(['AI 推测评分：'+str(assessment.get('rating') if assessment.get('rating') is not None else '无法确定'),
+                          *('- '+s for s in assessment.get('evidence',[])),*('- '+s for s in assessment.get('limitations',[]))])
         for key,title in (('summary','概述'),('topic_fit','题型适配'),('constraints','约束'),
                 ('approach','解题思路'),('correctness','正确性论证'),('complexity','复杂度'),
                 ('sample_walkthrough','样例解释'),('pitfalls','实现注意事项'),

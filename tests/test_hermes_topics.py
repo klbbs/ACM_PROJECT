@@ -10,7 +10,7 @@ from acmhermes.models import Draw
 from acmhermes.topics import parse_topics, matches_topics, method_evidence, context
 from acmweb.app import create_app
 from acmweb.settings import Settings
-from test_hermes_api import setup_pipeline, wait, PID, EXPLANATION, REPORT
+from test_hermes_api import setup_pipeline, wait, PID, EXPLANATION, REPORT, ASSESSMENT
 
 
 def test_alias_trim_dedup_preserves_legacy_request_text():
@@ -89,7 +89,7 @@ def test_generation_context_idempotency_and_exclusions(pipeline,monkeypatch):
         assert data['topic']['operator']=='AND'
         assert {t['id'] for t in data['topic']['topics']}=={'luogu-3','luogu-13'}
         assert len(data['topic']['any_of_all'])==1
-        if task=='hermes_selection':value={'problem_id':PID,'reason':'Synthetic'}
+        if task=='hermes_selection':value={'problem_id':PID,'reason':'Synthetic','suitable':True,'difficulty_assessment':ASSESSMENT}
         else:value={**REPORT,'problem_explanation':EXPLANATION}
         return SimpleNamespace(data=value,provenance={'channel':'api','model':'synthetic','task':task})
     fake.side_effect=complete

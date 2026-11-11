@@ -477,6 +477,9 @@ def create_app(settings=None):
     shared_path = settings.translation_database or (settings.data_dir / "translations.sqlite3")
     shared_translations = SharedTranslations(shared_path)
     app.state.translation_store = shared_translations
+    from .problem_reports import ProblemReports, register as register_problem_reports
+    app.state.problem_reports = ProblemReports(shared_path.with_name('problem-reports.sqlite3'))
+    register_problem_reports(app, app.state.problem_reports, app.state.selection_reports)
     # Isolated child apps are served through the authenticated multi-user
     # parent; only that parent may expose moderation endpoints.
     app.state.multi_child = bool(settings.isolated)

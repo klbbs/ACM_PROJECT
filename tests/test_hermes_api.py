@@ -13,12 +13,16 @@ from acmweb.settings import Settings
 from acmhermes.models import Draw
 
 PID='codeforces:4-A'
+ASSESSMENT={'rating':1000.0,'confidence':'medium','evidence':['合成规模与最简单解法证据'],'limitations':['AI 静态估计，非官方分数']}
+def assessment_for(data):
+    low,high=data.get('requested_score_range',[800,1200])
+    return {**ASSESSMENT,'rating':(low+high)/2}
 EXPLANATION={'title':'求整数后继','description':'给定整数 n，求它的后继 n+1。',
              'input_format':'一个整数 n。','output_format':'输出 n+1。','notes':['保留原题的变量与条件。']}
 REPORT={'problem_id':PID,'suitable':True,'topic_fit':'合成数学题','summary':'求后继',
         'constraints':['给定整数'],'approach':['加一'],'correctness':['后继的定义'],
         'complexity':'时间 O(1)，空间 O(1)','sample_walkthrough':['1 对应 2'],
-        'pitfalls':['检查范围'],'alternative_approaches':[],'limitations':['AI 合成测试，未运行代码']}
+        'pitfalls':['检查范围'],'alternative_approaches':[],'limitations':['AI 合成测试，未运行代码'],'difficulty_assessment':ASSESSMENT}
 STATEMENT={'id':PID,'url':'https://codeforces.com/problemset/problem/4/A','title':'Synthetic test',
            'source':'official','render_version':4,'body_html':'<p>Find the successor of $$$n$$$.</p>',
            'sections':['Find n+1.'],'samples':[{'input':'1\n','output':'2\n'}]}
@@ -43,10 +47,10 @@ def setup_pipeline(app,monkeypatch):
             constraint=schema.model_json_schema()['properties']['problem_id']
             assert PID in constraint.get('enum',[constraint.get('const')])
             with pytest.raises(ValueError):schema.model_validate({'problem_id':'codeforces:999999-Z','reason':'候选外'})
-            value={'problem_id':PID,'reason':'合成选择'}
+            value={'problem_id':PID,'reason':'合成选择','suitable':True,'difficulty_assessment':assessment_for(data)}
         elif task=='hermes_solution_report':
             assert data['statement']['id']==PID and 'draft' not in data
-            value={**REPORT,'problem_explanation':EXPLANATION}
+            value={**REPORT,'problem_explanation':EXPLANATION,'difficulty_assessment':assessment_for(data)}
         elif task=='translation': value={'blocks':[{'id':b['id'],'text':b['text']} for b in data['blocks']]}
         else: raise AssertionError(task)
         return SimpleNamespace(data=value,provenance={'channel':'api','model':'synthetic','task':task})
@@ -253,7 +257,7 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         image_url=image_job['result']['screenshots'][0]['url']
         assert c.get(image_url,headers=admin).status_code==200
         assert c.post('/api/hermes/stop',json={},headers={**admin,'X-CSRF-Token':'bad'}).status_code==403
-        member,_=auth('/api/auth/register',{'username':'member','password':'Synthetic-password-123','invitation':invite})
+        member,member_uid=auth('/api/auth/register',{'username':'member','password':'Synthetic-password-123','invitation':invite})
         assert c.get('/api/hermes/draws/'+job['id']+'/delivery',headers=member).status_code==404
         assert c.post(ack_path,json=receipt,headers=member).status_code==404
         assert c.post(stream_path,json={},headers=member).status_code==404
@@ -264,6 +268,14 @@ def test_multiuser_csrf_and_result_isolation(tmp_path,monkeypatch):
         assert c.post('/api/hermes/draws/'+image_job['id']+'/cancel',json={},headers=member).status_code==404
         assert c.post('/api/hermes/requests/'+'8'*32+'/cancel',json={},headers=member).status_code==404
         assert c.get('/api/hermes/draws',headers=member).json()['total']==0
+        # Public reports cross user boundaries; private jobs still do not.
+        setup_pipeline(app.state.workspaces.apps[member_uid][0],monkeypatch)
+        report_id=job['result']['shared_report_id']
+        path='/api/problem-reports/'+report_id
+        shared=c.get(path,params={'problem_id':PID},headers=member)
+        assert shared.status_code==200,shared.text
+        assert shared.json()['report']['problem_id']==PID
+        assert c.get(path,params={'problem_id':PID},headers={'Cookie':''}).status_code==401
         member_memory=c.get('/api/hermes/problem-memory',headers=member).json()
         owner_memory=c.get('/api/hermes/problem-memory',headers=admin).json()
         assert member_memory['items']==[] and member_memory['scope']!=owner_memory['scope']
@@ -300,9 +312,9 @@ def add_candidate(service,pid):
 async def generic_complete(task,provider,model,data,schema):
     if task=='hermes_selection':
         assert len(data['candidates'])==1  # The model cannot choose a preferred ID.
-        value={'problem_id':data['candidates'][0]['id'],'reason':'系统随机题目的训练理由'}
+        value={'problem_id':data['candidates'][0]['id'],'reason':'系统随机题目的训练理由','suitable':True,'difficulty_assessment':assessment_for(data)}
     else:
-        value={**REPORT,'problem_id':data['statement']['id'],'problem_explanation':EXPLANATION}
+        value={**REPORT,'problem_id':data['statement']['id'],'problem_explanation':EXPLANATION,'difficulty_assessment':assessment_for(data)}
     return SimpleNamespace(data=schema.model_validate(value).model_dump(),provenance={'channel':'api','model':'synthetic'})
 
 
@@ -580,7 +592,7 @@ def test_new_draw_after_external_submission_cannot_repeat_the_solved_problem(cli
     async def choose_new(task,provider,model,data,schema):
         if task=='hermes_selection':
             assert {p['id'] for p in data['candidates']}=={other}
-            value={'problem_id':other,'reason':'只选未做题'}
+            value={'problem_id':other,'reason':'只选未做题','suitable':True,'difficulty_assessment':assessment_for(data)}
         else:
             assert data['statement']['id']==other
             value={**REPORT,'problem_id':other,'problem_explanation':EXPLANATION}
@@ -1017,7 +1029,10 @@ def test_platform_failure_falls_back_without_losing_healthy_platform(client,monk
     job=wait(c,start(c))
     assert job['status']=='completed',job
     assert job['result']['problem']['id']==other
-    assert job['result']['platform_fallbacks'][0]['platform']=='codeforces'
+    if stage=='unsuitable':
+        assert job['result']['difficulty_reviews'][0]['report_decision']=='unsuitable'
+    else:
+        assert job['result']['platform_fallbacks'][0]['platform']=='codeforces'
     assert fake.await_count==(4 if stage=='unsuitable' else 2)
     assert s.control.memory.drawn_ids()=={other}
     with s.db.connect() as db:assert db.execute('SELECT COUNT(*) FROM hermes_deliveries').fetchone()[0]==1

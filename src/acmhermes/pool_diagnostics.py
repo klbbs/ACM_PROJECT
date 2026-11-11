@@ -1,8 +1,9 @@
 """Read-only, per-user coverage and exclusive rejection counts; no OJ or AI I/O."""
 from acmweb.catalog import PLATFORMS, PUBLISHED_SOURCES, _pool, _canonical, _date_floor, publication_time, verified_platforms
-from acmweb.difficulty_estimates import cf_reference, estimate, overlaps
+from acmweb.difficulty_estimates import cf_reference, estimate
 from .topics import parse_topics, method_evidence, matches_topics, context
 from .difficulty import score_candidate, selection_range
+from .rating_review import metadata_matches
 
 
 def diagnose(service, request, allowed_platforms=None):
@@ -30,7 +31,7 @@ def diagnose(service, request, allowed_platforms=None):
             elif row['id'] not in unattempted:reason='attempted_or_reserved'
             else:
                 score=score_candidate(row,low,high) if platform=='codeforces' else estimate(row,reference)
-                if not score.get('eligible',overlaps(score,lower,upper)):reason='difficulty'
+                if not score.get('eligible',metadata_matches(score,low,high)):reason='difficulty'
                 elif floor is not None and (row.get('published_at_source') not in PUBLISHED_SOURCES or not publication_time(row.get('published_at'))):reason='unknown_date'
                 elif floor is not None and row['published_at']<floor:reason='before_date'
                 elif row.get('tags') and set(row['tags']).issubset(avoided):reason='avoided_tags'

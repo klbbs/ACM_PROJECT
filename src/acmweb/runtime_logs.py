@@ -19,6 +19,7 @@ user_id_context = contextvars.ContextVar('acm_log_user_id', default=None)
 console = logging.getLogger('acmweb.runtime')
 
 EVENTS = {
+    'hermes.report_storage_failed': ('task', '共享报告暂未写入，个人抽题结果仍保留'),
     'hermes.pool_empty': ('platform', '题库筛选后没有可用候选，请查看分平台筛选统计'),
     'hermes.platform_skipped': ('platform', '抽题已跳过暂不可用的平台，继续其他平台'),
     'hermes.sessions_checked': ('platform', '抽题阶段的平台登录证据已检查'),

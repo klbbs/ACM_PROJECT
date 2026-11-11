@@ -259,3 +259,28 @@ def test_sdk_receives_saved_ack_after_connection_loss_without_new_delivery():
     with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
         result=HermesClient(session).receive('a'*32,lambda _:pytest.fail('already acknowledged'))
     assert result['state']=='acknowledged'
+
+
+def test_sdk_shared_reports_read_only_and_rating_without_spoilers():
+    requests=[]
+    def transport(request):
+        requests.append(request)
+        assert request.method=='GET'
+        assert request.url.host=='acm.example'
+        assert request.url.params['problem_id']=='codeforces:4-A'
+        return httpx.Response(200,json={'items':[]})
+    with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(transport)) as session:
+        sdk=HermesClient(session)
+        sdk.shared_reports('codeforces:4-A')
+        sdk.shared_report('a'*32,'codeforces:4-A')
+        with pytest.raises(ValueError):sdk.shared_report('../private','codeforces:4-A')
+    assert len(requests)==2
+    job={'result':{'ai_difficulty_assessment':{'rating':1840.5},
+        'problem_explanation':{'title':'合成题','description':'题意','input_format':'输入','output_format':'输出',
+            'constraints':[],'original_url':'https://codeforces.com/problemset/problem/4/A'},
+        'report':{'difficulty_assessment':{'rating':1840.5,'evidence':['剧透推理'],'limitations':[]},
+            'approach':['剧透算法']}}}
+    question=HermesClient.explain(job)
+    assert '1840.5' in question and '非官方评级' in question
+    assert '剧透' not in question
+    assert '剧透推理' in HermesClient.solution(job)

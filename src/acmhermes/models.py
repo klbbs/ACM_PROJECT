@@ -36,6 +36,19 @@ class Choice(BaseModel):
     reason: Text
 
 
+class DifficultyAssessment(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    rating: float | None = Field(ge=0, le=4000, allow_inf_nan=False, strict=True)
+    confidence: Literal['low', 'medium', 'high', 'unknown']
+    evidence: list[Text] = Field(min_length=1, max_length=6)
+    limitations: list[Text] = Field(min_length=1, max_length=6)
+
+
+class AssessedChoice(Choice):
+    suitable: bool = Field(strict=True)
+    difficulty_assessment: DifficultyAssessment
+
+
 class ProblemExplanation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: Text
@@ -49,6 +62,7 @@ class SolutionReport(BaseModel):
     model_config = ConfigDict(extra='forbid')
     problem_id: str = Field(min_length=1, max_length=200)
     suitable: bool = Field(strict=True)
+    difficulty_assessment: DifficultyAssessment
     problem_explanation: ProblemExplanation
     topic_fit: Text
     summary: Text
@@ -62,9 +76,9 @@ class SolutionReport(BaseModel):
     limitations: list[Text] = Field(min_length=1, max_length=8)
 
 
-def candidate_choice(ids):
+def candidate_choice(ids, *, assessed=False):
     """Bind exact IDs to the provider schema, retaining post-selection checks."""
     values=tuple(dict.fromkeys(ids))
     if not values or any(not isinstance(value,str) or not 1<=len(value)<=200 for value in values):
         raise ValueError('candidate IDs must be a nonempty set of valid strings')
-    return create_model('CandidateChoice',__base__=Choice,problem_id=(Literal[values],...))
+    return create_model('CandidateChoice',__base__=AssessedChoice if assessed else Choice,problem_id=(Literal[values],...))

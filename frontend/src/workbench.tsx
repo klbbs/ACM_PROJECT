@@ -16,6 +16,7 @@ import { ProblemRecordEditor } from './problem-records'
 import { RemoteSubmissionPanel } from './remote-submission'
 import { EditorTemplates } from './editor-templates'
 import { SelectionReportButton } from './selection-report'
+import { ProblemReports } from './problem-reports'
 import './workbench-selection-report.css'
 import type { CodeTemplate } from './template-types'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
@@ -441,6 +442,7 @@ export function WorkbenchPage({
                     </button>
                   </div>
                   <ProblemRecordEditor key={pid} problemId={pid} title={statement?.title} />
+                  {statement?.source === 'official' && <ProblemReports key={`${pid}:${statement.fetched_at || ''}`} problemId={pid} />}
                   {!statement ? (
                     <p>
                       题面尚未获取。任务状态见页面底部；平台要求浏览器验证时，可先打开原题阅读并继续写代码。
