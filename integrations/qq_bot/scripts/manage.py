@@ -22,6 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 QQ = Path.home() / ".local/share/qq-hermes"
 HERMES = Path.home() / ".hermes"
 CONTENT = Path.home() / ".local/share/hermes-content"
+ACM = Path.home() / ".local/share/hermes-acm"
 PYTHON = QQ / ".venv/bin/python"
 PRIVATE = REPO / ".local-settings.json"
 SERVICE = "qq-hermes-nonebot.service"
@@ -78,6 +79,8 @@ def transform(text, *, restore=False):
 def export_pairs(include_qq=True):
     if include_qq:
         for p in QQ.glob("*.py"):
+            if p.name == 'acm_connection.py':
+                continue  # Installed shared module has one canonical source under src/acm.
             yield p, Path("src/qq") / p.name
         yield QQ / "qq_api_contract.json", Path("src/qq/qq_api_contract.json")
     for name in ["content_worker.py", "platform_features.py", "bili_extra.py", "heybox_extra.py", "extensions.py", "transcription.py", "platform_contract.json", "qq_api_contract.json", "HEYBOX-CLI-LICENSE", "HEYBOX-CORE-LICENSE"]:
@@ -88,6 +91,8 @@ def export_pairs(include_qq=True):
             if p.suffix == ".py" or p.name == "plugin.yaml":
                 yield p, Path("src/plugins") / name / p.name
     yield Path.home() / ".local/share/hermes-acm/acm_client.py", Path("src/acm/acm_client.py")
+    if (ACM / 'acm_connection.py').exists():
+        yield ACM / 'acm_connection.py', Path('src/acm/acm_connection.py')
     package = QQ / ".venv/lib/python3.12/site-packages/nonebot_plugin_hermes"
     for p in package.rglob("*.py"):
         yield p, Path("vendor/nonebot_plugin_hermes") / p.relative_to(package)
@@ -166,23 +171,32 @@ def check():
     print("Source/privacy checks and tests passed.")
 
 
-def status():
+def status(quiet=False):
     import httpx
     token = (QQ / ".outbound-token").read_text().strip()
     with httpx.Client(trust_env=False, timeout=8) as client:
         r = client.get("http://127.0.0.1:18800/hermes-outbound/health", headers={"Authorization": "Bearer " + token})
         r.raise_for_status()
         data = r.json()
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    if not quiet:print(json.dumps(data, ensure_ascii=False, indent=2))
     return data
 
 
-def idle():
+def idle(retired_server=False):
     path = Path.home() / ".local/share/hermes-acm/practice/practice.sqlite3"
     if path.exists():
         with sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True) as db:
-            active = db.execute("SELECT count(*) FROM rounds WHERE status IN ('drawing','grading')").fetchone()[0]
-            active += db.execute("SELECT count(*) FROM seats WHERE status='grading'").fetchone()[0]
+            rows = db.execute("SELECT status,updated FROM rounds WHERE status IN ('drawing','grading')").fetchall()
+            grading = db.execute("SELECT count(*) FROM seats WHERE status='grading'").fetchone()[0]
+            active = len(rows)+grading
+            # A retired server can leave stale drawing rows across process restarts.
+            # Preserve them verbatim; do not pretend to cancel the remote request.
+            if (retired_server and not grading and rows
+                    and all(status=='drawing' and updated<time.time()-3600 for status,updated in rows)):
+                sys.path.insert(0,str(REPO/'src/acm'))
+                from acm_connection import load_connection
+                if not load_connection().ready:
+                    active=0
             if active:
                 raise RuntimeError("Practice drawing/grading is active; retry deployment after it finishes")
     import httpx
@@ -208,7 +222,7 @@ def atomic(path, content):
         Path(tmp).unlink(missing_ok=True)
 
 
-def deploy(apply):
+def deploy(apply,retired_server=False):
     check()
     changes = []
     for p in (REPO / "src/qq").glob("*"):
@@ -218,34 +232,45 @@ def deploy(apply):
         dest = QQ / p.name
         if not dest.exists() or dest.read_bytes() != content:
             changes.append((dest, content))
+    for source, dest in [(REPO/'src/acm/acm_client.py', ACM/'acm_client.py'),
+                         (REPO/'src/acm/acm_connection.py', ACM/'acm_connection.py'),
+                         (REPO/'src/acm/acm_connection.py', QQ/'acm_connection.py')]:
+        content=transform(source.read_text(), restore=True).encode()
+        if not dest.exists() or dest.read_bytes()!=content:
+            changes.append((dest,content))
+    if not (ACM/'server.json').exists():
+        changes.append((ACM/'server.json',b'{"schema":1,"state":"pending","target":null}\n'))
     policy = QQ / "delivery-policy.json"
     if not policy.exists():
         changes.append((policy, (REPO / "config/delivery-policy.example.json").read_bytes()))
     print("QQ files to update:", ", ".join(p.name for p, _ in changes) or "none")
     if not apply or not changes:
         return
-    idle()
+    idle(retired_server)
     backup = HERMES / "backups" / ("qq-delivery-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S"))
     backup.mkdir(parents=True, mode=0o700)
     before = {str(p): p.exists() for p, _ in changes}
+    def backup_name(path):
+        return hashlib.sha256(str(path).encode()).hexdigest()[:16]+'-'+path.name
     for p, _ in changes:
         if p.exists():
-            shutil.copy2(p, backup / p.name)
-            (backup / p.name).chmod(0o600)
+            shutil.copy2(p, backup / backup_name(p))
+            (backup / backup_name(p)).chmod(0o600)
     (backup / "state.json").write_text(json.dumps(before))
     protected = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                  for p in [QQ / ".env", QQ / ".outbound-token", HERMES / "config.yaml", HERMES / ".env"] if p.exists()}
+    was_online=status(quiet=True).get('transport_reported_online',False)
     run(["systemctl", "--user", "stop", SERVICE])
     try:
         # Closing the receive socket fences new QQ work before the final idle check.
-        idle()
+        idle(retired_server)
         for p, content in changes:
             atomic(p, content)
         run(["systemctl", "--user", "start", SERVICE])
         for _ in range(20):
             try:
-                health = status()
-                if health.get("transport_reported_online"):
+                health = status(quiet=True)
+                if health.get("transport_reported_online") or not was_online:
                     break
             except Exception:
                 pass
@@ -263,12 +288,13 @@ def deploy(apply):
         run(["systemctl", "--user", "stop", SERVICE], check=False)
         for p, _ in changes:
             if before[str(p)]:
-                shutil.copy2(backup / p.name, p)
+                shutil.copy2(backup / backup_name(p), p)
             else:
                 p.unlink(missing_ok=True)
         run(["systemctl", "--user", "start", SERVICE], check=False)
         raise
     print("Deployed QQ only; private backup:", backup)
+    if not was_online:print('QQ was already offline before deployment; no re-login was attempted.')
 
 
 def main():
@@ -276,6 +302,7 @@ def main():
     parser.add_argument("command", choices=["capture", "check", "status", "deploy"])
     parser.add_argument("--initial-support", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--retired-server", action="store_true", help="Preserve stale drawing records while disabling a retired server")
     args = parser.parse_args()
     if args.command == "capture":
         capture(args.initial_support)
@@ -284,7 +311,7 @@ def main():
     elif args.command == "status":
         status()
     else:
-        deploy(args.apply)
+        deploy(args.apply,args.retired_server)
 
 
 if __name__ == "__main__":

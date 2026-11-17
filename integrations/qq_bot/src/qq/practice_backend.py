@@ -17,23 +17,31 @@ from practice_settings import grading_options
 from practice_text import problem_text
 from practice_providers import configured_routes, endpoint_identity
 from practice_completion import completion
+from acm_connection import load_connection, ConnectionUnavailable
 
-ORIGIN='__ACM_ORIGIN__'
 
 def terminal(message):
     error=PracticeError(message);error.definitive=True;return error
 
 class ACM:
-    def __init__(self,root,session=None,transport=None):
+    def __init__(self,root,session=None,transport=None,connection=None):
         from practice_memory import ProblemMemory
         from practice_receipts import Receipts
         self.root=Path(root);self.session=Path(session or Path.home()/'.local/share/hermes-acm/session.json');self.transport=transport
-        self.memory=ProblemMemory(self.root,origin=ORIGIN)
-        self.receipts=Receipts(self.root,origin=ORIGIN)
+        try:self.connection=connection or load_connection()
+        except ConnectionUnavailable:
+            # Keep the rest of QQ usable even if ACM configuration is invalid.
+            from acm_connection import Connection
+            self.connection=Connection()
+        self.origin=self.connection.origin
+        self.memory=ProblemMemory(self.root,origin=self.origin)
+        self.receipts=Receipts(self.root,origin=self.origin)
     def client(self):
-        data=json.loads(self.session.read_text()) if self.session.exists() else {}
-        if not data.get('cookie'):raise PracticeError('ACM Lab 尚未登录：请在本机终端运行 hermes acm login，密码不要发到聊天。')
-        return httpx.AsyncClient(base_url=ORIGIN,cookies={'acm_user_session':data['cookie']},timeout=25,trust_env=False,follow_redirects=False,transport=self.transport)
+        try:
+            origin=self.connection.require_ready()
+            cookie=self.connection.cookie(self.session)
+        except ConnectionUnavailable as exc:raise PracticeError(str(exc)) from None
+        return httpx.AsyncClient(base_url=origin,cookies={'acm_user_session':cookie},timeout=25,trust_env=False,follow_redirects=False,transport=self.transport)
     async def request(self,client,method,path,**kw):
         try:r=await client.request(method,path,**kw)
         except httpx.HTTPError:
@@ -61,7 +69,7 @@ class ACM:
     async def auth(self,c):
         state=await self.request(c,'GET','/api/auth/status')
         if not state.get('authenticated') or not state.get('csrf_token'):raise PracticeError('ACM 登录无效，请在本机运行 hermes acm login。')
-        c.headers.update({'X-ACM-Request':'1','X-CSRF-Token':state['csrf_token'],'Origin':ORIGIN})
+        c.headers.update({'X-ACM-Request':'1','X-CSRF-Token':state['csrf_token'],'Origin':self.origin})
     async def capabilities(self,c):
         caps=await self.request(c,'GET','/api/hermes/capabilities')
         if not caps.get('enabled') or 'image' not in caps.get('output_formats',[]):raise PracticeError('服务器尚未启用新版图片抽题接口；未发起付费抽题。')
@@ -156,6 +164,9 @@ class ACM:
     async def draw(self,key,score,topic,*,before_post=None,should_stop=None,on_job=None,accept_text=False):
         from practice_memory import ProblemMemoryError
         if not re.fullmatch('[a-f0-9]{32}',key):raise ValueError('invalid key')
+        with self.memory.db() as db:
+            other=db.execute('SELECT 1 FROM requests WHERE request_key=? AND origin<>? LIMIT 1',(key,self.origin)).fetchone()
+        if other:raise PracticeError('此抽题编号属于旧服务器，已保留原记录；不会在新服务器自动重新付费抽题。')
         parameters={'score':score,'topic':topic}
         async with self.client() as c:
             await self.auth(c)

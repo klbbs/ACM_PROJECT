@@ -19,6 +19,7 @@ import time
 from urllib.parse import urlsplit
 
 import httpx
+from acm_connection import PENDING_ORIGIN
 
 PROTOCOL = 'acm-hermes-receipt-v1'
 MAX_RESULT_BYTES = 1024 * 1024
@@ -50,7 +51,7 @@ def _object(text):
 
 
 class Receipts:
-    def __init__(self, root, *, origin='__ACM_ORIGIN__'):
+    def __init__(self, root, *, origin=PENDING_ORIGIN):
         parsed = urlsplit(origin)
         if parsed.scheme != 'https' or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
             raise ValueError('receipt origin must be an HTTPS origin')

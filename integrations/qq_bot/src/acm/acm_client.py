@@ -12,7 +12,8 @@ from urllib.parse import quote
 import httpx
 
 ROOT = Path(__file__).resolve().parent
-ORIGIN = '__ACM_ORIGIN__'
+sys.path.insert(0, str(ROOT))
+from acm_connection import load_connection, ConnectionUnavailable
 COOKIE = 'acm_user_session'
 OPERATIONS = ('status','overview','submissions','accounts','training','daily','catalog','reports','report','problem','problem_history','jobs')
 PRIVATE_KEYS = {'password','password_hash','token','access_token','api_key','key','cookie','cookies','csrf_token','credentials','credential','session','session_token','headers','authorization'}
@@ -47,7 +48,7 @@ def read_json(response):
 
 def fetch(client, path, params=None):
     # Callers can select only named operations; arbitrary URLs, methods or headers are absent.
-    with client.stream('GET', ORIGIN + path, params=params) as response:
+    with client.stream('GET', path, params=params) as response:
         if response.status_code != 200:
             return response.status_code, None
         return response.status_code, read_json(response)
@@ -108,13 +109,15 @@ def route(args):
 def run(args, transport=None):
     try:
         op,path,params,limit=route(args)
-        cookie=load('session.json').get('cookie')
+        connection=load_connection()
+        origin=connection.require_ready()
+        cookie=connection.cookie(ROOT/'session.json', optional=op=='status')
         cookies={COOKIE:cookie} if cookie else {}
-        with httpx.Client(timeout=20,trust_env=False,follow_redirects=False,cookies=cookies,transport=transport) as client:
+        with httpx.Client(base_url=origin,timeout=20,trust_env=False,follow_redirects=False,cookies=cookies,transport=transport) as client:
             if op=='status':
                 health_code,health=fetch(client,'/api/health')
                 code,data=fetch(client,path)
-                return {'ok':health_code==200,'source':ORIGIN,'authenticated':bool(code==200 and data.get('authenticated')),
+                return {'ok':health_code==200,'source':origin,'authenticated':bool(code==200 and data.get('authenticated')),
                         'health':(health or {}).get('status'),'login_command':'hermes acm login',
                         'scope':'Current authenticated ACM user only; read-only connector. No server deployment or external judge submission.'}
             code,data=fetch(client,path,params)
@@ -122,11 +125,12 @@ def run(args, transport=None):
         if code==404:return {'ok':False,'state':'unsupported_by_server','operation':op,'message':'当前服务器没有此接口；本地新版本功能不代表服务器已部署。'}
         if code!=200:return {'ok':False,'state':'server_rejected','http_status':code,'operation':op}
         flags=[];data=safe_data(data,limit,flags)
-        result={'ok':True,'source':ORIGIN,'operation':op,'data':data,'partial':bool(flags),'untrusted_source':True}
+        result={'ok':True,'source':origin,'operation':op,'data':data,'partial':bool(flags),'untrusted_source':True}
         if flags:result['limitation']='Lists/text are bounded; not a complete archive or full document. Submissions support offset/limit; narrow days/platform/difficulty for other queries.'
         if len(json.dumps(result,ensure_ascii=False))>50000:
             return {'ok':False,'state':'response_too_large','message':'请缩小日期、平台或难度范围；不会返回截断的无效 JSON。'}
         return result
+    except ConnectionUnavailable as exc:return {'ok':False,'state':exc.state,'message':str(exc)}
     except (ValueError,TypeError,KeyError):return {'ok':False,'state':'invalid_request_or_response'}
     except httpx.HTTPError:return {'ok':False,'state':'connection_failed','message':'连接失败；保持 HTTPS 证书校验，请稍后检查服务器网络。'}
     except OSError:return {'ok':False,'state':'local_session_unavailable'}
@@ -134,19 +138,22 @@ def run(args, transport=None):
 
 def login(username):
     if not re.fullmatch(r'[A-Za-z0-9_]{3,32}',username):raise SystemExit('用户名格式不正确')
+    try:origin=load_connection().require_ready()
+    except ConnectionUnavailable as exc:
+        print(str(exc));return 1
     password=getpass.getpass('ACM Lab 当前密码（输入不会显示，也不会保存密码）：')
     try:
-        with httpx.Client(timeout=20,trust_env=False,follow_redirects=False) as client:
-            response=client.post(ORIGIN+'/api/auth/login',json={'username':username,'password':password},
-                                 headers={'Origin':ORIGIN,'X-Acm-Request':'1'})
+        with httpx.Client(base_url=origin,timeout=20,trust_env=False,follow_redirects=False) as client:
+            response=client.post('/api/auth/login',json={'username':username,'password':password},
+                                 headers={'Origin':origin,'X-Acm-Request':'1'})
             if response.status_code!=200:
                 print('登录未通过（HTTP '+str(response.status_code)+'），没有重试，也没有保存密码。');return 1
             code,state=fetch(client,'/api/auth/status')
             cookie=client.cookies.get(COOKIE)
             if code!=200 or not state.get('authenticated') or not cookie:
                 print('服务器未建立有效登录会话。');return 1
-            save('session.json',{'cookie':cookie})
-            save('connection.json',{'base_url':ORIGIN,'username':username})
+            save('session.json',{'cookie':cookie,'origin':origin})
+            save('connection.json',{'base_url':origin,'username':username})
         print('ACM Lab 已连接。仅保存本站登录会话，密码未保存。QQ/微信/飞书开新对话后可查询刷题数据。')
         return 0
     except httpx.HTTPError:

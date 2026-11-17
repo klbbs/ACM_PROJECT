@@ -14,6 +14,7 @@ import time
 from urllib.parse import urlsplit
 
 import httpx
+from acm_connection import PENDING_ORIGIN
 
 
 class ProblemMemoryError(ValueError):
@@ -87,7 +88,7 @@ def _page(value):
 
 
 class ProblemMemory:
-    def __init__(self,root,*,origin='__ACM_ORIGIN__'):
+    def __init__(self,root,*,origin=PENDING_ORIGIN):
         self.root=Path(root);self.root.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.origin=origin.rstrip('/');self.path=self.root/'problem-memory.sqlite3'
         fd=os.open(self.path,os.O_CREAT|os.O_RDWR,0o600);os.fchmod(fd,0o600);os.close(fd)

@@ -1,5 +1,7 @@
 # QQ / Hermes 本地机器人
 
+本项目现已合并到 **[klbbs/ACM_PROJECT](https://github.com/klbbs/ACM_PROJECT/tree/main/integrations/qq_bot)** 的 `integrations/qq_bot/`，与 ACM Lab 共同维护。原 QQ 仓库保留历史。服务器迁移与协作说明见根目录的 [QQ_INTEGRATION.md](../../docs/QQ_INTEGRATION.md)。
+
 保留现有 QQ、ACM 刷题、多平台内容接口和 Hermes 扩展的源码，后续在此仓库维护。公开仓库只保存代码、依赖清单和脱敏配置示例。
 
 ## 本次发送保护
@@ -43,7 +45,7 @@ python3 scripts/manage.py check
 ~/.local/share/qq-hermes/.venv/bin/python scripts/manage.py capture
 ```
 
-`deploy` 只更新 QQ 目录并重启 QQ 桥接；判题/抽题或聊天任务正在执行时会退出，稍后重试。它不会部署 ACM 服务器，也不会改本机密钥、Hermes 模型配置或登录态。已有 `delivery-policy.json` 会保留，修改该文件后需重启 QQ 桥接。
+`deploy` 更新 QQ 和本机 ACM 客户端，只重启 QQ 桥接；判题/抽题或聊天任务正在执行时会退出，稍后重试。它不会部署 ACM 服务器，也不会改本机密钥、Hermes 模型配置或登录态。已有 `delivery-policy.json` 会保留，修改该文件后需重启 QQ 桥接。旧站停用时可显式加 `--retired-server`，保留跨重启残留超过一小时的抽题记录，避免把它误当作正在运行的任务；正在判题的记录仍会阻止部署。
 
 此仓库是现有安装的源码维护仓库，**不是包含 QQ 客户端和登录信息的即装即用迁移包**。换机器时需另行安装 Hermes、NapCat 和依赖，配置新环境中的账号与密钥。`requirements/` 提供当前依赖快照；`vendor/` 的本地补丁需单独合并，普通 `pip install` 不会自动应用它们。
 
