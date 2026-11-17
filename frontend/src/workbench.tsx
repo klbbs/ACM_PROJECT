@@ -17,6 +17,7 @@ import { RemoteSubmissionPanel } from './remote-submission'
 import { EditorTemplates } from './editor-templates'
 import { SelectionReportButton } from './selection-report'
 import { ProblemReports } from './problem-reports'
+import { SubmissionStatistics } from './submission-statistics'
 import './workbench-selection-report.css'
 import type { CodeTemplate } from './template-types'
 import { Code2, Lightbulb, RefreshCw, ExternalLink } from 'lucide-react'
@@ -339,6 +340,7 @@ export function WorkbenchPage({
                   {p.difficulty ?? p.native_difficulty ?? '未标定难度'} · {p.recommendation_source}
                 </small>
                 {p.difficulty_source && <small>{p.difficulty_source}</small>}
+                <SubmissionStatistics value={p.submission_statistics} />
                 <small>{p.reason}</small>
               </button>
               {(p.ai_report_id || p.recommendation_source === '已保存的 AI 推荐') && (
@@ -430,6 +432,7 @@ export function WorkbenchPage({
                   )}
                   <div className="wb-heading">
                     <h2>{statement?.title || pid}</h2>
+                    <SubmissionStatistics value={data?.submission_statistics} />
                     <a href={data?.url} target="_blank" rel="noreferrer">
                       查看原题 <ExternalLink size={14} />
                     </a>

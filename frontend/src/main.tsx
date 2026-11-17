@@ -58,6 +58,7 @@ import { version as appVersion } from '../package.json'
 import { TrainingHub } from './training-hub'
 import { SpecialistTrainingPage } from './specialist-training'
 import { SelectionReportButton } from './selection-report'
+import { SubmissionStatistics } from './submission-statistics'
 
 type Row = Record<string, any>
 const statusNames: Record<string, string> = {
@@ -1822,6 +1823,7 @@ function PracticePage({
                     <b>{p.difficulty}</b>
                   </div>
                   <h3>{p.title}</h3>
+                  <SubmissionStatistics value={p.submission_statistics} />
                   <p className="problem-id">
                     {names[p.platform] || p.platform} · {p.problem_id}
                   </p>

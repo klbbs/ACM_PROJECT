@@ -454,7 +454,7 @@ def test_catalog_sync_updates_today_board_and_public_problem_details(site, monke
     request, admin, member, *_ = site
     runtime = claim(site, admin, 'Owner')
     assert request(admin, 'PUT', '/api/social/me', {'leaderboard': True}).status_code == 200
-    monkeypatch.setattr(jobs_module, 'refresh_catalog', lambda database, on_progress=None:
+    monkeypatch.setattr(jobs_module, 'refresh_catalog', lambda database, on_progress=None, accounts=None:
         {'count': 1, 'complete': True, 'platforms': [{'platform': 'codeforces', 'status': 'updated', 'count': 1}]})
     now = int(time.time())
     def collect(config, args):

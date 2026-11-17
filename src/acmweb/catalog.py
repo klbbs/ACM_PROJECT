@@ -567,7 +567,7 @@ def _sync_error(exc):
     return 'source_changed', '官方题库数据结构不兼容或页面发生变化；已保留旧缓存，请反馈此平台同步问题'
 
 
-def refresh_catalog(database, platform=None, on_progress=None):
+def refresh_catalog(database, platform=None, on_progress=None, accounts=None):
     """Publish each platform's progress and retain its old cache on any source failure."""
     if platform is not None and platform not in PLATFORMS: raise AIError('无效题库平台')
     names = (platform,) if platform else PLATFORMS
@@ -607,6 +607,10 @@ def refresh_catalog(database, platform=None, on_progress=None):
             _store_catalog_rows(database, name, rows)
             if name in PLATFORMS:
                 database.set('catalog_cursor:'+name,client.catalog_cursor)
+            statistics_result = None
+            if accounts is not None or name in {'codeforces', 'luogu'}:
+                from .submission_statistics import refresh_statistics
+                statistics_result = refresh_statistics(database, name, accounts or (), request_budget=6)
             now = int(time.time()); database.set('catalog_updated_at:' + name, now)
             if name == 'codeforces': database.set('catalog_updated_at', now)
             results[index] = {'platform': name,
@@ -619,6 +623,8 @@ def refresh_catalog(database, platform=None, on_progress=None):
                 'warnings': getattr(client, 'catalog_discovery', {}).get('warnings', [])}
             with database.connect() as db:
                 results[index]['cached_count']=db.execute('SELECT count(*) FROM problem_catalog WHERE platform=?',(name,)).fetchone()[0]
+            if statistics_result is not None:
+                results[index]['submission_statistics'] = statistics_result
             for key in ('next_page','total_count','tag_enrichment','statistics_enrichment'):
                 if getattr(client,'catalog_discovery',{}).get(key) is not None:
                     results[index][key]=client.catalog_discovery[key]

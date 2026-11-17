@@ -63,7 +63,7 @@ def test_cancelled_catalog_job_cannot_be_revived_by_thread_progress(tmp_path, mo
     db = Database(tmp_path / 'cancel.sqlite3')
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def refresh(database, on_progress=None):
+    def refresh(database, on_progress=None, accounts=None):
         entered.set()
         assert release.wait(5)
         on_progress({'count': 1, 'complete': False, 'platforms': []})

@@ -111,7 +111,7 @@ def test_job_persists_partial_progress_and_finishes_with_partial_status(db, monk
         calls.append((args, kwargs))
         return original(self, *args, **kwargs)
     monkeypatch.setattr(Jobs, 'update', capture)
-    def refresh(database, on_progress=None):
+    def refresh(database, on_progress=None, accounts=None):
         on_progress({'count': 3, 'platforms': [{'platform': 'codeforces', 'status': 'updated', 'count': 3}], 'completed_platforms': 1, 'total_platforms': 4})
         return {'count': 3, 'complete': False, 'platforms': [{'platform': 'codeforces', 'status': 'updated', 'count': 3}]}
     monkeypatch.setattr(jobs_module, 'refresh_catalog', refresh)
@@ -130,7 +130,7 @@ def test_late_thread_progress_cannot_resurrect_cancelled_job(db, monkeypatch):
     import threading
     import acmweb.jobs as jobs_module
     entered, release = threading.Event(), threading.Event()
-    def refresh(database, on_progress=None):
+    def refresh(database, on_progress=None, accounts=None):
         entered.set()
         release.wait(timeout=3)
         on_progress({'count': 1, 'complete': True, 'platforms': []})
@@ -160,7 +160,7 @@ def test_diagnostic_rejection_order_matches_candidate_predicates(db):
 @pytest.mark.parametrize('history_status', ['complete', 'partial', 'exception'])
 def test_catalog_also_syncs_today_submissions_without_losing_catalog_on_failure(db, monkeypatch, history_status):
     import acmweb.jobs as jobs_module
-    monkeypatch.setattr(jobs_module, 'refresh_catalog', lambda database, on_progress=None:
+    monkeypatch.setattr(jobs_module, 'refresh_catalog', lambda database, on_progress=None, accounts=None:
         {'count': 3, 'complete': True, 'platforms': [{'platform': 'codeforces', 'status': 'updated', 'count': 3}]})
     called = []
     def history(self, platform=None, *, since_today=False):
@@ -170,7 +170,7 @@ def test_catalog_also_syncs_today_submissions_without_losing_catalog_on_failure(
         return {'complete': history_status == 'complete', 'accounts': []}
     monkeypatch.setattr(Jobs, 'crawl', history)
     async def run():
-        jobs = Jobs(db, SimpleNamespace(), None, SimpleNamespace(public=lambda: {'configured': True}))
+        jobs = Jobs(db, SimpleNamespace(), None, SimpleNamespace(public=lambda: {'configured': True}, document=lambda: {'accounts': []}))
         job = jobs.start('catalog')
         await jobs.tasks[job['id']][1]
         return jobs.list()[0]

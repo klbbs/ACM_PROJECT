@@ -302,6 +302,7 @@ class Workbench:
         pid = normalize(pid)
         with self.db.connect() as conn:
             statement = conn.execute('SELECT data,fetched_at FROM wb_problems WHERE id=?', (pid,)).fetchone()
+            catalog_row = conn.execute('SELECT data FROM problem_catalog WHERE id=?', (pid,)).fetchone()
             draft = conn.execute('SELECT * FROM wb_drafts WHERE problem_id=?', (pid,)).fetchone()
             hints = conn.execute('SELECT data FROM wb_hints WHERE problem_id=? ORDER BY seq', (pid,)).fetchall()
             attempts = conn.execute('SELECT * FROM wb_attempts WHERE problem_id=? ORDER BY created_at DESC,id DESC LIMIT 30', (pid,)).fetchall()
@@ -326,6 +327,7 @@ class Workbench:
         caps['credential_check'] = max(checks, key=lambda r: r['checked_at']) if checks else None
         caps['login_verified'] = bool(len([a for a in self.accounts.document().get('accounts', []) if a.get('platform') == caps['platform']]) == 1 and caps['credential_check'] and caps['credential_check']['login_verified'])
         return {'id': pid, 'capabilities': caps, 'url': source_url(pid), 'statement': upgraded_statement,
+                'submission_statistics': json.loads(catalog_row['data']).get('submission_statistics') if catalog_row else None,
                 'fetched_at': statement['fetched_at'] if statement else None,
                 'fetch_status': self.db.get('statement_status:'+pid, {}),
                 'draft': dict(draft) if draft else {'language': 'cpp17', 'code': '', 'revision': 0},

@@ -150,7 +150,8 @@ class Jobs:
                     with progress_lock:
                         if progress_open: self.update(job_id,"running",progress)
                 try:
-                    result=await asyncio.to_thread(refresh_catalog,self.db,on_progress=publish_progress)
+                    result=await asyncio.to_thread(refresh_catalog,self.db,on_progress=publish_progress,
+                        accounts=self.accounts.document().get('accounts', []) if self.accounts else [])
                 finally:
                     with progress_lock: progress_open = False
                 catalog_status = "completed" if result["complete"] else ("partial" if result["count"] else "failed")

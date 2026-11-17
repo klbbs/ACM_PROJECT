@@ -411,6 +411,7 @@ class Hermes:
                          'topic':topic_context,'difficulty_evidence':candidate['score_evidence'],
                          'topic_method_evidence':candidate.get('topic_method_evidence'),
                          'brief_statistics':candidate.get('brief_statistics'),
+                         'submission_statistics':candidate.get('submission_statistics'),
                          'public_references':references},SolutionReport)
                     report_attempts += 1
                 guard()
