@@ -33,7 +33,7 @@
   "src/qq/bot.py": "8a2c77f4b4b26242fc96f792a889760284045fc2df4faf703d4b87ab4cd76c11",
   "src/qq/control_commands.py": "e92c3e3073d4167ed30c70470818d927bc7c340e2555391909b695cc43750666",
   "src/qq/outbound.py": "a7c5b6ad6cc56ef5093ae42b9cc5c2ae6beb93390b51a1ed21e19e2a16198ef3",
-  "src/qq/practice_backend.py": "51f6b5eed8ca82c2f77170b7c571f52867f8f8e79bb56c25316539fcaf0db8dc",
+  "src/qq/practice_backend.py": "471d7f2f3024e2f67d63647e82908fef684c6f4f37f66415ec2702faceefe6e8",
   "src/qq/practice_commands.py": "4868c61bc9db73c3448ddf75c4455d10fdfa78dad64b328b3b8f301d9416e224",
   "src/qq/practice_completion.py": "758ec21312d3a62855d5ce92a58bb0e4779d1074d53531f18c35a1d980918681",
   "src/qq/practice_core.py": "5eccb374f742dba5ae23c9c026389cc3470f25db9b87a61407579cd23db28d68",

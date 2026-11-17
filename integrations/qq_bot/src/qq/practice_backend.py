@@ -166,7 +166,10 @@ class ACM:
         if not re.fullmatch('[a-f0-9]{32}',key):raise ValueError('invalid key')
         with self.memory.db() as db:
             other=db.execute('SELECT 1 FROM requests WHERE request_key=? AND origin<>? LIMIT 1',(key,self.origin)).fetchone()
-        if other:raise PracticeError('此抽题编号属于旧服务器，已保留原记录；不会在新服务器自动重新付费抽题。')
+        if other:
+            # This request can never recover on the current origin. Release
+            # the local drawing slot while retaining the original paid key.
+            raise terminal('此抽题编号属于旧服务器，无法恢复，原记录保留。请重新发送 /roll 分数 开始新站抽题；不会自动付费重抽。')
         parameters={'score':score,'topic':topic}
         async with self.client() as c:
             await self.auth(c)

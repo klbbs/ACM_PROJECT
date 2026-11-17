@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 REPO=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(REPO/'src/acm'),str(REPO/'src/qq')]
@@ -81,8 +81,41 @@ class EndpointTests(unittest.TestCase):
         key='a'*32
         with api.memory.db() as db:
             db.execute('INSERT INTO requests VALUES(?,?,?,?,?,?,?)',('https://old.example',key,'scope','{}','[]','{}','posted'))
-        with self.assertRaisesRegex(PracticeError,'旧服务器'):
+        with self.assertRaisesRegex(PracticeError,'旧服务器') as ctx:
             asyncio.run(api.draw(key,1200,None))
+        self.assertTrue(ctx.exception.definitive)
+
+    def test_old_round_recovery_releases_slot_without_replaying_or_rerolling(self):
+        import httpx
+        from practice_backend import ACM, terminal
+        from practice_core import Game, Store, PracticeError
+        requests=[]
+        def reject(request):
+            requests.append(request)
+            raise AssertionError('An old round must not contact either server')
+        api=ACM(self.root,connection=Connection('https://new.example',True),
+                transport=httpx.MockTransport(reject))
+        store=Store(self.root)
+        old,_=store.start('chat',1800,None,owner='owner')
+        with api.memory.db() as db:
+            db.execute('INSERT INTO requests VALUES(?,?,?,?,?,?,?)',
+                ('https://old.example',old['id'],'scope','{}','[]','{}','posted'))
+        game=Game(store,api,None)
+        with self.assertRaisesRegex(PracticeError,'旧服务器'):
+            asyncio.run(game.handle('chat','recover','/roll 1800',user='owner'))
+        self.assertEqual(requests,[])
+        self.assertEqual(store.row('chat')['status'],'error')
+        with store.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM rounds').fetchone()[0],1)
+        with api.memory.db() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT origin,request_key,state FROM requests')],
+                [('https://old.example',old['id'],'posted')])
+        # A later explicit /roll may use a fresh key; recovery itself must not.
+        with patch.object(api,'ready',new=AsyncMock()),patch.object(api,'draw',
+                new=AsyncMock(side_effect=terminal('test rejection'))) as draw:
+            with self.assertRaisesRegex(PracticeError,'test rejection'):
+                asyncio.run(game.handle('chat','new-roll','/roll 1800',user='owner'))
+            self.assertNotEqual(draw.call_args.args[0],old['id'])
 
 
 if __name__=='__main__':unittest.main()
