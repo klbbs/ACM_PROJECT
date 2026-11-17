@@ -278,14 +278,19 @@ def topic_evidence(problem, topic):
     if problem.get('id') in topic['template_ids']:
         return {'matched': True, 'source': 'curated_official_template', 'terms': [problem['id']]}
     platform = problem.get('platform')
-    if platform == 'luogu':
-        numeric = _luogu_tags(problem)
+    mirrored_atcoder = (platform == 'atcoder'
+        and problem.get('tags_source') == 'luogu.atcoder_problem_list'
+        and problem.get('tags_mirror_id') in {'AT' + str(problem.get('problem_id', '')),
+                                             'AT_' + str(problem.get('problem_id', ''))})
+    if platform == 'luogu' or mirrored_atcoder:
+        numeric = _luogu_tags({'tags': problem.get('luogu_tag_ids', [])}) if mirrored_atcoder else _luogu_tags(problem)
+        evidence_source = 'luogu_mirrored_atcoder_tag' if mirrored_atcoder else 'official_luogu_tag'
         expected = topic.get('luogu_tags', LUOGU_TOPIC_TAGS.get(topic['id'], set()))
         common = numeric & expected
         if common:
-            return {'matched': True, 'source': 'official_luogu_tag', 'terms': sorted(common)}
+            return {'matched': True, 'source': evidence_source, 'terms': sorted(common)}
         if topic['id'] == 'string-hash' and {2, 235} <= numeric:
-            return {'matched': True, 'source': 'official_luogu_tag', 'terms': [2, 235]}
+            return {'matched': True, 'source': evidence_source, 'terms': [2, 235]}
         if topic.get('official_exact'):
             # On Luogu the platform-scoped numeric taxonomy is authoritative.
             # A suggestive title cannot override absent/conflicting official tags.

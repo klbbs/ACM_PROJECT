@@ -608,6 +608,11 @@ class Workbench:
                         failures.append(str(exc))
             finally:
                 client.close()
+        try:
+            from .problem_sources import fetch_codeforces_public_mirror
+            return self.store_statement(pid, fetch_codeforces_public_mirror(pid))
+        except (CrawlError, AIError, ValueError, TypeError):
+            pass  # Preserve the actionable original failure; never use a wrong task.
         error = '官方两种题面地址均未获取成功：' + '；'.join(failures) + '。可在浏览器完成平台验证后重试，或导入原题的 problem-statement HTML。服务器 IP 被限制时 Cookie 不一定有效。'
         self.db.set('statement_status:'+pid, {'status': 'failed', 'error': error, 'at': int(time.time())})
         raise AIError(error)

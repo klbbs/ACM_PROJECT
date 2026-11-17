@@ -220,3 +220,31 @@ def capabilities(pid,accounts):
         url = f'https://codeforces.com/gym/{key.split("-")[0]}/submit'
     enabled = platform in {'codeforces','atcoder'} and not gym
     return {'platform':platform,'statement':True,'auto_submit':enabled,'official_submit_url':url,'account_configured':bool(matched),'cookie_configured':any(a.get('cookie') for a in matched),'login_verified':False,'judge_sync':True,'notice':('可在编辑器下方选择账号及官方编译器后直接提交，判题结果自动同步；平台要求重新登录或浏览器验证时会明确停止，不会自动重复交题。' if enabled else '此平台远程交题尚未完成真实适配，请在官方页面提交；可先同步账号记录，再关联提交号。')}
+
+
+def fetch_codeforces_public_mirror(pid):
+    """Read Luogu's public CF mirror after official statement access fails.
+
+    No CF credential is sent to the mirror. Require the exact mirrored ID;
+    Gym tasks are not mapped into this separate CF problem namespace.
+    """
+    pid = normalize(pid)
+    if not pid.startswith('codeforces:'):
+        raise AIError('此镜像只支持 Codeforces 普通比赛题')
+    contest, index = pid.split(':', 1)[1].split('-')
+    if int(contest) >= 100000:
+        raise AIError('此镜像不支持 Gym 题目')
+    mirror_id = 'CF' + contest + index
+    mirror_url = 'https://www.luogu.com.cn/problem/' + mirror_id
+    client = Client(timeout=12, retries=0)
+    try:
+        html = client.get(mirror_url)
+        problem = page_data(html).get('problem', {})
+        if not isinstance(problem, dict) or problem.get('pid') != mirror_id:
+            raise AIError('公开镜像返回题号不一致，未采用该题面')
+        result = parse_statement(html, 'luogu:' + mirror_id)
+        result.update(id=pid, url=source_url(pid), source='luogu_mirror', mirror_url=mirror_url)
+        result['diagnostics']['warnings'].append('CF 官方入口暂不可读，当前显示洛谷公开镜像题面；请结合原题核对。')
+        return result
+    finally:
+        client.close()

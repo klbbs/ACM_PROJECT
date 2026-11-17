@@ -39,6 +39,8 @@ def test_regular_api_exact_parameter_aggregates_without_private_rows(database):
     stats = result['statistics']['A']
     assert stats['participants'] == 3 and stats['accepted_participants'] == 1
     assert stats['attempted_participants'] == 2 and stats['submissions'] == 5
+    assert stats['acceptance_rate'] == .5 and stats['participant_solve_rate'] == 1/3
+    assert stats['acceptance_rate_scope'] == 'contest_attempting_participants'
     assert stats['scope'] == 'contest' and stats['contest_id'] == 20 and stats['problem_index'] == 'A'
     assert stats['participant_unit'] == 'person'
     assert result['problems'][0]['official_rating'] == 1800

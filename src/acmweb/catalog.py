@@ -113,7 +113,18 @@ def _atcoder(client):
     from .expanded_topic_sources import discover_atcoder
     found = _with_atcoder_official_practice(client, discover_atcoder(client, None))
     client.catalog_discovery = {key: value for key, value in found.items() if key != 'items'}
-    return _enrich_atcoder_difficulties(client, found['items'])
+    rows = _enrich_atcoder_difficulties(client, found['items'])
+    from .catalog_enrichment import atcoder_tag_batch
+    tags = atcoder_tag_batch(client, rows,
+        first_page=getattr(client, 'catalog_cursor', {}).get('ordinary', 1))
+    client.catalog_cursor = {'ordinary': tags['next_page']}
+    client.catalog_discovery['coverage'] += f"；洛谷 AT 镜像标签本次 {tags['pages']} 页、匹配 {tags['tagged_count']} 道（非 AtCoder 官方标签）"
+    client.catalog_discovery['coverage'] = client.catalog_discovery['coverage'].replace('tags 保持为空', '无原生标签，镜像标签另标来源')
+    client.catalog_discovery['tag_enrichment'] = tags
+    if tags['warning']:
+        client.catalog_discovery.setdefault('warnings', []).append(tags['warning'])
+        client.catalog_discovery['partial_failure'] = True
+    return rows
 
 
 def _enrich_atcoder_difficulties(client, rows):
@@ -328,6 +339,7 @@ def _merge_catalog_metadata(platform, previous, row):
     if old_tags and (not new_tags or old_source and not new_source):
         merged['tags'] = old_tags
         if old_source: merged['tags_source'] = old_source
+        elif previous.get('tags_source'): merged['tags_source'] = previous['tags_source']
         else: merged.pop('tags_source', None)
     elif old_tags and new_tags and old_source == new_source and old_source:
         # A filtered list may expose only a subset of the real native tags.
@@ -583,8 +595,17 @@ def refresh_catalog(database, platform=None, on_progress=None):
         try:
             rows = DISCOVERY[name](client)
             if not rows: raise CrawlError('官方题库返回空内容或结构变化，保留原缓存')
+            if name == 'codeforces':
+                from .catalog_enrichment import cf_statistics_batch
+                stats = cf_statistics_batch(client, rows,
+                    first_contest=client.catalog_cursor.get('ordinary', 1))
+                client.catalog_cursor = {'ordinary': stats['next_contest']}
+                client.catalog_discovery = {'coverage': 'Codeforces 全量官方评级题库；比赛提交人数与通过率按有界分页逐批补充',
+                    'statistics_enrichment': stats}
+                if stats['warning']:
+                    client.catalog_discovery.update(warnings=[stats['warning']], partial_failure=True)
             _store_catalog_rows(database, name, rows)
-            if name in {'luogu','nowcoder'}:
+            if name in PLATFORMS:
                 database.set('catalog_cursor:'+name,client.catalog_cursor)
             now = int(time.time()); database.set('catalog_updated_at:' + name, now)
             if name == 'codeforces': database.set('catalog_updated_at', now)
@@ -598,7 +619,7 @@ def refresh_catalog(database, platform=None, on_progress=None):
                 'warnings': getattr(client, 'catalog_discovery', {}).get('warnings', [])}
             with database.connect() as db:
                 results[index]['cached_count']=db.execute('SELECT count(*) FROM problem_catalog WHERE platform=?',(name,)).fetchone()[0]
-            for key in ('next_page','total_count'):
+            for key in ('next_page','total_count','tag_enrichment','statistics_enrichment'):
                 if getattr(client,'catalog_discovery',{}).get(key) is not None:
                     results[index][key]=client.catalog_discovery[key]
         except (CrawlError, AIError, KeyError, ValueError, TypeError) as exc:

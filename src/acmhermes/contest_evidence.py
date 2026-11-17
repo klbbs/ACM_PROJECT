@@ -139,7 +139,11 @@ def _problem_rows(result, contest_id, gym, observed_at):
                  'participant_unit': 'team' if team_parties else 'person', 'complete': True,
                  'contest_id': contest_id, 'problem_index': index,
                  'submission_count_kind': 'scoring_attempts_until_first_solve'}
+        if attempted[i]:
+            stats['acceptance_rate'] = accepted[i] / attempted[i]
+            stats['acceptance_rate_scope'] = 'contest_attempting_participants'
         if participants:
+            stats['participant_solve_rate'] = accepted[i] / participants
             statistics[index] = stats
         row = {'id': f'codeforces:{contest_id}-{index}', 'platform': 'codeforces',
                'problem_id': f'{contest_id}-{index}', 'title': problem['name'][:500],
