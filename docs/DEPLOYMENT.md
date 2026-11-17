@@ -40,6 +40,7 @@ python3 scripts/bootstrap.py
 | `ACM_ENABLE_SERVER_CODEX` | 生产默认 false；true 启用独立设备码授权 |
 | `ACM_IMAGE_TARGET` | Compose 构建目标：runtime、含官方 CLI 的 server-codex，或官方平台登录窗口的 server-browser（需 compose.browser.yaml，见 PASSWORD_LOGIN.md） |
 | `ACM_CODEX_BINARY` | 默认 codex，官方客户端路径 |
+| `ACM_CODEX_PROXY_URL` | 可选，仅官方 Codex 子进程使用的 HTTP(S) 代理地址；不会给网站、API 提供方或题库采集设置通用代理 |
 | `ACM_DATA_DIR` | 默认 data，使用其中的 accounts.sqlite3 |
 | `ACM_DATA_SUBDIR` | Compose 挂载数据目录下的子目录，旧布局为 account-history |
 | `ACM_ACCOUNTS_CONFIG` | 默认 account.toml |

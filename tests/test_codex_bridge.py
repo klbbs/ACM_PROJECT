@@ -44,6 +44,52 @@ for line in sys.stdin:
     asyncio.run(run())
 
 
+def test_official_proxy_is_scoped_to_cli_child(tmp_path, monkeypatch):
+    import os
+    proxy='http://127.0.0.1:17890'
+    proxy_keys=('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy')
+    for key in proxy_keys:
+        monkeypatch.delenv(key,raising=False)
+    monkeypatch.setenv('NO_PROXY','*')
+    monkeypatch.setenv('ACM_CODEX_PROXY_URL',proxy)
+    script=tmp_path/'fake-codex'
+    script.write_text('#!'+sys.executable+'\n'+'''
+import sys,json,os
+for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
+    assert os.environ[key]=='http://127.0.0.1:17890'
+assert os.environ['NO_PROXY']==os.environ['no_proxy']=='localhost,127.0.0.1,::1'
+assert 'ACM_CODEX_PROXY_URL' not in os.environ
+for line in sys.stdin:
+    request=json.loads(line)
+    if 'id' not in request:continue
+    result={'account':{'type':'chatgpt'}} if request['method']=='account/read' else {}
+    print(json.dumps({'id':request['id'],'result':result}),flush=True)
+''')
+    script.chmod(0o700)
+    async def run():
+        bridge=CodexBridge(str(script))
+        try:assert (await bridge.account())['connected']
+        finally:await bridge.close()
+    asyncio.run(run())
+    assert all(key not in os.environ for key in proxy_keys)
+    assert os.environ['NO_PROXY']=='*'
+
+
+@pytest.mark.parametrize('proxy',['socks5://localhost:7890','http://localhost:bad',
+                                  'http://user:private@localhost:7890','http://localhost:7890/path'])
+def test_invalid_official_proxy_stops_before_starting_cli(proxy,monkeypatch):
+    monkeypatch.setenv('ACM_CODEX_PROXY_URL',proxy)
+    monkeypatch.setattr('shutil.which',lambda _:sys.executable)
+    bridge=CodexBridge()
+    async def run():
+        try:
+            with pytest.raises(AIError,match='专用代理地址无效'):
+                await bridge.start()
+            assert bridge.proc is None
+        finally:await bridge.close()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(('info', 'status', 'reason'), [
     ('usageLimitExceeded', None, 'ai_usage_limit'),
     ('sessionBudgetExceeded', None, 'ai_usage_limit'),

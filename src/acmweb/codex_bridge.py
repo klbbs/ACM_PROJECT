@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 class AIError(Exception):
@@ -110,6 +111,23 @@ class CodexBridge:
             if not binary:
                 raise AIError("未安装 Codex CLI，请安装官方客户端或使用 server-codex 容器镜像")
             env = os.environ.copy()
+            # Scope this setting to the official CLI child. API providers,
+            # crawlers and the website keep their own direct environment.
+            proxy = env.pop('ACM_CODEX_PROXY_URL', '').strip()
+            if proxy:
+                try:
+                    parsed = urlsplit(proxy)
+                    valid = (parsed.scheme in {'http', 'https'} and parsed.hostname
+                             and parsed.username is None and parsed.password is None
+                             and parsed.path in {'', '/'} and not parsed.query and not parsed.fragment)
+                    parsed.port
+                except ValueError:
+                    valid = False
+                if not valid:
+                    raise AIError('官方 Codex 专用代理地址无效，请检查 ACM_CODEX_PROXY_URL')
+                for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'):
+                    env[name] = proxy
+                env['NO_PROXY'] = env['no_proxy'] = 'localhost,127.0.0.1,::1'
             if self.home is not None:
                 self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
                 self.home.chmod(0o700)
