@@ -117,5 +117,66 @@ class EndpointTests(unittest.TestCase):
                 asyncio.run(game.handle('chat','new-roll','/roll 1800',user='owner'))
             self.assertNotEqual(draw.call_args.args[0],old['id'])
 
+    def test_codex_login_checked_before_a_round_is_reserved(self):
+        import httpx
+        from practice_backend import ACM
+        from practice_core import Game, Store, PracticeError
+        session=self.root/'session.json'
+        session.write_text(json.dumps({'cookie':'test','origin':'https://new.example'}))
+        for index,(channel,connected,kind,allowed) in enumerate([
+                ('codex',False,None,False),('codex',True,'apiKey',False),
+                ('codex',True,'chatgpt',True),('api',False,None,True)]):
+            with self.subTest(channel=channel,connected=connected,kind=kind):
+                paths=[]
+                def handle(request):
+                    self.assertEqual(request.method,'GET')
+                    paths.append(request.url.path)
+                    values={
+                        '/api/auth/status':{'authenticated':True,'csrf_token':'csrf'},
+                        '/api/hermes/capabilities':{'enabled':True,'output_formats':['image'],
+                            'selection_strategy':'system_platform_balanced_random_without_replacement',
+                            'exclude_ids_limit':10000,'endpoints':{'problem_memory':'/api/hermes/problem-memory'}},
+                        '/api/hermes/readiness':{'ai_ready':True},
+                        '/api/ai/settings':{'channel':channel},
+                        '/api/ai/account':{'connected':connected,'type':kind},
+                    }
+                    self.assertIn(request.url.path,values)
+                    return httpx.Response(200,json=values[request.url.path])
+                api=ACM(self.root,session=session,connection=Connection('https://new.example',True),
+                        transport=httpx.MockTransport(handle))
+                if allowed:
+                    asyncio.run(api.ready())
+                else:
+                    store=Store(self.root)
+                    with self.assertRaisesRegex(PracticeError,'申请官方登录设备码'):
+                        asyncio.run(Game(store,api,None).handle('chat','auth-check-'+str(index),'/roll 1800'))
+                    with store.db() as db:
+                        self.assertEqual(db.execute('SELECT count(*) FROM rounds').fetchone()[0],0)
+                self.assertNotIn('/api/hermes/draw/image',paths)
+                self.assertEqual('/api/ai/account' in paths,channel=='codex')
+
+    def test_known_codex_auth_failure_is_actionable_without_exposing_other_errors(self):
+        import httpx
+        from practice_backend import ACM
+        from practice_core import PracticeError
+        session=self.root/'session.json'
+        session.write_text(json.dumps({'cookie':'test','origin':'https://new.example'}))
+        for error,expected in [('官方账号认证已失效，请重新登录后重试','申请官方登录设备码'),
+                               ('upstream private diagnostic','ACM 抽题未完成')]:
+            with self.subTest(error=error):
+                def handle(request):
+                    self.assertEqual(request.method,'GET')
+                    if request.url.path=='/api/auth/status':
+                        return httpx.Response(200,json={'authenticated':True,'csrf_token':'csrf'})
+                    self.assertEqual(request.url.path,'/api/hermes/requests/'+'b'*32)
+                    return httpx.Response(200,json={'id':'c'*32,'status':'failed','error':error})
+                api=ACM(self.root,session=session,connection=Connection('https://new.example',True),
+                        transport=httpx.MockTransport(handle))
+                with patch.object(api.memory,'recovery',new=AsyncMock(return_value={})),\
+                        self.assertRaisesRegex(PracticeError,expected) as ctx:
+                    asyncio.run(api.draw('b'*32,1800,None))
+                self.assertTrue(ctx.exception.definitive)
+                self.assertNotIn('upstream private diagnostic',str(ctx.exception))
+
 
 if __name__=='__main__':unittest.main()

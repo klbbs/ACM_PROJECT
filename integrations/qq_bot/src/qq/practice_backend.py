@@ -19,6 +19,9 @@ from practice_providers import configured_routes, endpoint_identity
 from practice_completion import completion
 from acm_connection import load_connection, ConnectionUnavailable
 
+CODEX_LOGIN_REQUIRED = ('Codex 尚未登录或授权已失效；请在 ACM 网站「连接与设置」点击'
+                        '「申请官方登录设备码」，完成 Codex/ChatGPT 授权后重新 /roll。')
+
 
 def terminal(message):
     error=PracticeError(message);error.definitive=True;return error
@@ -96,6 +99,11 @@ class ACM:
     async def configuration(self,c):
         state=await self.request(c,'GET','/api/hermes/readiness')
         if state.get('ai_ready') is not True:raise PracticeError('ACM 默认模型配置尚未就绪，请管理员在网页连接与设置中检查。')
+        settings=await self.request(c,'GET','/api/ai/settings')
+        if settings.get('channel')=='codex':
+            account=await self.request(c,'GET','/api/ai/account')
+            if account.get('connected') is not True or account.get('type')!='chatgpt':
+                raise PracticeError(CODEX_LOGIN_REQUIRED+'未发起抽题。')
         return state
     async def ready(self):
         async with self.client() as c:
@@ -223,6 +231,8 @@ class ACM:
                 raise PracticeError('此题已请求停止，未交付迟到结果。')
             if job.get('status')!='completed':
                 # Server error text can contain provider diagnostics; never reflect it to groups.
+                if job.get('error')=='官方账号认证已失效，请重新登录后重试':
+                    raise terminal(CODEX_LOGIN_REQUIRED+'原任务已结束，不会自动重抽。')
                 raise terminal('ACM 抽题未完成；请管理员在 ACM 任务页查看失败原因，不会自动重新付费抽题。')
             caps=await self.capabilities(c)
             if self.receipt_support(caps):
