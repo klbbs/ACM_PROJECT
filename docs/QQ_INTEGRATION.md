@@ -7,18 +7,36 @@
 - ACM 服务、接口与网站仍在根目录维护；QQ/Hermes 客户端在 `integrations/qq_bot/` 维护。
 - 修改交付协议时同时检查 `docs/HERMES_DELIVERY_PROTOCOL.md` 和客户端接收/去重/ACK 逻辑，不能仅修改一边并宣称联调成功。
 - QQ 操作仍受管理员账号约束，普通私聊/群聊不会因为仓库合并获得电脑控制权限。
-- 本机 QQ 的运行数据、登录态和作答记录继续保留在原私有目录。目录合并不搬迁或清空用户数据库。
+- 生产 BOT 在服务器的独立服务账户中运行。电脑上的原运行目录保留作回退，本机服务及自启保持关闭。
 - 跨 agent 开发使用独立分支/worktree；服务器部署与客户端改动分开负责，不回退其他 agent 的提交。
 
-本机更新 QQ：
+本机检查准备推送的 QQ 源码：
 
 ```bash
 cd integrations/qq_bot
 ~/.local/share/qq-hermes/.venv/bin/python scripts/manage.py check
-~/.local/share/qq-hermes/.venv/bin/python scripts/manage.py deploy --apply
 ```
 
-## 服务器迁移
+
+## 服务器运行与备份
+
+生产实例使用 `/srv/hermesbot`，由 `hermesbot-gateway`、`hermesbot-nonebot` 和 `hermesbot-napcat` 三个系统服务开机启动。开发在本机共同仓库完成，检查通过后推送 `main`。服务器保留对应源码版本；正在运行的 BOT 更新须检查当前任务，并通过 SSH 只部署需要变动的组件。`manage.py deploy --apply` 是旧的本机模式，不能用于生产实例。
+
+BOT 管理端口 6099、8642、18800 仅监听服务器本地地址。NapCat 管理可通过 SSH 将本机 16099 转发到服务器的 127.0.0.1:6099。所有 BOT 服务直连，VPN 仅供 ACM 的官方 ChatGPT/Codex 子进程使用。
+
+把备份脚本从已审查的仓库版本安装到服务器 `/usr/local/lib/hermesbot/backup.py`，以 BOT 账户执行：
+
+```bash
+sudo -u hermesbot -H python3 /usr/local/lib/hermesbot/backup.py pack config
+sudo -u hermesbot -H python3 /usr/local/lib/hermesbot/backup.py pack memory
+sudo -u hermesbot -H python3 /usr/local/lib/hermesbot/backup.py pack all
+```
+
+`config` 包含配置、插件、人设相关设置和现有通道凭据。`memory` 包含 Hermes 会话、记忆、角色卡、QQ 会话映射和消息、图片缓存、ACM 作答记录和结果回执。`all` 合并两部分。程序通过 SQLite 在线备份接口保存每个数据库的完整快照。
+
+打包后会校验文件清单和 SHA-256，私有压缩包位于 `/srv/hermesbot/.local/state/hermesbot/backups/`。其中可能包含密钥、Cookie 和聊天内容，请通过 SSH 私下转存。GitHub 只保存源码和配置示例。用 `backup.py verify /path/to/archive.tar.gz` 校验备份。恢复时先解包到私有暂存目录，核对目标和账号，再选择合并或替换；在替换在线数据库前停止对应服务并保留现有数据。QQ 客户端原生登录缓存不在包内，换机后可能需要扫码。
+
+## 更换 ACM 服务器
 
 旧服务器已过期，不再作为默认地址或备用地址。所有 QQ 刷题与 `hermes acm` 查询统一读取本机 `~/.local/share/hermes-acm/server.json`。没有配置、状态为 pending、配置无效时均不发网络请求；QQ 的其他聊天功能继续运行。
 
