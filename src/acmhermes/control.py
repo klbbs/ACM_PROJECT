@@ -12,7 +12,8 @@ STAGES = {'queued':'等待处理','validating':'检查配置','preparing_image':
           'checking_sessions':'检查平台登录','syncing_submissions':'同步历史提交并排除已做题',
           'syncing_catalog':'同步 Codeforces 题库',
           'checking_difficulty':'核对比赛通过率与 Gym 难度',
-          'selecting':'AI 选题','reading_statement':'读取完整题面',
+          'selecting':'程序随机选择合格候选','reading_statement':'读取完整题面',
+          'reviewing_difficulty':'AI 读题并独立评分','rerolling':'评分未达标，继续选择其他题目',
           'generating_report':'AI 阅读并生成说明与报告','revalidating':'核对题目资格',
           'rendering_image':'生成题目图片','completed':'已完成','failed':'未完成','interrupted':'已中断'}
 STOP_MESSAGE = '用户已急停 Hermes 抽题流程，结果未交付；已发出的上游请求只能尽力中断，无法保证撤销或免除费用'
@@ -34,6 +35,8 @@ class TaskControl:
             c.execute("""UPDATE hermes_task_control SET stopped_at=? WHERE cancel_requested=1
                 AND stopped_at IS NULL AND job_id IN(SELECT id FROM web_jobs WHERE status='interrupted')""",(int(time.time()),))
         self.memory=DrawMemory(self.db)
+        from .review_memory import ReviewMemory
+        self.reviews=ReviewMemory(self.db)
         self.deliveries=Deliveries(self.db)
 
     @staticmethod
@@ -96,6 +99,7 @@ class TaskControl:
                 c.execute('RELEASE hermes_completion')
         if status in TERMINAL:
             c.execute('UPDATE hermes_task_control SET stage=? WHERE job_id=?',(status,jid))
+            c.execute('DELETE FROM hermes_candidate_claims WHERE job_id=?',(jid,))
         return status,result,error
 
     def stopped(self,jid):

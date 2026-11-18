@@ -292,7 +292,9 @@ class CodexBridge:
                 self.login_result = None
         return {'ok': True}
 
-    async def generate(self, prompt, model, schema):
+    async def generate(self, prompt, model, schema, *, timeout_seconds=240):
+        if type(timeout_seconds) is not int or not 30 <= timeout_seconds <= 420:
+            raise ValueError('invalid generation timeout')
         async with self.inference_lock:
             account=await self.account()
             if not account.get("connected") or account.get("type")!="chatgpt":
@@ -341,12 +343,14 @@ class CodexBridge:
                                     raise last_error
                                 raise _official_failure(cancelled=turn.get('status') == 'interrupted')
                             return "\n".join(final) if final else "".join(deltas)
-                return await asyncio.wait_for(wait_result(),240)
+                return await asyncio.wait_for(wait_result(),timeout_seconds)
             except asyncio.TimeoutError as exc:
                 if turn_id:
                     try:await self.call("turn/interrupt",{"threadId":thread_id,"turnId":turn_id},5)
                     except AIError:pass
-                raise AIError("AI 分析超时，已请求中断") from exc
+                error=AIError("AI 分析超时，已请求中断")
+                error.reason='ai_timeout'
+                raise error from exc
             except asyncio.CancelledError:
                 # Cancel only this exact turn, never another task or the shared
                 # account process. This is best effort, not a billing reversal.

@@ -4,6 +4,7 @@ from acmweb.difficulty_estimates import cf_reference, estimate
 from .topics import parse_topics, method_evidence, matches_topics, context
 from .difficulty import score_candidate, selection_range
 from .rating_review import metadata_matches
+from .base_filter import score as base_score
 
 
 def diagnose(service, request, allowed_platforms=None):
@@ -14,7 +15,8 @@ def diagnose(service, request, allowed_platforms=None):
     avoided=set(prefs.get('avoid_tags',[]))
     topics=parse_topics(request.topic)
     methods=method_evidence(service, topics)
-    excluded=service.control.memory.drawn_ids() | set(request.exclude_ids)
+    excluded=(service.control.memory.drawn_ids() | service.control.memory.recommended_ids() | set(request.exclude_ids)
+              | service.reviews.claimed() | service.review_exclusions(request))
     low,high=request.score_range
     lower,upper=selection_range(low,high)
     reference=cf_reference(service.db)
@@ -30,7 +32,7 @@ def diagnose(service, request, allowed_platforms=None):
             if platform not in available:reason='platform_unavailable'
             elif row['id'] not in unattempted:reason='attempted_or_reserved'
             else:
-                score=score_candidate(row,low,high) if platform=='codeforces' else estimate(row,reference)
+                score=base_score(row,low,high,reference)
                 if not score.get('eligible',metadata_matches(score,low,high)):reason='difficulty'
                 elif floor is not None and (row.get('published_at_source') not in PUBLISHED_SOURCES or not publication_time(row.get('published_at'))):reason='unknown_date'
                 elif floor is not None and row['published_at']<floor:reason='before_date'

@@ -23,6 +23,8 @@ EVENTS = {
     'hermes.pool_empty': ('platform', '题库筛选后没有可用候选，请查看分平台筛选统计'),
     'hermes.platform_skipped': ('platform', '抽题已跳过暂不可用的平台，继续其他平台'),
     'hermes.sessions_checked': ('platform', '抽题阶段的平台登录证据已检查'),
+    'hermes.candidate_reviewed': ('task', '抽题候选已完成难度复核'),
+    'hermes.selection_failed': ('task', '抽题未完成，评分进度已保留'),
     'platform.source_failed': ('platform', '官方提交源码读取未完成，请查看固定失败原因'),
     'ai.completed': ('task', 'AI 调用已完成'),
     'ai.failed': ('task', 'AI 调用未完成，请查看固定失败原因'),
@@ -61,6 +63,8 @@ KINDS = {'crawl', 'catalog', 'analysis', 'recommend', 'ai_test', 'translation',
 REASONS = {'source_challenge', 'source_access_restricted', 'source_rate_limited', 'source_login_required', 'source_read_failed',
            'hermes_history_unavailable', 'hermes_catalog_unavailable', 'hermes_statement_unavailable', 'hermes_report_unsuitable',
            'hermes_session_unavailable',
+           'hermes_candidates_exhausted', 'hermes_review_budget_exhausted', 'hermes_report_budget_exhausted',
+           'hermes_deadline_exceeded', 'hermes_cancelled', 'hermes_generation_failed',
            'ai_schema_invalid', 'ai_auth_required', 'ai_usage_limit', 'ai_rate_limited',
            'ai_context_limit', 'ai_model_unavailable',
            'source_api_rejected',
@@ -168,6 +172,12 @@ def safe_details(details):
         elif key == 'finish_reason' and isinstance(value, str) and value in {'stop','length','content_filter','tool_calls','incomplete','unknown'}:
             clean[key] = value
         elif key in {'input_tokens','output_tokens','reasoning_tokens','max_output_tokens'} and type(value) is int and 0 <= value <= 10**9:
+            clean[key] = value
+        elif key == 'review_decision' and isinstance(value,str) and value in {'accepted','below_minimum','above_maximum','undetermined','topic_or_statement_mismatch','unsuitable'}:
+            clean[key] = value
+        elif key == 'review_rating' and type(value) in (float,int) and 0 <= value <= 4000:
+            clean[key] = value
+        elif key in {'ai_review_calls','report_attempts'} and type(value) is int and 0 <= value <= 100:
             clean[key] = value
         elif key == 'method' and isinstance(value, str) and value in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'}:
             clean[key] = value

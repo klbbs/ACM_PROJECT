@@ -23,11 +23,20 @@ from .models import AssessedChoice, ControlRequest, Draw, SolutionReport, candid
 from .rating_review import metadata_matches, decision as rating_decision
 from .control import TaskControl
 from .difficulty import score_candidate, selection_range
+from .base_filter import score as base_score, VERSION as BASE_FILTER_VERSION
+from .review_memory import ReviewMemory, context_hash
 
-MAX_RUN_SECONDS = 600
-MAX_DIFFICULTY_REVIEWS = 4
-MAX_REPORT_ATTEMPTS = 2
+MAX_RUN_SECONDS = 1200
+MAX_DIFFICULTY_REVIEWS = 12
+MAX_REPORT_ATTEMPTS = 4
+MAX_POOL_SIZE = 600
 IMAGE_TTL = 1800
+
+
+def selection_error(reason, message):
+    error = AIError(message)
+    error.reason = reason
+    return error
 
 
 class Hermes:
@@ -36,6 +45,7 @@ class Hermes:
         self.db, self.ai = app.state.database, app.state.ai
         self.jobs, self.accounts = app.state.jobs, app.state.account_config
         self.control = TaskControl(self.jobs)
+        self.reviews = self.control.reviews
         self.jobs.hermes_control = self.control
         self.image_renderer = None
         self.directory = app.state.settings.data_dir/'hermes-artifacts'
@@ -133,18 +143,28 @@ class Hermes:
         parts.append('<p>原题：'+html.escape(explanation['original_url'])+'</p>')
         return {'title':explanation['title'],'body_html':''.join(parts),'samples':explanation['samples']}
 
-    def pool(self, request, preferred_ids=None, *, evidence_only=False, qualified_contests=None, allowed_platforms=None):
+    def review_context(self, request):
+        return context_hash(self.ai.configuration_fingerprint(), self.ai.selection(), request,
+                            topic_context_for(parse_topics(request.topic)))
+
+    def review_exclusions(self, request):
+        try:
+            return self.reviews.excluded(self.review_context(request), *request.score_range)
+        except (AIError, KeyError):
+            return set()
+
+    def pool(self, request, preferred_ids=None, *, evidence_only=False, qualified_contests=None, allowed_platforms=None, claim_owner=None, limit=60):
         low, high = request.score_range
         lower, upper = selection_range(low, high)
         reference = cf_reference(self.db)
         topics = parse_topics(request.topic)
         methods = method_evidence(self, topics)
-        excluded=self.control.memory.drawn_ids() | set(request.exclude_ids)
+        excluded=(self.control.memory.drawn_ids() | self.control.memory.recommended_ids() | set(request.exclude_ids)
+                  | self.reviews.claimed(claim_owner) | self.review_exclusions(request))
         scores = {}
         def score(p):
             if p['id'] not in scores:
-                scores[p['id']] = (score_candidate(p, low, high) if p.get('platform') == 'codeforces'
-                                   else estimate(p, reference))
+                scores[p['id']] = base_score(p, low, high, reference)
             return scores[p['id']]
         def difficulty(p):
             if evidence_only:
@@ -168,7 +188,7 @@ class Hermes:
             rows += recommendation_candidates(self.db, self.accounts, low, high, limit=20, predicate=eligible,
                 difficulty_predicate=lambda p: difficulty(p) and not low <= p['difficulty'] <= high)
         else:
-            rows = recommendation_candidates(self.db, self.accounts, low, high, limit=60, predicate=eligible,
+            rows = recommendation_candidates(self.db, self.accounts, low, high, limit=limit, predicate=eligible,
                                              preferred_ids=preferred_ids, difficulty_predicate=difficulty)
         return [{**row,'score_evidence':score(row),
                  **({'topic_method_evidence': (next(iter(methods[row['id']].values())) if len(methods[row['id']])==1
@@ -224,6 +244,22 @@ class Hermes:
     async def run(self, payload, *, job_id=None):
         artifacts=[]
         started=time.monotonic()
+        owner=job_id or uuid.uuid4().hex
+        completed=False
+        progress={'candidate_count':0,'selected_count':0,'ai_review_calls':0,'report_attempts':0,
+                  'max_difficulty_reviews':MAX_DIFFICULTY_REVIEWS,'max_report_attempts':MAX_REPORT_ATTEMPTS,
+                  'max_run_seconds':MAX_RUN_SECONDS,'reviews':[],'failure_reason':None}
+        def update_progress(**values):
+            progress.update(values,elapsed_seconds=round(time.monotonic()-started))
+            self.reviews.progress(job_id,progress)
+            if progress.get('failure_reason'):
+                emit_event(getattr(self.app.state,'event_log',None),'hermes.selection_failed','WARNING',
+                    job_id=job_id,reason=progress['failure_reason'],ai_review_calls=progress['ai_review_calls'],
+                    report_attempts=progress['report_attempts'])
+        def log_review(decision, assessment):
+            emit_event(getattr(self.app.state,'event_log',None),'hermes.candidate_reviewed',
+                job_id=job_id,review_decision=decision,review_rating=assessment.get('rating'),
+                ai_review_calls=progress['ai_review_calls'],report_attempts=progress['report_attempts'])
         async def pipeline():
             self.control.stage(job_id,'validating')
             request = Draw.model_validate(payload['request'])
@@ -237,6 +273,8 @@ class Hermes:
             if not selection['ready'] or (selection['channel'],selection['model']) != (payload['provider'],payload['model']):
                 raise AIError('当前默认 AI 配置已变化或不可用，请重新发起 Hermes 请求')
             fingerprint = self.ai.configuration_fingerprint()
+            review_context=context_hash(fingerprint,selection,request,topic_context)
+            update_progress()
             account_revision = self.accounts.revision()
             synced_bindings = None
             known_bindings = None
@@ -312,7 +350,8 @@ class Hermes:
             await renew_sessions('before_selection')
             # Statistics improve known ratings; a finite standings sample must
             # not erase every otherwise valid CF task in favour of another OJ.
-            pool = self.pool(request, allowed_platforms=allowed_platforms)
+            pool = self.pool(request, allowed_platforms=allowed_platforms, claim_owner=owner, limit=MAX_POOL_SIZE)
+            update_progress(candidate_count=len(pool))
             if not pool:
                 diagnostics=self.diagnostics(request,allowed_platforms)
                 emit_event(getattr(self.app.state,'event_log',None),'hermes.pool_empty',level='WARNING',
@@ -321,7 +360,7 @@ class Hermes:
                 lower, upper = selection_range(*request.score_range)
                 topic_title = request.topic or '不限专题'
                 suffix = '；故障平台已跳过' if fallbacks else ''
-                raise AIError(f'当前可用平台中没有符合推测分数 {lower}～{upper}、{topic_title}、发布日期及排重条件的未完成且未推荐题{suffix}；已排除客户端记录，候选预览可查看各平台缓存与筛选原因')
+                raise selection_error('hermes_candidates_exhausted',f'当前可用平台中没有符合推测分数 {lower}～{upper}、{topic_title}、发布日期及排重条件的未完成且未推荐题{suffix}；已排除客户端记录与同条件下已拒绝候选，候选预览可查看筛选原因')
             candidate_counts={platform:sum(p['platform']==platform for p in pool) for platform in sorted(allowed_platforms)}
             recent=self.recent_platforms()
             platform_weights=self.platform_weights(pool,recent)
@@ -331,6 +370,8 @@ class Hermes:
             report_reused = False
             shared_report_id = None
             public_store = self.app.state.problem_reports
+            statement_failures={}
+            seen=set()
             def publish(full_report):
                 guard()
                 if reports._cached(full_report['problem_id'])[1] != statement_hash:
@@ -343,10 +384,17 @@ class Hermes:
                         level='WARNING', job_id=job_id)
                     return None
             while pool:
-                if len(difficulty_reviews) >= MAX_DIFFICULTY_REVIEWS or (difficulty_reviews and time.monotonic()-started >= MAX_RUN_SECONDS-75):
-                    raise AIError('已达到本次 AI 难度复核次数或时限；未找到评分达标题目，不会降低目标交付偏易题')
+                guard()
+                if time.monotonic()-started >= MAX_RUN_SECONDS-30:
+                    raise selection_error('hermes_deadline_exceeded','本次抽题总时限已到，未降低目标交付；已保存候选评分及进度，可查看原任务')
                 self.control.stage(job_id,'selecting')
                 candidate, strategy = self.choose(pool, recent)
+                # Remove before every await, including cache/claim/network errors.
+                pool=[p for p in pool if p['id']!=candidate['id']]
+                if candidate['id'] in seen: continue
+                seen.add(candidate['id'])
+                if not self.reviews.claim(candidate['id'],owner,MAX_RUN_SECONDS): continue
+                update_progress(selected_count=len(seen),current_problem_id=candidate['id'])
                 platform=candidate['platform']
                 self.control.stage(job_id,'reading_statement')
                 try:
@@ -354,7 +402,9 @@ class Hermes:
                 except AIError:
                     guard()
                     note(platform,'statement','hermes_statement_unavailable')
-                    pool=[p for p in pool if p['platform']!=platform]
+                    statement_failures[platform]=statement_failures.get(platform,0)+1
+                    if statement_failures[platform]>=2:
+                        pool=[p for p in pool if p['platform']!=platform]
                     continue
                 guard()
                 # Public references overlap the existing selection call; never
@@ -365,11 +415,18 @@ class Hermes:
                     reusable=None
                 reference_task = asyncio.create_task(asyncio.sleep(0,result=[]) if reusable else self.public_references(candidate['id'], statement))
                 try:
-                    self.control.stage(job_id,'selecting')
-                    chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
-                        {'candidates':[{key:candidate[key] for key in ('id','title','platform','tags') if key in candidate}],
-                         'statement':statement,'score_range':score_window,'requested_score_range':list(request.score_range),
-                         'minimum_ai_rating':request.score_range[0],'topic':topic_context},candidate_choice([candidate['id']],assessed=True))
+                    self.control.stage(job_id,'reviewing_difficulty')
+                    cached_choice=self.reviews.get(candidate['id'],statement_hash,review_context)
+                    if cached_choice:
+                        chosen=SimpleNamespace(data=cached_choice)
+                    else:
+                        if progress['ai_review_calls'] >= MAX_DIFFICULTY_REVIEWS:
+                            raise selection_error('hermes_review_budget_exhausted','已达到本次 AI 难度复核次数预算；已保存评分，未降低目标交付偏易题')
+                        update_progress(ai_review_calls=progress['ai_review_calls']+1)
+                        chosen = await self.ai.complete('hermes_selection',selection['channel'],selection['model'],
+                            {'candidates':[{key:candidate[key] for key in ('id','title','platform','tags') if key in candidate}],
+                             'statement':statement,'score_range':score_window,'requested_score_range':list(request.score_range),
+                             'minimum_ai_rating':request.score_range[0],'topic':topic_context},candidate_choice([candidate['id']],assessed=True))
                     guard()
                     if chosen.data.get('problem_id') != candidate['id']:
                         raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
@@ -377,12 +434,18 @@ class Hermes:
                     if choice.problem_id != candidate['id']:
                         raise AIError('AI 返回的题号与本次随机抽取不一致，未生成题面或报告')
                     assessment = choice.difficulty_assessment.model_dump()
-                    decision = rating_decision(assessment, *request.score_range) if choice.suitable else 'topic_or_statement_mismatch'
-                    difficulty_reviews.append({'problem_id':candidate['id'],'assessment':assessment,'decision':decision})
+                    self.reviews.save(candidate['id'],statement_hash,review_context,choice.model_dump())
+                    decision = rating_decision(assessment, *request.score_range)
+                    if decision=='accepted' and not choice.suitable: decision='topic_or_statement_mismatch'
+                    difficulty_reviews.append({'problem_id':candidate['id'],'assessment':assessment,'decision':decision,'reused':bool(cached_choice)})
+                    progress['reviews'].append({'problem_id':candidate['id'],'rating':assessment['rating'],
+                        'confidence':assessment['confidence'],'decision':decision,'reused':bool(cached_choice)})
+                    update_progress()
+                    log_review(decision,assessment)
                     if decision != 'accepted':
                         # One easy task is not an outage of its entire platform.
                         # Reject before paying for the full solution report.
-                        pool=[p for p in pool if p['id']!=candidate['id']]
+                        self.control.stage(job_id,'rerolling')
                         continue
                     references = await reference_task
                     guard()
@@ -404,7 +467,9 @@ class Hermes:
                     references=[]  # Do not attribute newly fetched references to a cached report.
                 else:
                     if report_attempts >= MAX_REPORT_ATTEMPTS:
-                        raise AIError('达到本次完整报告预算，未找到评分达标题目；未降低目标难度')
+                        raise selection_error('hermes_report_budget_exhausted','达到本次完整报告预算，未找到评分达标题目；未降低目标难度')
+                    report_attempts += 1
+                    update_progress(report_attempts=report_attempts)
                     response = await self.ai.complete('hermes_solution_report',selection['channel'],selection['model'],
                         {'problem_id':choice.problem_id,'statement':statement,'score_range':score_window,'requested_score_range':list(request.score_range),
                          'minimum_ai_rating':request.score_range[0],'independent_assessment':assessment,
@@ -413,7 +478,6 @@ class Hermes:
                          'brief_statistics':candidate.get('brief_statistics'),
                          'submission_statistics':candidate.get('submission_statistics'),
                          'public_references':references},SolutionReport)
-                    report_attempts += 1
                 guard()
                 report = SolutionReport.model_validate(response.data).model_dump()
                 if report['problem_id'] != choice.problem_id:
@@ -421,26 +485,37 @@ class Hermes:
                 if re.search(r'```|#include|\bint\s+main\s*\(|public\s+static\s+void\s+main',json.dumps(report)):
                     raise AIError('报告包含完整程序，未交付；本接口只返回解题分析报告')
                 final_decision=rating_decision(report['difficulty_assessment'],*request.score_range)
+                final_choice={'problem_id':choice.problem_id,'reason':choice.reason,'suitable':report['suitable'],
+                              'difficulty_assessment':report['difficulty_assessment']}
+                self.reviews.save(candidate['id'],statement_hash,review_context,final_choice)
+                progress['reviews'][-1].update(report_rating=report['difficulty_assessment']['rating'],
+                    report_decision=final_decision if report['suitable'] or final_decision!='accepted' else 'unsuitable')
+                update_progress()
+                log_review(progress['reviews'][-1]['report_decision'],report['difficulty_assessment'])
                 if not report['suitable'] or final_decision!='accepted':
                     publish(report)
                     difficulty_reviews[-1]['report_decision']=final_decision if report['suitable'] else 'unsuitable'
-                    pool=[p for p in pool if p['id']!=candidate['id']]
                     if report_attempts >= MAX_REPORT_ATTEMPTS:
-                        raise AIError('完整报告复核未达目标难度或题型，达到本次报告预算；未交付偏易题')
+                        raise selection_error('hermes_report_budget_exhausted','完整报告复核未达目标难度或题型，达到本次报告预算；未交付偏易题')
+                    self.control.stage(job_id,'rerolling')
                     continue
                 break
             else:
-                raise AIError('已尝试本轮可用候选，未取得完整题面或 AI 评分达标题目；未降低目标，请调整条件后重试')
+                raise selection_error('hermes_candidates_exhausted','已尝试本轮可用候选，候选已耗尽；未取得完整题面或 AI 评分达标题目，未降低目标，请查看筛选和评分记录')
             # Revalidate eligibility and the precise full-statement fingerprint
             # after all paid work; never silently replace a changed problem.
             self.control.stage(job_id,'revalidating')
             await renew_sessions('before_delivery')
             guard()
-            if choice.problem_id not in {p['id'] for p in self.pool(request,[choice.problem_id], allowed_platforms=allowed_platforms)}:
+            if choice.problem_id not in {p['id'] for p in self.pool(request,[choice.problem_id], allowed_platforms=allowed_platforms, claim_owner=owner)}:
                 raise AIError('题目资格已变化（登录、日期、已完成或对战），未交付结果')
             if reports._cached(choice.problem_id)[1] != statement_hash:
                 raise AIError('生成期间题面已变化，未交付不匹配的题目说明或报告')
             full_report = json.loads(json.dumps(report))
+            if statement.get('source')=='luogu_mirror':
+                mirror_notice='题面来自洛谷公开CF镜像而非CF原文；镜像可能有差异，请结合原题核对。'
+                full_report['limitations']=(full_report['limitations'][:7]+[mirror_notice])
+                report['limitations']=list(full_report['limitations'])
             explanation = report.pop('problem_explanation')
             # Samples come from this exact official statement, not from model
             # paraphrasing. The explanation is part of the private AI report,
@@ -456,6 +531,7 @@ class Hermes:
                     'platform_candidate_counts':candidate_counts,
                     'platform_weights':platform_weights,'platform_fallbacks':fallbacks,'report_attempts':report_attempts,
                     'ai_difficulty_assessment':full_report['difficulty_assessment'],'difficulty_reviews':difficulty_reviews,'report_reused':report_reused,
+                    'statement_source':statement.get('source'),'statement_mirror_url':statement.get('mirror_url'),
                     'notice':'中文题目说明及完整解题报告由 AI 静态阅读生成，可能有误，请结合原题核对；报告含剧透，未运行或提交代码，不计签到。'}
             if output_format=='image':
                 self.control.stage(job_id,'rendering_image')
@@ -475,14 +551,28 @@ class Hermes:
             result['shared_report_status']='published' if result['shared_report_id'] else 'storage_unavailable'
             return result
         try:
-            return await asyncio.wait_for(pipeline(),MAX_RUN_SECONDS)
-        except BaseException:
+            result=await asyncio.wait_for(pipeline(),MAX_RUN_SECONDS)
+            completed=True
+            return result
+        except asyncio.TimeoutError:
+            update_progress(failure_reason='hermes_deadline_exceeded')
+            for rid in artifacts: self.expire(rid)
+            raise selection_error('hermes_deadline_exceeded','本次抽题总时限已到，已请求中断；未交付未达标结果，可查看原任务评分进度') from None
+        except BaseException as error:
+            from acmweb.runtime_logs import REASONS
+            reason=getattr(error,'reason',None)
+            update_progress(failure_reason='hermes_cancelled' if isinstance(error,asyncio.CancelledError)
+                            else reason if isinstance(reason,str) and reason in REASONS else 'hermes_generation_failed')
             for rid in artifacts:
                 self.expire(rid)
             raise
+        finally:
+            if not completed or job_id is None: self.reviews.release(owner)
 
     def job(self,jid):
         value=self.control.row(jid)
+        value['selection_progress']=self.reviews.progress(jid)
+        value['error_code']=value['selection_progress'].get('failure_reason') if value['status'] in {'failed','interrupted'} else None
         value['result']=json.loads(value['result']) if value['result'] else None
         value['delivery']=self.control.deliveries.status(jid)
         result=value['result']
@@ -520,15 +610,23 @@ def register(app):
                     'semantics':'at_least_once','ack_after':'durable_consumer_commit',
                     'notice':'结果重发使用同一消息，不重新抽题；调用方必须开启交付流并在本地去重、落盘后确认。'},
                 'selection_strategy':'system_platform_balanced_random_without_replacement','exclude_ids_limit':10000,
+                'execution_budget':{'max_run_seconds':MAX_RUN_SECONDS,'max_difficulty_reviews':MAX_DIFFICULTY_REVIEWS,
+                    'max_report_attempts':MAX_REPORT_ATTEMPTS,'max_pool_candidates':MAX_POOL_SIZE,
+                    'report_timeout_seconds':420,'unknown_result':'recover_original_request_key_only'},
+                'review_memory_policy':{'scope':'current_workspace','key':'statement_fingerprint_and_request_ai_context',
+                    'unknown_review_ttl_seconds':86400,'rejected_is_delivered':False,
+                    'notice':'拒绝记录不记完成或签到；同题面、同AI配置和同范围题型下不重复付费复核。配置或题面变化可重新评估。'},
                 'platform_policy':{'base_weight':'equal_per_eligible_platform','recent_window':8,
                     'max_report_attempts':MAX_REPORT_ATTEMPTS,'max_difficulty_reviews':MAX_DIFFICULTY_REVIEWS,
                     'minimum_ai_rating':'请求分数下限；单点1800要求AI评分不低于1800',
                     'notice':'先抽平台再抽题，近期重复平台降权；AI读完整题面独立评分，不达标仅换题；故障平台跳过，不放宽已做题和登录要求。'},
                 'difficulty_policy':{'empirical_weight':0.55,'official_weight':0.45,'gym_priority_bonus':0.12,
+                    'base_filter_version':BASE_FILTER_VERSION,
                     'single_target_tolerance':100,'rating_precision':'weighted_value_2_decimals',
                     'minimum_statistics_population':100,'notice':'统计充分时按综合估计筛选；Gym 加分只影响概率，未知难度排除，现场数据不是官方 rating。'},
                 'shared_report_policy':{'audience':'authenticated_site_users','read_calls_ai':False,
-                    'spoiler_confirmation_required':True,'reuse_requires_fresh_rating':True,
+                    'spoiler_confirmation_required':True,'reuse_requires_fresh_rating':False,
+                    'reuse_requires_statement_and_ai_context_matched_rating':True,
                     'notice':'报告按题号和题面指纹共享；题目说明外的正文须确认剧透后展示，不共享个人任务、代码或凭据。'},
                 'score_range':{'minimum':800,'maximum':3500,'reference':'CF 综合训练估计；统计不足时保留官方 rating，其他平台用注明来源的估计，未知分数排除'},
                 'topics':[{'id':t['id'],'title':t['title']} for t in TOPICS.values()],

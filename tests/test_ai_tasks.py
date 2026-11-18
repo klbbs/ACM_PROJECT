@@ -146,3 +146,17 @@ def test_exception_restores_scoped_configuration(ai, monkeypatch):
     with pytest.raises(AIError, match='fixture unavailable'):
         asyncio.run(ai.complete('hint', 'api', 'm', {}, Answer))
     assert ai._request_config.get() is None and ai._request_key.get() is None
+
+
+def test_only_hermes_full_report_gets_extended_official_timeout(ai):
+    calls=[]
+    class Codex:
+        async def generate(self,prompt,model,schema,**kwargs):
+            calls.append((model,kwargs))
+            return '{"ok":true}'
+    ai.codex=Codex()
+    before=ai.config()
+    asyncio.run(ai.complete('hermes_solution_report','codex','user-selected-model',{},Answer))
+    asyncio.run(ai.complete('hermes_selection','codex','user-selected-model',{},Answer))
+    assert calls==[('user-selected-model',{'timeout_seconds':420}),('user-selected-model',{})]
+    assert ai.config()==before

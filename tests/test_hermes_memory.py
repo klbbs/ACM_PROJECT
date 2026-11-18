@@ -150,3 +150,16 @@ def test_matching_history_verdict_overrides_stale_workbench_ac(db):
     submit(db, '6-A', 'WA', sid='987')
     item = memory.read()['items'][0]
     assert item['attempted'] and not item['solved']
+
+
+def test_other_saved_training_recommendations_are_excluded_not_solved(db):
+    memory=DrawMemory(db)
+    with db.connect() as c:
+        c.execute('CREATE TABLE daily_plan_tasks(problem_id TEXT,active INTEGER)')
+        c.execute('INSERT INTO daily_plan_tasks VALUES(?,0)',('codeforces:4-a',))
+        c.execute('INSERT INTO ai_reports VALUES(?,?,?,?,?,?)',('rec',1,'recommend','api','model',json.dumps({'selected_problems':[{'platform':'atcoder','problem_id':'abc001_1'}]})))
+        c.execute('CREATE TABLE training_plans(data TEXT)')
+        c.execute('INSERT INTO training_plans VALUES(?)',(json.dumps({'items':[{'problem_id':'luogu:P1001'}]}),))
+    assert memory.recommended_ids()=={'codeforces:4-A','atcoder:abc001_1','luogu:P1001'}
+    assert memory.drawn_ids()==set()
+    assert all(item['drawn'] and not item['solved'] for item in memory.read()['items'])

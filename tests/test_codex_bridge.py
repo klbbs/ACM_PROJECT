@@ -313,3 +313,23 @@ def test_cancelling_generation_interrupts_only_the_exact_known_turn():
             assert not bridge.streams and not bridge.inference_lock.locked()
         finally:bridge.scratch.cleanup()
     asyncio.run(run())
+
+
+def test_report_timeout_interrupts_exact_turn_with_safe_reason(monkeypatch):
+    class Timed(EventBridge):
+        async def call(self,method,params=None,timeout=30):
+            if method=='turn/interrupt':
+                assert params=={'threadId':'thread-test','turnId':'current'}
+                return {}
+            return await super().call(method,params,timeout)
+    bridge=Timed([])
+    async def timeout(awaitable,seconds):
+        assert seconds==420
+        awaitable.close()
+        raise asyncio.TimeoutError
+    monkeypatch.setattr('acmweb.codex_bridge.asyncio.wait_for',timeout)
+    try:
+        with pytest.raises(AIError) as error:asyncio.run(bridge.generate('synthetic','selected',{},timeout_seconds=420))
+        assert error.value.reason=='ai_timeout'
+        assert not bridge.streams
+    finally:bridge.scratch.cleanup()

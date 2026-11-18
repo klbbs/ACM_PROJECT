@@ -64,6 +64,32 @@ class DrawMemory:
         with self.db.connect() as c:
             return {row[0] for row in c.execute('SELECT problem_id FROM hermes_drawn_problems')}
 
+    def recommended_ids(self, connection=None):
+        """All saved web recommendations, including replaced daily tasks.
+
+        Reading reports alone is not a recommendation. Failed generation and
+        drafts are not included, and these IDs never become accepted problems.
+        """
+        if connection is None:
+            with self.db.connect() as c: return self.recommended_ids(c)
+        c=connection
+        tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        ids=set()
+        if 'daily_plan_tasks' in tables:
+            ids.update(_pid(r[0]) for r in c.execute('SELECT problem_id FROM daily_plan_tasks'))
+        for table,query,key in (
+            ('ai_reports',"SELECT data FROM ai_reports WHERE kind='recommend'",'selected_problems'),
+            ('training_plans','SELECT data FROM training_plans','items')):
+            if table not in tables: continue
+            for row in c.execute(query):
+                try: items=json.loads(row[0]).get(key,[])
+                except (ValueError,TypeError,AttributeError): continue
+                if not isinstance(items,list): continue
+                for item in items:
+                    if not isinstance(item,dict): continue
+                    ids.add(_pid(item.get('id') or item.get('problem_id'),item.get('platform')))
+        return ids-{None}
+
     def record(self, connection, jid, result):
         """Caller holds the completion write transaction; duplicates roll back.
 
@@ -118,6 +144,8 @@ class DrawMemory:
                 mark(_pid(row['problem_id'], row['platform']), attempted=row['status'] == 'done', skipped=row['status'] == 'skip')
             for row in c.execute('SELECT problem_id FROM hermes_drawn_problems'):
                 mark(_pid(row['problem_id']), drawn=True)
+            for pid in self.recommended_ids(c):
+                mark(pid,drawn=True)
         values = [items[pid] for pid in sorted(items)]
         fingerprint = hashlib.sha256(json.dumps({'scope': scope, 'items': values},
             sort_keys=True, separators=(',', ':')).encode()).hexdigest()

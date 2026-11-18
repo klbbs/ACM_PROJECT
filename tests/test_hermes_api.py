@@ -326,14 +326,14 @@ def stopped(c,jid):
     pytest.fail('Local synthetic task cleanup did not stop')
 
 
-@pytest.mark.parametrize('stage',['selecting','reading_statement','generating_report'])
+@pytest.mark.parametrize('stage',['reviewing_difficulty','reading_statement','generating_report'])
 def test_cancel_at_each_paid_pipeline_boundary(client,monkeypatch,stage):
     import threading
     c,s,fake=client
     entered=threading.Event()
     original=fake.side_effect
     async def blocked(task,*args):
-        if (stage=='selecting' and task=='hermes_selection') or (stage=='generating_report' and task=='hermes_solution_report'):
+        if (stage=='reviewing_difficulty' and task=='hermes_selection') or (stage=='generating_report' and task=='hermes_solution_report'):
             entered.set()
             await asyncio.Event().wait()
         return await original(task,*args)

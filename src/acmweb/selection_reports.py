@@ -35,7 +35,7 @@ MAX_READING_CONCURRENCY = 2
 MAX_STATEMENT_BYTES = 512 * 1024
 STATEMENT_FIELDS = ('id', 'title', 'url', 'source', 'render_version', 'sections',
                     'body_html', 'samples', 'images', 'has_images', 'time_limit',
-                    'memory_limit', 'language', 'constraints', 'input_format', 'output_format')
+                    'memory_limit', 'language', 'constraints', 'input_format', 'output_format', 'mirror_url')
 
 
 class SelectionReadReport(BaseModel):
@@ -74,7 +74,15 @@ def _item_id(item):
 
 
 def _statement_material(statement, pid):
-    if not isinstance(statement, dict) or statement.get('source') != 'official':
+    if not isinstance(statement, dict):
+        raise AIError('尚未取得官方完整题面，不能生成已读报告或确认选题')
+    source = statement.get('source')
+    if source == 'luogu_mirror':
+        match = re.fullmatch(r'codeforces:([1-9]\d{0,8})-([A-Z]\d?)', pid)
+        if (not match or int(match[1]) >= 100000 or
+                statement.get('mirror_url') != f'https://www.luogu.com.cn/problem/CF{match[1]}{match[2]}'):
+            raise AIError('CF镜像题号或来源不匹配，不能确认已读')
+    elif source != 'official':
         raise AIError('尚未取得官方完整题面，不能生成已读报告或确认选题')
     try:
         if normalize(statement.get('id', '')) != pid:

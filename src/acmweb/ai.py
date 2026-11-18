@@ -360,7 +360,10 @@ class AIProvider:
                     wire_schema = strict_output_schema(schema.model_json_schema())
                 except ValueError:
                     raise _ai_failure('AI 任务的输出结构不支持严格 JSON 模式，请联系管理员修复；未发送分析请求', 'ai_schema_invalid') from None
-                text = await self.codex.generate(prompt, model, wire_schema)
+                if task == 'hermes_solution_report':
+                    text = await self.codex.generate(prompt, model, wire_schema, timeout_seconds=420)
+                else:
+                    text = await self.codex.generate(prompt, model, wire_schema)
             else:
                 # Keep this three-argument seam for protocol adapters and offline test transports.
                 text = await self._api_generate(model, prompt, schema.model_json_schema())

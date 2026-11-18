@@ -81,7 +81,7 @@ def test_full_analysis_can_correct_optimistic_score_and_preserves_rejected_repor
 
 def test_unknown_scores_never_create_report_and_retry_budget_is_bounded(client,monkeypatch):
     c,s,fake=client
-    for i in range(10,16):add_candidate(s,f'codeforces:{i}-A')
+    for i in range(10,30):add_candidate(s,f'codeforces:{i}-A')
     async def complete(task,provider,model,data,schema):
         assert task=='hermes_selection'
         result=await generic_complete(task,provider,model,data,schema)
@@ -90,7 +90,7 @@ def test_unknown_scores_never_create_report_and_retry_budget_is_bounded(client,m
     fake.side_effect=complete
     job=wait(c,start(c))
     assert job['status']=='failed' and '复核次数' in job['error']
-    assert fake.await_count==4 and s.control.memory.drawn_ids()==set()
+    assert fake.await_count==12 and s.control.memory.drawn_ids()==set()
 
 
 def test_shared_report_reads_no_ai_no_spoiler_in_list_and_statement_mismatch_rejected(client):
