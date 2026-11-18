@@ -38,4 +38,6 @@
 
 QQ协作会话用现有Receipts仅接收该已完成任务：PNG下载和有效性校验通过、文件fsync落盘、原始结果SHA-256匹配，本地inbox及服务器delivery均acknowledged。只调用同一任务的delivery/stream和delivery/ack，没有POST新draw、没有发送QQ测试消息。收件检查私有记录不进入Git；收件后复核关联AI完成记录仍为5次，未因重发或回执新增AI调用。
 
+QQ运行端1988757在两次空闲检查后完成部署，仅更新practice_core.py和practice_backend.py，保留私有恢复备份。协作会话核对运行源码匹配、在线状态正常、send_paused=false、pending=0，真实能力预算对应客户端等待1260秒；没有重启NapCat或发送测试消息。PNG实际尺寸1020×1674。
+
 限制：统计初筛与AI评分均有估计误差，不能承诺每题真实难度绝对准确或所有上游始终可用。未进行全站正式版本验收。
