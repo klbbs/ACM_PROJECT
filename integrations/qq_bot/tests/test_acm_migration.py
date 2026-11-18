@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 REPO=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(REPO/'src/acm'),str(REPO/'src/qq')]
@@ -177,6 +178,47 @@ class EndpointTests(unittest.TestCase):
                     asyncio.run(api.draw('b'*32,1800,None))
                 self.assertTrue(ctx.exception.definitive)
                 self.assertNotIn('upstream private diagnostic',str(ctx.exception))
+
+    def test_recovered_draw_waits_for_advertised_budget_without_new_post(self):
+        import httpx
+        from practice_backend import ACM
+        from practice_core import PracticeError
+        session=self.root/'session.json'
+        session.write_text(json.dumps({'cookie':'test','origin':'https://new.example'}))
+        for seconds,pending in [(1200,False),(600,True),(None,True)]:
+            with self.subTest(seconds=seconds):
+                paths=[]
+                def handle(request):
+                    self.assertEqual(request.method,'GET');paths.append(request.url.path)
+                    if request.url.path=='/api/auth/status':
+                        data={'authenticated':True,'csrf_token':'csrf'}
+                    elif request.url.path=='/api/hermes/requests/'+'b'*32:
+                        data={'id':'c'*32,'status':'running'}
+                    elif request.url.path=='/api/hermes/capabilities':
+                        data={'enabled':True,'output_formats':['image'],
+                            'selection_strategy':'system_platform_balanced_random_without_replacement',
+                            'exclude_ids_limit':10000,'endpoints':{'problem_memory':'/api/hermes/problem-memory'}}
+                        if seconds is not None:data['execution_budget']={'max_run_seconds':seconds}
+                    else:
+                        self.assertEqual(request.url.path,'/api/hermes/draws/'+'c'*32)
+                        data={'id':'c'*32,'status':'failed','error':'官方账号认证已失效，请重新登录后重试'}
+                    return httpx.Response(200,json=data)
+                api=ACM(self.root,session=session,connection=Connection('https://new.example',True),
+                        transport=httpx.MockTransport(handle))
+                with patch.object(api.memory,'recovery',new=AsyncMock(return_value={})),\
+                        patch('practice_backend.time',SimpleNamespace(monotonic=lambda:next(clock))),\
+                        patch('practice_backend.asyncio.sleep',new=AsyncMock()),\
+                        self.assertRaises(PracticeError) as ctx:
+                    clock=iter([0,700])
+                    asyncio.run(api.draw('b'*32,1800,None))
+                self.assertEqual(getattr(ctx.exception,'pending',False),pending)
+                self.assertEqual('/api/hermes/draws/'+'c'*32 in paths,not pending)
+
+    def test_invalid_draw_budgets_do_not_disable_bounded_wait(self):
+        from practice_backend import ACM
+        for value in [None,True,'1200',-1,0,3601]:
+            with self.subTest(value=value):
+                self.assertEqual(ACM.draw_wait_seconds({'execution_budget':{'max_run_seconds':value}}),660)
 
 
 if __name__=='__main__':unittest.main()

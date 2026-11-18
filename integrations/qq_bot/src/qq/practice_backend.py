@@ -169,6 +169,12 @@ class ACM:
             await self.auth(c);await self.capabilities(c)
             try:return self.memory.counts(await self.memory.sync(c))
             except ProblemMemoryError as exc:raise PracticeError(str(exc)) from None
+    @staticmethod
+    def draw_wait_seconds(caps):
+        budget=caps.get('execution_budget')
+        seconds=budget.get('max_run_seconds') if isinstance(budget,dict) else None
+        if type(seconds) is not int or not 30<=seconds<=3600:seconds=600
+        return seconds+60
     async def draw(self,key,score,topic,*,before_post=None,should_stop=None,on_job=None,accept_text=False):
         from practice_memory import ProblemMemoryError
         if not re.fullmatch('[a-f0-9]{32}',key):raise ValueError('invalid key')
@@ -217,7 +223,11 @@ class ACM:
             jid=job.get('id','')
             if not re.fullmatch('[a-f0-9]{32}',jid):raise PracticeError('服务器任务编号异常。')
             if on_job:on_job(jid)
-            deadline=time.monotonic()+660
+            wait=660
+            if job.get('status') in {'queued','running'}:
+                # Recovery uses the same advertised budget and original key.
+                wait=self.draw_wait_seconds(await self.capabilities(c))
+            deadline=time.monotonic()+wait
             while job.get('status') in {'queued','running'}:
                 if should_stop and should_stop():
                     await self.cancel_request(key)
