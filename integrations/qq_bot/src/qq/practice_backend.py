@@ -22,6 +22,16 @@ from acm_connection import load_connection, ConnectionUnavailable
 CODEX_LOGIN_REQUIRED = ('Codex 尚未登录或授权已失效；请在 ACM 网站「连接与设置」点击'
                         '「申请官方登录设备码」，完成 Codex/ChatGPT 授权后重新 /roll。')
 
+DRAW_FAILURES = {
+    'hermes_candidates_exhausted':'符合筛选条件且评分达标的候选已用尽，请调整分数或题型后重新 /roll。',
+    'hermes_review_budget_exhausted':'本次难度复核额度已用尽，尚未找到达标题；可稍后重新 /roll。',
+    'hermes_report_budget_exhausted':'本次题解生成额度已用尽，尚未得到达标报告；可稍后重新 /roll。',
+    'hermes_deadline_exceeded':'本次抽题已达到服务端时限并结束；可稍后重新 /roll。',
+    'hermes_cancelled':'本次抽题已取消。',
+    'hermes_generation_failed':'本次题目生成失败，请在 ACM 任务页查看详细原因。',
+    'ai_timeout':'本次 AI 分析超时，任务已结束；可稍后重新 /roll。',
+}
+
 
 def terminal(message):
     error=PracticeError(message);error.definitive=True;return error
@@ -169,6 +179,12 @@ class ACM:
             await self.auth(c);await self.capabilities(c)
             try:return self.memory.counts(await self.memory.sync(c))
             except ProblemMemoryError as exc:raise PracticeError(str(exc)) from None
+    @staticmethod
+    def draw_wait_seconds(caps):
+        budget=caps.get('execution_budget')
+        seconds=budget.get('max_run_seconds') if isinstance(budget,dict) else None
+        if type(seconds) is not int or not 30<=seconds<=3600:seconds=600
+        return seconds+60
     async def draw(self,key,score,topic,*,before_post=None,should_stop=None,on_job=None,accept_text=False):
         from practice_memory import ProblemMemoryError
         if not re.fullmatch('[a-f0-9]{32}',key):raise ValueError('invalid key')
@@ -217,7 +233,11 @@ class ACM:
             jid=job.get('id','')
             if not re.fullmatch('[a-f0-9]{32}',jid):raise PracticeError('服务器任务编号异常。')
             if on_job:on_job(jid)
-            deadline=time.monotonic()+660
+            wait=660
+            if job.get('status') in {'queued','running'}:
+                # Recovery uses the same advertised budget and original key.
+                wait=self.draw_wait_seconds(await self.capabilities(c))
+            deadline=time.monotonic()+wait
             while job.get('status') in {'queued','running'}:
                 if should_stop and should_stop():
                     await self.cancel_request(key)
@@ -231,8 +251,11 @@ class ACM:
                 raise PracticeError('此题已请求停止，未交付迟到结果。')
             if job.get('status')!='completed':
                 # Server error text can contain provider diagnostics; never reflect it to groups.
-                if job.get('error')=='官方账号认证已失效，请重新登录后重试':
+                code=job.get('error_code')
+                if code=='ai_auth_required' or job.get('error')=='官方账号认证已失效，请重新登录后重试':
                     raise terminal(CODEX_LOGIN_REQUIRED+'原任务已结束，不会自动重抽。')
+                if isinstance(code,str) and code in DRAW_FAILURES:
+                    raise terminal(DRAW_FAILURES[code])
                 raise terminal('ACM 抽题未完成；请管理员在 ACM 任务页查看失败原因，不会自动重新付费抽题。')
             caps=await self.capabilities(c)
             if self.receipt_support(caps):

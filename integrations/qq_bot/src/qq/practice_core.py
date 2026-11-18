@@ -27,6 +27,7 @@ class Reply:
 STAGES={'queued':'等待处理','validating':'检查配置','preparing_image':'检查图片组件',
  'checking_sessions':'检查平台登录','syncing_submissions':'同步已做题目',
  'syncing_catalog':'同步 Codeforces 题库','selecting':'随机选题','reading_statement':'读取题面',
+ 'reviewing_difficulty':'AI 读题并独立评分','rerolling':'评分未达标，正在换题',
  'generating_report':'生成题目说明和私有报告','revalidating':'核对题目资格',
  'rendering_image':'生成图片','completed':'已完成','failed':'未完成','interrupted':'已中断'}
 
@@ -343,7 +344,15 @@ class Game:
         job=await self.api.recover(row['id'])
         if not job:return Reply(f'[{row["id"][:8]}] 服务器尚未找到原请求；/roll 只恢复这个编号。')
         stage=(job.get('control') or {}).get('stage',job.get('status'))
-        return Reply(f'[{row["id"][:8]}] '+STAGES.get(stage,'状态待确认')+'。'+
+        counts=''
+        progress=job.get('selection_progress')
+        if job.get('status') in {'queued','running'} and isinstance(progress,dict):
+            selected=progress.get('selected_count');attempts=progress.get('report_attempts')
+            if type(selected) is int and 0<=selected<=10000:
+                counts=f'已检查 {selected} 道候选。'
+                if type(attempts) is int and 0<=attempts<=100:
+                    counts+=f'题解生成 {attempts} 次。'
+        return Reply(f'[{row["id"][:8]}] '+STAGES.get(stage,'状态待确认')+'。'+counts+
             ('用 /roll 恢复本题交付。' if job.get('status')=='completed' and row['status']=='drawing' else ''))
     async def tasks(self,shared,page):
         rows=self.store.history(shared,page)

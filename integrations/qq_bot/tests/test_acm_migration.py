@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 REPO=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(REPO/'src/acm'),str(REPO/'src/qq')]
@@ -161,15 +162,25 @@ class EndpointTests(unittest.TestCase):
         from practice_core import PracticeError
         session=self.root/'session.json'
         session.write_text(json.dumps({'cookie':'test','origin':'https://new.example'}))
-        for error,expected in [('官方账号认证已失效，请重新登录后重试','申请官方登录设备码'),
-                               ('upstream private diagnostic','ACM 抽题未完成')]:
+        for error,code,expected in [
+                ('官方账号认证已失效，请重新登录后重试',None,'申请官方登录设备码'),
+                ('upstream private diagnostic','ai_auth_required','申请官方登录设备码'),
+                ('upstream private diagnostic','hermes_candidates_exhausted','候选已用尽'),
+                ('upstream private diagnostic','hermes_review_budget_exhausted','复核额度已用尽'),
+                ('upstream private diagnostic','hermes_report_budget_exhausted','题解生成额度已用尽'),
+                ('upstream private diagnostic','hermes_deadline_exceeded','服务端时限'),
+                ('upstream private diagnostic','hermes_cancelled','已取消'),
+                ('upstream private diagnostic','hermes_generation_failed','题目生成失败'),
+                ('upstream private diagnostic','ai_timeout','AI 分析超时'),
+                ('upstream private diagnostic','unknown_provider_error','ACM 抽题未完成'),
+                ('upstream private diagnostic',None,'ACM 抽题未完成')]:
             with self.subTest(error=error):
                 def handle(request):
                     self.assertEqual(request.method,'GET')
                     if request.url.path=='/api/auth/status':
                         return httpx.Response(200,json={'authenticated':True,'csrf_token':'csrf'})
                     self.assertEqual(request.url.path,'/api/hermes/requests/'+'b'*32)
-                    return httpx.Response(200,json={'id':'c'*32,'status':'failed','error':error})
+                    return httpx.Response(200,json={'id':'c'*32,'status':'failed','error':error,'error_code':code})
                 api=ACM(self.root,session=session,connection=Connection('https://new.example',True),
                         transport=httpx.MockTransport(handle))
                 with patch.object(api.memory,'recovery',new=AsyncMock(return_value={})),\
@@ -177,6 +188,65 @@ class EndpointTests(unittest.TestCase):
                     asyncio.run(api.draw('b'*32,1800,None))
                 self.assertTrue(ctx.exception.definitive)
                 self.assertNotIn('upstream private diagnostic',str(ctx.exception))
+
+    def test_recovered_draw_waits_for_advertised_budget_without_new_post(self):
+        import httpx
+        from practice_backend import ACM
+        from practice_core import PracticeError
+        session=self.root/'session.json'
+        session.write_text(json.dumps({'cookie':'test','origin':'https://new.example'}))
+        for seconds,pending in [(1200,False),(600,True),(None,True)]:
+            with self.subTest(seconds=seconds):
+                paths=[]
+                def handle(request):
+                    self.assertEqual(request.method,'GET');paths.append(request.url.path)
+                    if request.url.path=='/api/auth/status':
+                        data={'authenticated':True,'csrf_token':'csrf'}
+                    elif request.url.path=='/api/hermes/requests/'+'b'*32:
+                        data={'id':'c'*32,'status':'running'}
+                    elif request.url.path=='/api/hermes/capabilities':
+                        data={'enabled':True,'output_formats':['image'],
+                            'selection_strategy':'system_platform_balanced_random_without_replacement',
+                            'exclude_ids_limit':10000,'endpoints':{'problem_memory':'/api/hermes/problem-memory'}}
+                        if seconds is not None:data['execution_budget']={'max_run_seconds':seconds}
+                    else:
+                        self.assertEqual(request.url.path,'/api/hermes/draws/'+'c'*32)
+                        data={'id':'c'*32,'status':'failed','error':'官方账号认证已失效，请重新登录后重试'}
+                    return httpx.Response(200,json=data)
+                api=ACM(self.root,session=session,connection=Connection('https://new.example',True),
+                        transport=httpx.MockTransport(handle))
+                with patch.object(api.memory,'recovery',new=AsyncMock(return_value={})),\
+                        patch('practice_backend.time',SimpleNamespace(monotonic=lambda:next(clock))),\
+                        patch('practice_backend.asyncio.sleep',new=AsyncMock()),\
+                        self.assertRaises(PracticeError) as ctx:
+                    clock=iter([0,700])
+                    asyncio.run(api.draw('b'*32,1800,None))
+                self.assertEqual(getattr(ctx.exception,'pending',False),pending)
+                self.assertEqual('/api/hermes/draws/'+'c'*32 in paths,not pending)
+
+    def test_invalid_draw_budgets_do_not_disable_bounded_wait(self):
+        from practice_backend import ACM
+        for value in [None,True,'1200',-1,0,3601]:
+            with self.subTest(value=value):
+                self.assertEqual(ACM.draw_wait_seconds({'execution_budget':{'max_run_seconds':value}}),660)
+
+    def test_progress_shows_reselection_counts_without_private_reviews(self):
+        from practice_core import Game, Store
+        store=Store(self.root);row,_=store.start('chat',1800,None)
+        job={'status':'running','control':{'stage':'rerolling'},'selection_progress':{
+            'selected_count':3,'report_attempts':1,'current_problem_id':'PRIVATE-PROBLEM',
+            'reviews':[{'problem_id':'PRIVATE-PROBLEM','rating':1400,'decision':'PRIVATE-REPORT'}]}}
+        api=SimpleNamespace(recover=AsyncMock(return_value=job))
+        reply=asyncio.run(Game(store,api,None).progress(row))
+        self.assertIn('评分未达标，正在换题',reply.text)
+        self.assertIn('已检查 3 道候选',reply.text)
+        self.assertIn('题解生成 1 次',reply.text)
+        self.assertNotIn('PRIVATE',reply.text)
+        job['selection_progress']['selected_count']=True
+        job['selection_progress']['report_attempts']='PRIVATE-COUNTER'
+        reply=asyncio.run(Game(store,api,None).progress(row))
+        self.assertNotIn('已检查',reply.text)
+        self.assertNotIn('PRIVATE',reply.text)
 
 
 if __name__=='__main__':unittest.main()
