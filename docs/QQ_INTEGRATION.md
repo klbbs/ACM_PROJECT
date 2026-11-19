@@ -7,7 +7,7 @@
 - ACM 服务、接口与网站仍在根目录维护；QQ/Hermes 客户端在 `integrations/qq_bot/` 维护。
 - 修改交付协议时同时检查 `docs/HERMES_DELIVERY_PROTOCOL.md` 和客户端接收/去重/ACK 逻辑，不能仅修改一边并宣称联调成功。
 - QQ 操作仍受管理员账号约束，普通私聊/群聊不会因为仓库合并获得电脑控制权限。
-- 生产 BOT 在服务器的独立服务账户中运行。电脑上的原运行目录保留作回退，本机服务及自启保持关闭。
+- 生产 BOT 在服务器以 `kendas` 运行，使用独立数据目录 `/srv/hermesbot`。电脑上的原运行目录保留作回退，本机服务及自启保持关闭。
 - 跨 agent 开发使用独立分支/worktree；服务器部署与客户端改动分开负责，不回退其他 agent 的提交。
 
 本机检查准备推送的 QQ 源码：
@@ -20,16 +20,16 @@ cd integrations/qq_bot
 
 ## 服务器运行与备份
 
-生产实例使用 `/srv/hermesbot`，由 `hermesbot-gateway`、`hermesbot-nonebot` 和 `hermesbot-napcat` 三个系统服务开机启动。开发在本机共同仓库完成，检查通过后推送 `main`。服务器保留对应源码版本；正在运行的 BOT 更新须检查当前任务，并通过 SSH 只部署需要变动的组件。`manage.py deploy --apply` 是旧的本机模式，不能用于生产实例。
+生产实例使用 `/srv/hermesbot`，由 `hermesbot-gateway`、`hermesbot-nonebot` 和 `hermesbot-napcat` 三个系统服务开机启动。三个服务加载 `integrations/qq_bot/ops/10-runtime-user.conf`，Hermes 网关另外加载 `11-gateway-workspace.conf`，允许其在 `/opt/acm-lab` 工作。BOT 已有的终端工具直接继承进程账号；各聊天入口原有的工具授权保持生效。开发在本机共同仓库完成，检查通过后推送 `main`。服务器保留对应源码版本；正在运行的 BOT 更新须检查当前任务，并通过 SSH 只部署需要变动的组件。`manage.py deploy --apply` 是旧的本机模式，不能用于生产实例。
 
 BOT 管理端口 6099、8642、18800 仅监听服务器本地地址。NapCat 管理可通过 SSH 将本机 16099 转发到服务器的 127.0.0.1:6099。所有 BOT 服务直连，VPN 仅供 ACM 的官方 ChatGPT/Codex 子进程使用。
 
-把备份脚本从已审查的仓库版本安装到服务器 `/usr/local/lib/hermesbot/backup.py`，以 BOT 账户执行：
+把备份脚本从已审查的仓库版本安装到服务器 `/usr/local/lib/hermesbot/backup.py`，以 BOT 运行账号执行，使用 BOT 的独立数据目录：
 
 ```bash
-sudo -u hermesbot -H python3 /usr/local/lib/hermesbot/backup.py pack config
-sudo -u hermesbot -H python3 /usr/local/lib/hermesbot/backup.py pack memory
-sudo -u hermesbot -H python3 /usr/local/lib/hermesbot/backup.py pack all
+sudo -u kendas env HOME=/srv/hermesbot python3 /usr/local/lib/hermesbot/backup.py pack config
+sudo -u kendas env HOME=/srv/hermesbot python3 /usr/local/lib/hermesbot/backup.py pack memory
+sudo -u kendas env HOME=/srv/hermesbot python3 /usr/local/lib/hermesbot/backup.py pack all
 ```
 
 `config` 包含配置、插件、人设相关设置和现有通道凭据。`memory` 包含 Hermes 会话、记忆、角色卡、QQ 会话映射和消息、图片缓存、ACM 作答记录和结果回执。`all` 合并两部分。程序通过 SQLite 在线备份接口保存每个数据库的完整快照。
@@ -61,11 +61,3 @@ hermes acm login
 历史题目、回执收件箱、历史请求原样保留并按 origin 隔离。旧站已存在的付费抽题编号不能在新站自动重放；必要时用户明确结束旧轮次后新开 `/roll`。旧任务不能通过修改地址伪装成新站任务已恢复。历史去重数据的跨站迁移应单独核对工作区身份和服务器备份，不能把其他账号的数据混进来。
 
 QQ 发送保护继续生效，服务器回执的含义仍是本机持久化成功，不代表 QQ 用户已阅读。开发检查与部署健康检查不等于用户的版本验收，本次不标新版本或发布标签。
-
-## 管理员服务器操作
-
-在管理员 QQ 私聊中使用 `/server exec <命令>`，例如 `/server exec whoami` 或
-`/server exec git status --short`。命令在 `/opt/acm-lab` 下以 `kendas` 运行，
-最长 40 秒。状态和资源查询也可用自然语言。命令由已验证的管理员原消息授权，
-群聊、其他账号和模型工具调用均不能启动任意命令。每次执行由独立系统任务承载，
-禁用提权，并隔离 SSH 密钥目录。BOT 的聊天服务仍由独立账户运行。

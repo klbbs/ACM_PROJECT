@@ -7,8 +7,6 @@ Shared QQ groups lack trusted per-turn sender metadata and remain read-only.
 
 from __future__ import annotations
 
-import importlib.util
-import json
 import os
 import re
 from pathlib import Path
@@ -168,8 +166,6 @@ def on_pre_tool_call(tool_name: str = "", args=None, **kwargs) -> dict[str, str]
 
     # A dynamically discovered desktop tool still passes this hook. Unknown,
     # local and other-platform sessions cannot borrow the owner's desktop access.
-    if tool_name == "server_admin_query" and decision != "allow":
-        return {"action": "block", "message": "服务器维护仅供管理员 QQ 私聊使用。"}
     if _is_desktop_tool(tool_name) and decision != "allow":
         return {"action": "block", "message": "电脑桌面操作仅限管理员 QQ 私聊；请在管理员私聊中操作。"}
     if decision == "pass":
@@ -207,35 +203,6 @@ def on_pre_tool_call(tool_name: str = "", args=None, **kwargs) -> dict[str, str]
     return {"action": "block", "message": _BLOCK_MESSAGE}
 
 
-def server_admin_query(args, session_id=""):
-    if _verdict(session_id)[0] != "allow":
-        return json.dumps({"ok": False, "error": "owner_private_chat_required"})
-    operation = args.get("operation")
-    if operation not in ("status", "memory", "disk", "identity"):
-        return json.dumps({"ok": False, "error": "operation_denied"})
-    path = Path.home() / ".local/share/qq-hermes/server_admin.py"
-    try:
-        spec = importlib.util.spec_from_file_location("_server_admin_client", path)
-        client = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(client)
-        return json.dumps(client.request(operation), ensure_ascii=False)
-    except (ImportError, AttributeError, OSError):
-        return json.dumps({"ok": False, "error": "broker_unavailable"})
-
-
 def register(ctx) -> None:
     _log("register: hooks wired")
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
-    ctx.register_tool(
-        name="server_admin_query", toolset="server-admin", handler=server_admin_query,
-        schema={
-            "name": "server_admin_query",
-            "description": "管理员 QQ 私聊专用。以服务器 kendas 账户查询服务状态、内存、磁盘或执行身份。如果管理员要执行指定命令，请给出 /server exec 命令，只有其私聊原消息可以触发执行。",
-            "parameters": {
-                "type": "object",
-                "properties": {"operation": {"type": "string", "enum": ["status", "memory", "disk", "identity"]}},
-                "required": ["operation"],
-                "additionalProperties": False,
-            },
-        },
-    )
