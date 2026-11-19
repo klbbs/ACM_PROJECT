@@ -64,9 +64,8 @@ QQ 发送保护继续生效，服务器回执的含义仍是本机持久化成�
 
 ## 管理员服务器操作
 
-管理员 QQ 私聊可用 `/server` 查看指令。状态、内存、磁盘和身份查询以
-`kendas` 执行，也可以直接用自然语言查询。需要修改服务状态时，在管理员私聊
-输入 `/server restart-gateway` 或 `/server reload-nginx`，检查 Nginx 配置用
-`/server check-nginx`。这些固定动作由服务器的 `hermesbot-admin.service`
-执行，日志记录操作和结果。网关或桥接进程均保留原账户和隔离设置。
-管理服务通过本机 Unix 套接字识别实际调用进程，不接收任意命令或参数。
+在管理员 QQ 私聊中使用 `/server exec <命令>`，例如 `/server exec whoami` 或
+`/server exec git status --short`。命令在 `/opt/acm-lab` 下以 `kendas` 运行，
+最长 40 秒。状态和资源查询也可用自然语言。命令由已验证的管理员原消息授权，
+群聊、其他账号和模型工具调用均不能启动任意命令。每次执行由独立系统任务承载，
+禁用提权，并隔离 SSH 密钥目录。BOT 的聊天服务仍由独立账户运行。

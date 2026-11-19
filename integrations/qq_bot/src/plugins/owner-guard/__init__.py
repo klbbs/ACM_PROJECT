@@ -230,7 +230,7 @@ def register(ctx) -> None:
         name="server_admin_query", toolset="server-admin", handler=server_admin_query,
         schema={
             "name": "server_admin_query",
-            "description": "管理员 QQ 私聊专用。以服务器 kendas 账户查询服务状态、内存、磁盘或执行身份。重启和重载请提示管理员直接输入 /server 命令。",
+            "description": "管理员 QQ 私聊专用。以服务器 kendas 账户查询服务状态、内存、磁盘或执行身份。如果管理员要执行指定命令，请给出 /server exec 命令，只有其私聊原消息可以触发执行。",
             "parameters": {
                 "type": "object",
                 "properties": {"operation": {"type": "string", "enum": ["status", "memory", "disk", "identity"]}},
