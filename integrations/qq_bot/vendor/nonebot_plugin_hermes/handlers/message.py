@@ -8,7 +8,6 @@ priority=98 main:触发判断 → reactive 决策 → 出向
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -123,22 +122,9 @@ def _msg_at_only_other_users(uni_msg: alconna.UniMessage, bot_self_id: str) -> b
 _MAX_NICKNAME_LEN = 24
 
 
-def _at_only_groups() -> set[str]:
-    """读 HERMES_AT_ONLY_GROUPS(逗号分隔的群号):这些群只有被 @ 才进 turn。
-
-    pydantic 只把声明过的字段放进 process env,这些自定义键读 .env 文件本身。
-    """
-    raw = os.environ.get("HERMES_AT_ONLY_GROUPS", "")
-    if not raw:
-        try:
-            with open("__HOME__/.local/share/qq-hermes/.env", encoding="utf-8") as fh:
-                for line in fh:
-                    if line.startswith("HERMES_AT_ONLY_GROUPS="):
-                        raw = line.split("=", 1)[1].strip().strip('"')
-                        break
-        except OSError:
-            return set()
-    return {g.strip() for g in raw.split(",") if g.strip()}
+_AT_ONLY_GROUPS = frozenset(
+    group.strip() for group in plugin_config.hermes_at_only_groups.split(",") if group.strip()
+)
 
 
 def _sanitize_nickname(value) -> str | None:
@@ -1016,7 +1002,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         is_mentioned = has_bot_at or (event.is_tome() and not _msg_at_only_other_users(uni_msg, str(bot.self_id)))
         addressed_to_bot = is_mentioned
         # 按群覆盖触发方式:这些群只认真 @ / 引用 bot,泛聊天不唤醒。
-        if str(group_id) in _at_only_groups() and not is_mentioned:
+        if str(group_id) in _AT_ONLY_GROUPS and not is_mentioned:
             logger.debug(f"[HERMES skip] at-only group {group_id}, not mentioned")
             matcher.skip()
         trigger_mode = plugin_config.hermes_group_trigger

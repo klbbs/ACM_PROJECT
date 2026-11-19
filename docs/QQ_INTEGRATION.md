@@ -22,6 +22,8 @@ cd integrations/qq_bot
 
 生产实例使用 `/srv/hermesbot`，由 `hermesbot-gateway`、`hermesbot-nonebot` 和 `hermesbot-napcat` 三个系统服务开机启动。三个服务加载 `integrations/qq_bot/ops/10-runtime-user.conf`，Hermes 网关另外加载 `11-gateway-workspace.conf`，允许其在 `/opt/acm-lab` 工作。BOT 已有的终端工具直接继承进程账号；各聊天入口原有的工具授权保持生效。开发在本机共同仓库完成，检查通过后推送 `main`。服务器保留对应源码版本；正在运行的 BOT 更新须检查当前任务，并通过 SSH 只部署需要变动的组件。`manage.py deploy --apply` 是旧的本机模式，不能用于生产实例。
 
+QQ 群聊的触发规则由消息桥接读取。运行目录的 `.env` 中，`HERMES_AT_ONLY_GROUPS` 用逗号列出仅在被点名或引用时进入聊天的群，优先于全局 `HERMES_GROUP_TRIGGER` 和活跃会话窗口。修改后检查正在生成的回复和抽题任务，空闲时通过 `systemctl restart hermesbot-nonebot` 重载。手工运行第二个 `bot.py` 会占用正式服务的端口。可用 `journalctl -u hermesbot-nonebot` 核对生效的模式与 QQ 重新连接记录。
+
 BOT 的终端工具可以执行 `hermesbot-restart`。系统会在约 15 秒后重启 Hermes 网关和
 QQ 消息桥接，给当轮回复留出时间。NapCat 和 ACM Lab 保持运行。`kendas` 仅获准启动
 专用的 `hermesbot-restart.timer`，网关的禁止提权设置继续生效。部署文件位于

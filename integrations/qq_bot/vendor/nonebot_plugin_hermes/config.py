@@ -64,6 +64,9 @@ class Config(BaseModel):
     hermes_group_trigger: str = "at"
     """群聊触发方式: at / all / keyword"""
 
+    hermes_at_only_groups: str = Field(default="", coerce_numbers_to_str=True)
+    """只在被点名或引用时响应的群号，以逗号分隔。"""
+
     hermes_keywords: set[str] = {"/ai"}
     """keyword 模式下的触发关键词"""
 
