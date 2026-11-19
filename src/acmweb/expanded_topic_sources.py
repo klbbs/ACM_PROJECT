@@ -468,6 +468,11 @@ def _nowcoder_pages(client, params, max_pages, warnings, *, first_page=1):
             total = page_total
         known = {row['id'] for row in rows}
         fresh = [row for row in parsed if row['id'] not in known]
+        if not parsed and total is not None and (page - 1) * NOWCODER_PAGE_SIZE < total:
+            warnings.append(W_NOWCODER_SHAPE)
+            pages -= 1
+            capped = True
+            break
         if parsed and not fresh:
             warnings.append(W_NOWCODER_REPEAT)
             pages -= 1
@@ -484,7 +489,7 @@ def _nowcoder_pages(client, params, max_pages, warnings, *, first_page=1):
     return rows, total, pages, capped, tag_map
 
 
-def discover_nowcoder(client, topic=None, *, first_page=1):
+def discover_nowcoder(client, topic=None, *, first_page=1, max_pages=MAX_NOWCODER_PAGES):
     """Return bounded Nowcoder candidates with official tag evidence.
 
     With a topic, the officially supported ``keyword`` search first discovers
@@ -546,7 +551,7 @@ def discover_nowcoder(client, topic=None, *, first_page=1):
                     '官方列表无逐题发布日期')
         return _result(verified, coverage, truncated, warnings)
 
-    rows, total, pages, capped, _ = _nowcoder_pages(client, {}, MAX_NOWCODER_PAGES, warnings, first_page=first_page)
+    rows, total, pages, capped, _ = _nowcoder_pages(client, {}, max_pages, warnings, first_page=first_page)
     truncated = bool(capped or any(w.startswith('牛客第 ') or w in {W_NOWCODER_FIRST,W_NOWCODER_SHAPE,W_NOWCODER_REPEAT} for w in warnings))
     if truncated and total is not None:
         warnings.append(W_NOWCODER_TRUNCATED.format(total=total, count=len(rows)))
@@ -557,4 +562,5 @@ def discover_nowcoder(client, topic=None, *, first_page=1):
     if not rows:
         coverage = '牛客：官方题库列表未返回可用候选；未猜测题号或标签'
     return {**_result(rows, coverage, truncated, warnings), 'total_count':total,
-            'first_page':first_page,'next_page':first_page+pages if truncated else 1}
+            'first_page':first_page,'next_page':first_page+pages if truncated else 1,
+            'pages_read':pages}

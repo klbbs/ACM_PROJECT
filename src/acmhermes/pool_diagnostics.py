@@ -42,6 +42,9 @@ def diagnose(service, request, allowed_platforms=None):
             if reason:counts[reason]+=1
             else:eligible+=1
         coverage=refresh.get(platform,{})
+        backfill=service.db.get('catalog_backfill_status:'+platform,{})
+        if backfill.get('updated_at',0)>coverage.get('updated_at',0):
+            coverage={**coverage, **backfill, 'truncated':backfill['next_page'] != 1}
         result.append({'platform':platform,'login_verified':platform in verified,'available_this_draw':platform in available,
             'cached_count':len(raw),'eligible_count':eligible,'filter_counts':counts,
             'with_topic_metadata':sum(bool(row.get('tags')) for row in raw),

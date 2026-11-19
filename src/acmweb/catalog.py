@@ -218,7 +218,7 @@ def _luogu(client):
 def _luogu_page_batch(client, params, max_pages=3, first_page=1):
     """Return bounded public pages plus honest continuation/partial evidence."""
     rows, seen, warnings = [], set(), []
-    exhausted, pages_read = False, 0
+    exhausted, pages_read, total_count = False, 0, None
     for page in range(first_page, first_page + max_pages):
         try:
             html = client.get('https://www.luogu.com.cn/problem/list',
@@ -231,16 +231,23 @@ def _luogu_page_batch(client, params, max_pages=3, first_page=1):
             return {'items': rows, 'truncated': True, 'next_page': page,
                     'warnings': warnings, 'error_code': code, 'pages_read': pages_read}
         pages_read += 1
+        total = container.get('count') if isinstance(container, dict) else None
+        if type(total) is int and total >= 0:
+            total_count = total
         fresh = [row for row in parsed if row['id'] not in seen]
         if not fresh:
             exhausted = not parsed
+            per_page = container.get('perPage', 50) if isinstance(container, dict) else 50
+            if not parsed and total_count and type(per_page) is int and (page - 1) * per_page < total_count:
+                pages_read -= 1
+                exhausted = False
+                warnings.append('官方分页缺少预期题目，本次已停止并保留续传位置')
             if parsed:
                 pages_read -= 1
                 warnings.append('官方分页返回重复题目，本次已停止并保留续传位置；不能据此认定题库已遍历完整')
             break
         rows.extend(fresh)
         seen.update(row['id'] for row in fresh)
-        total = container.get('count') if isinstance(container, dict) else None
         per_page = container.get('perPage', 50) if isinstance(container, dict) else 50
         # Honor the upstream page size rather than assume every page has 50 rows.
         if type(total) is int and type(per_page) is int and per_page > 0:
@@ -251,7 +258,7 @@ def _luogu_page_batch(client, params, max_pages=3, first_page=1):
             break
     return {'items': rows, 'truncated': not exhausted,
             'next_page': 1 if exhausted else first_page + pages_read,
-            'warnings': warnings, 'pages_read': pages_read}
+            'warnings': warnings, 'pages_read': pages_read, 'total_count': total_count}
 
 
 def _luogu_pages(client, params, max_pages=3):
@@ -372,6 +379,7 @@ def _store_catalog_rows(database, platform, rows):
     """Merge discovery batches without erasing previous official coverage."""
     unique = {row['id']: row for row in rows if row.get('platform') == platform}
     with database.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
         existing = {row[0]: json.loads(row[1]) for row in db.execute(
             'SELECT id,data FROM problem_catalog WHERE platform=?', (platform,)) if row[0] in unique}
         for pid, row in unique.items():
@@ -634,7 +642,15 @@ def refresh_catalog(database, platform=None, on_progress=None, accounts=None):
                 'error_code': code, 'message': message, 'updated_at': int(time.time())}
         finally: client.close()
         publish()
-    database.set('catalog_refresh_status', results)
+    if platform is not None:
+        # A targeted refresh must preserve the other platforms' coverage.
+        previous = database.get('catalog_refresh_status', [])
+        results_by_platform = {item['platform']: item for item in previous
+                               if isinstance(item, dict) and item.get('platform') in PLATFORMS}
+        results_by_platform[platform] = results[0]
+        database.set('catalog_refresh_status', list(results_by_platform.values()))
+    else:
+        database.set('catalog_refresh_status', results)
     database.set('catalog_refresh_at', int(time.time()))
     return snapshot()
 

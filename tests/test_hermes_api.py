@@ -1124,3 +1124,27 @@ def test_diagnostics_match_original_date_topic_and_exclusion_path(client):
     assert cf['filter_counts']['before_date']==1 and cf['filter_counts']['difficulty']==1
     assert cf['filter_counts']['client_or_drawn']==1
     assert cf['cached_count']==cf['eligible_count']+sum(cf['filter_counts'].values())
+
+
+def test_exact_preview_excludes_client_history_without_creating_jobs(client):
+    c, service, ai = client
+    response = c.post('/api/hermes/candidates/preview', json={
+        'score_range': [800, 1200], 'exclude_ids': [PID]})
+    assert response.status_code == 200
+    assert response.json()['diagnostics']['candidate_count'] == 0
+    with service.db.connect() as db:
+        assert db.execute("SELECT count(*) FROM web_jobs WHERE kind='hermes_draw'").fetchone()[0] == 0
+    ai.assert_not_awaited()
+    service.refresh_evidence.assert_not_awaited()
+
+
+def test_preview_explains_expired_platform_evidence(client, monkeypatch):
+    c, service, ai = client
+    monkeypatch.setattr(service.accounts.credential_checks, 'statuses', lambda: {'items': []})
+    response = c.get('/api/hermes/candidates?minimum=800&maximum=1200')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['items'] == []
+    cf = next(row for row in data['diagnostics']['platforms'] if row['platform']=='codeforces')
+    assert cf['cached_count'] > 0 and cf['filter_counts']['platform_unavailable'] > 0
+    ai.assert_not_awaited()

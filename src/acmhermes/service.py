@@ -598,6 +598,7 @@ def register(app):
     async def capabilities():
         return {'enabled':True,'output_format':'text','output_formats':['text','image'],
                 'endpoints':{'text':'/api/hermes/draw','image':'/api/hermes/draw/image',
+                    'candidate_preview':'/api/hermes/candidates/preview',
                     'cancel':'/api/hermes/draws/{job_id}/cancel','cancel_request':'/api/hermes/requests/{request_key}/cancel',
                     'stop_all':'/api/hermes/stop','list':'/api/hermes/draws','readiness':'/api/hermes/readiness','candidates':'/api/hermes/candidates',
                     'problem_memory':'/api/hermes/problem-memory',
@@ -674,6 +675,16 @@ def register(app):
         return {'enabled':True,'ai_ready':ready,'reason':reason,'active_jobs':service.control.active_ids(),
                 'image_requires_optional_dependencies':True,'notice':'只读配置状态，不调用模型或检测平台登录'}
 
+    def preview_draw(request):
+        logged_in = verified_platforms(service.accounts)
+        items = service.pool(request) if logged_in else []
+        return {'items':items,'count':len(items),'limit':60,'cache_only':True,
+                'diagnostics':service.diagnostics(request),'topic_query':topic_context_for(parse_topics(request.topic)),
+                'requested_score_range':list(request.score_range),'effective_score_range':list(selection_range(*request.score_range)),
+                'platform_candidate_counts':{p:sum(row['platform']==p for row in items) for p in logged_in},
+                'platform_weights':service.platform_weights(items,service.recent_platforms()),
+                'notice':'仅预览当前缓存与登录证据；没有有效核验时请先检测平台登录。不调用 AI、不检测登录、不锁定候选。'}
+
     @app.get('/api/hermes/candidates')
     def preview(minimum:int=Query(ge=800,le=3500),maximum:int=Query(ge=800,le=3500),topic:str|None=Query(default=None,min_length=1,max_length=MAX_QUERY_LENGTH)):
         if minimum>maximum or topic is not None and not topic.strip():
@@ -682,13 +693,11 @@ def register(app):
             request=Draw(score_range=(minimum,maximum),topic=topic)
         except ValueError:
             raise HTTPException(422,'题型最多 8 类，以 &/逗号取交集、| 取并集，不支持括号或空项') from None
-        items=service.pool(request)
-        return {'items':items,'count':len(items),'limit':60,'cache_only':True,
-                'diagnostics':service.diagnostics(request),'topic_query':topic_context_for(parse_topics(topic)),
-                'requested_score_range':[minimum,maximum],'effective_score_range':list(selection_range(minimum,maximum)),
-                'platform_candidate_counts':{p:sum(row['platform']==p for row in items) for p in verified_platforms(service.accounts)},
-                'platform_weights':service.platform_weights(items,service.recent_platforms()),
-                'notice':'仅预览当前缓存与登录证据，非全库总数；不调用 AI、不检测登录、不锁定候选'}
+        return preview_draw(request)
+
+    @app.post('/api/hermes/candidates/preview')
+    def preview_exact_request(request:Draw):
+        return preview_draw(request)
 
     @app.get('/api/hermes/problem-memory')
     def memory(after:str|None=Query(default=None,max_length=200),limit:int=Query(default=500,ge=1,le=1000),
