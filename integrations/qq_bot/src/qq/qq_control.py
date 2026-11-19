@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import httpx
 import yaml
+import server_admin
 from qq_owner_policy import owner_overlay
 from nonebot import logger
 from nonebot_plugin_hermes.core.hermes_client import ChatResult, hermes_client
@@ -22,9 +23,9 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / 'control.sqlite3'
 WORKER = Path.home()/'.local/share/hermes-content/content_worker.py'
 OWNER_ID = '__QQ_OWNER__'
-ADMIN_ONLY = {'personality','model','tools','status','hermes-status','usage','context','accounts','balance','search','dm'}
-COMMAND_NAMES = ('help', '帮助', 'commands', 'clear', 'new', 'reset', 'personality', 'characters', 'ping', 'status', 'hermes-status', 'model', 'tools', 'usage', 'context', 'balance', 'accounts', 'search', 'dm', 'roll', 'submit', 'giveup', 'solution', 'practice', 'problem', 'sample', 'progress', 'cancel', 'tasks', 'candidates')
-HELP = 'QQ 可用命令（由本机直接处理）\n/help /帮助 /commands — 本帮助\n/new /reset /clear — 开始新对话，保留账号登录与个性设置\n/personality — 当前个性及可选列表\n/personality concise — 切换为简洁风格并开新对话\n/personality none — 关闭本聊天的个性叠加并开新对话\n/characters [关键词] — 查看或搜索人设库\n/ping — 检查连接\n/status — 当前连接、模型、个性和会话状态\n/hermes-status — 原 QQ 插件内部状态\n/model — 查看模型（目前只读）\n/tools — 查看此 QQ 通道启用的工具集\n/usage /context — 当前会话消息和用量统计\n/balance — DeepSeek API 余额\n/accounts — QQ、微信、B站、小黑盒状态\n/search 关键词 — 联网搜索并附来源\n/dm qq|weixin|bilibili 接收者ID 正文 — 按明确对象与正文发私信\n/roll 分数 [题型] — 默认抽图片题面，例如 /roll 1200 贪心\n/problem [页码] — 图片翻页；/problem text [页码] 看文字\n/submit 思路及实现 — 对当前题目进行静态评估，不自动交 OJ\n/giveup — 放弃当前题目并查看思路\n/solution [页码] — 通过或放弃后按页查看思路\n/practice — 帮助；/practice ready 检查；/practice stop-all 管理员急停账号全部抽题\n\n/sample [组数] — 原题样例\n/progress — 当前抽题进度、停止清理状态\n/cancel — 发起人或管理员停止当前题目的生成\n/tasks [页码] — 本聊天抽题任务记录\n/candidates 分数 [题型] — 免费预览缓存候选\n其余功能用自然语言。未接入的斜杠命令会明确提示，不交给模型执行。\n以上是 QQ 入口命令；不代表终端或微信的命令清单。'
+ADMIN_ONLY = {'personality','model','tools','status','hermes-status','usage','context','accounts','balance','search','dm','server'}
+COMMAND_NAMES = ('help', '帮助', 'commands', 'clear', 'new', 'reset', 'personality', 'characters', 'ping', 'status', 'hermes-status', 'model', 'tools', 'usage', 'context', 'balance', 'accounts', 'search', 'dm', 'server', 'roll', 'submit', 'giveup', 'solution', 'practice', 'problem', 'sample', 'progress', 'cancel', 'tasks', 'candidates')
+HELP = 'QQ 可用命令（由本机直接处理）\n/help /帮助 /commands — 本帮助\n/new /reset /clear — 开始新对话，保留账号登录与个性设置\n/personality — 当前个性及可选列表\n/personality concise — 切换为简洁风格并开新对话\n/personality none — 关闭本聊天的个性叠加并开新对话\n/characters [关键词] — 查看或搜索人设库\n/ping — 检查连接\n/server — 管理员私聊服务器维护\n/status — 当前连接、模型、个性和会话状态\n/hermes-status — 原 QQ 插件内部状态\n/model — 查看模型（目前只读）\n/tools — 查看此 QQ 通道启用的工具集\n/usage /context — 当前会话消息和用量统计\n/balance — DeepSeek API 余额\n/accounts — QQ、微信、B站、小黑盒状态\n/search 关键词 — 联网搜索并附来源\n/dm qq|weixin|bilibili 接收者ID 正文 — 按明确对象与正文发私信\n/roll 分数 [题型] — 默认抽图片题面，例如 /roll 1200 贪心\n/problem [页码] — 图片翻页；/problem text [页码] 看文字\n/submit 思路及实现 — 对当前题目进行静态评估，不自动交 OJ\n/giveup — 放弃当前题目并查看思路\n/solution [页码] — 通过或放弃后按页查看思路\n/practice — 帮助；/practice ready 检查；/practice stop-all 管理员急停账号全部抽题\n\n/sample [组数] — 原题样例\n/progress — 当前抽题进度、停止清理状态\n/cancel — 发起人或管理员停止当前题目的生成\n/tasks [页码] — 本聊天抽题任务记录\n/candidates 分数 [题型] — 免费预览缓存候选\n其余功能用自然语言。未接入的斜杠命令会明确提示，不交给模型执行。\n以上是 QQ 入口命令；不代表终端或微信的命令清单。'
 CAPABILITY_PROMPT = ('\n\nQQ 入口已验证的本地控制命令：'+', '.join('/'+n for n in COMMAND_NAMES)+
     '。只推荐这个清单里的斜杠命令，不要把 Hermes 终端或其他平台命令当作 QQ 已接入功能。'
     '/reset、/new 和 /clear 都开新对话；/personality 只影响本 QQ 聊天。'
@@ -161,6 +162,10 @@ async def handle(text, args, request_id=None):
     argument = argument.strip()
     if name in ADMIN_ONLY and str(args.get('user_id')) != OWNER_ID:
         return '这个命令只有管理员能用，咱们正常聊天就行喵。'
+    if name == 'server':
+        if args.get('adapter_name') != 'onebotv11' or args.get('is_private') is not True or args.get('group_id'):
+            return '服务器维护仅供管理员 QQ 私聊使用。'
+        return await asyncio.to_thread(server_admin.reply, argument)
     if name == 'search':
         if not argument:return '用法：/search 关键词或问题'
         from nonebot_plugin_hermes.core.prompt_builder import build_passive_system_prompt

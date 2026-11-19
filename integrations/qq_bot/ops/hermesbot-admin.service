@@ -1,0 +1,18 @@
+[Unit]
+Description=Restricted Hermes BOT server maintenance broker
+
+[Service]
+User=root
+Group=hermesbot
+RuntimeDirectory=hermesbot-admin
+RuntimeDirectoryMode=0750
+UMask=0077
+ExecStart=/usr/bin/python3 -I /usr/local/lib/hermesbot/server_admin.py
+Restart=on-failure
+RestartSec=3
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

@@ -1,3 +1,5 @@
 name: owner-guard
 version: 1.1.0
 description: Restrict privileged tools to the owner's QQ account on the onebotv11 bridge; other senders get read-only chat tools.
+provides_tools:
+  - server_admin_query
