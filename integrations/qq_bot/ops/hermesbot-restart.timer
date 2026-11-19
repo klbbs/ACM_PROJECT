@@ -1,0 +1,8 @@
+[Unit]
+Description=Delay the Hermes BOT restart so the current reply can finish
+
+[Timer]
+OnActiveSec=15s
+AccuracySec=1s
+RemainAfterElapse=no
+Unit=hermesbot-restart.service

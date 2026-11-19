@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart Hermes gateway and QQ message bridge
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --no-ask-password restart hermesbot-gateway.service hermesbot-nonebot.service
+TimeoutStartSec=160

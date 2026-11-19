@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+/usr/bin/systemctl --no-ask-password start hermesbot-restart.timer
+printf '%s\n' 'Hermes BOT restart scheduled. QQ login transport stays up.'

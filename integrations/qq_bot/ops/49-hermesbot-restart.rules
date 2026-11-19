@@ -1,0 +1,8 @@
+polkit.addRule(function (action, subject) {
+    if (subject.user === "kendas" &&
+        action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") === "hermesbot-restart.timer" &&
+        action.lookup("verb") === "start") {
+        return polkit.Result.YES;
+    }
+});
