@@ -303,6 +303,9 @@ class Game:
             return Reply(f'[{rid[:8]}] 解法：{text}\n想看细节可以继续问。')
     def problem(self,row,page=1,*,text=False):
         result=json.loads(row.get('result') or '{}')
+        estimate = result.get('difficulty_estimate')
+        display = estimate.get('display_text') if isinstance(estimate, dict) else None
+        score_line = display.strip() + '\n' if page == 1 and isinstance(display, str) and display.strip() else ''
         if not text and result.get('_images'):
             paths=result['_images']
             image_page=page-1
@@ -310,16 +313,16 @@ class Game:
             path=Path(paths[image_page])
             expected=self.store.root/'images'/row['id']
             if result.get('_cached_until',0)>time.time() and path.is_file() and path.parent.resolve()==expected.resolve() and not path.is_symlink():
-                return Reply(f'[{row["id"][:8]} 题面图片 {page}/{len(paths)}]\n'+
+                return Reply(f'[{row["id"][:8]} 题面图片 {page}/{len(paths)}]\n'+score_line+
                     (f'下一页：/problem {page+1}\n' if page<len(paths) else '')+
                     '/submit 思路及关键实现 · /sample [组数] · /giveup\n30 分钟未提交自动放弃，每次 /submit 重新计时。', [str(path)])
             return Reply('题面图片已过期，作答与报告仍保留；/problem text 看文字，/sample 看样例，不会重新收费生成。')
         if not text and result.get('format')=='image':
             return Reply(result.get('_image_notice') or '图片暂不可用；/problem text 看文字，/sample 看样例，不会重新收费生成。')
-        try:pages=problem_pages(json.loads(row.get('result') or '{}'))
+        try:pages=problem_pages(result)
         except (ValueError,TypeError):return Reply('本题中文说明暂不可读；原作答记录保留，可 /submit 或 /giveup。')
         if not 1<=page<=len(pages):return Reply('题面页码范围：1～'+str(len(pages)))
-        return Reply(f'[{row["id"][:8]} 题面 {page}/{len(pages)}]\n'+pages[page-1]+
+        return Reply(f'[{row["id"][:8]} 题面 {page}/{len(pages)}]\n'+score_line+pages[page-1]+
             (f'\n下一页：/problem text {page+1}' if page<len(pages) else '')+
             '\n/submit 思路及关键实现 · /sample 看一组样例 · /giveup 查看思路\n30 分钟未提交自动放弃，每次 /submit 重新计时。')
     async def cancel_draw(self,row):

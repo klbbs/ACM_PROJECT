@@ -36,7 +36,7 @@
   "src/qq/practice_backend.py": "734d05b85950d90cf0829ae44706c8f3f5a34686247431ca124947adce5a9faa",
   "src/qq/practice_commands.py": "4868c61bc9db73c3448ddf75c4455d10fdfa78dad64b328b3b8f301d9416e224",
   "src/qq/practice_completion.py": "758ec21312d3a62855d5ce92a58bb0e4779d1074d53531f18c35a1d980918681",
-  "src/qq/practice_core.py": "ccc3305b039700c48beda6ac2bf08affb9ff7392d35fb62c8bccfda5df92341e",
+  "src/qq/practice_core.py": "96f406e163f90cc6fe0d89c36abc109e8bd3213a33a966ba589fd30b1f5cf547",
   "src/qq/practice_memory.py": "c787dd89292359c7d2d80b2187fd3f719c6ad589b8dac42b825c908448370ca0",
   "src/qq/practice_providers.py": "c8fb038fdfed7a74ea24e380a08c3acf9e7edd70e7fe91264b675025fc7f071b",
   "src/qq/practice_receipts.py": "3e80660e628303d7f2e22faefac2cea8f6a21cf401bc1450c77ce340302c1d6e",
