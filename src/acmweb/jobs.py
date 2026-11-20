@@ -92,6 +92,7 @@ class Jobs:
             emit_event(self.event_log, 'job.' + status, level=level,
                        job_id=job_id, kind=previous['kind'], job_status=status,
                        **({'reason': reason} if (reason := known_failure_reason(error)) else {}))
+        return status
 
     async def _run(self,job_id,kind,payload):
         self.update(job_id,"running")
@@ -175,7 +176,10 @@ class Jobs:
                 self.update(job_id,"completed",result)
             elif kind == 'hermes_draw':
                 result = await self.run_hermes(payload,job_id=job_id)
-                self.update(job_id, 'completed', result)
+                if self.update(job_id, 'completed', result) == 'completed':
+                    refill = getattr(self, 'hermes_refill', None)
+                    if refill is not None:
+                        refill.wake()
             elif kind.startswith("wb_"):
                 result=await self.run_workbench(kind,payload)
                 self.update(job_id,"completed",result)

@@ -47,6 +47,21 @@ def test_sdk_does_not_retry_paid_request_on_transport_failure():
     assert len(calls)==1
 
 
+def test_sdk_configures_and_reads_inventory_without_drawing():
+    calls = []
+    def respond(request):
+        assert request.url.path == '/api/hermes/buff'
+        calls.append((request.method, json.loads(request.content) if request.content else None))
+        return httpx.Response(200, json={'segments': []})
+    with httpx.Client(base_url='https://acm.example', transport=httpx.MockTransport(respond)) as client:
+        sdk = HermesClient(client)
+        sdk.configure_buffer((1800, 1800), topic='dp', target=3)
+        assert sdk.buffer_status()['segments'] == []
+        sdk.configure_buffer((1800, 1800), topic='dp', target=0)
+    assert calls == [('POST', {'score_range': [1800, 1800], 'topic': 'dp', 'target': 3}),
+                     ('GET', None), ('POST', {'score_range': [1800, 1800], 'topic': 'dp', 'target': 0})]
+
+
 def test_sdk_legacy_download_does_not_follow_screenshot_urls(tmp_path):
     with httpx.Client(base_url='https://acm.example',transport=httpx.MockTransport(
             lambda request: pytest.fail('Text download must not send any request'))) as session:

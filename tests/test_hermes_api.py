@@ -1078,6 +1078,57 @@ def test_platform_sampling_is_not_proportional_to_candidate_count(monkeypatch):
     assert Hermes.platform_weights(pool,[])=={'atcoder':1000,'codeforces':1000}
 
 
+def test_draw_uses_matching_review_history_without_excluding_platform(client, monkeypatch):
+    c, s, fake = client
+    other = add_second_platform(s, monkeypatch)
+    monkeypatch.setattr(s, 'recent_platforms', lambda: ['codeforces'] * 6 + ['atcoder'] * 2)
+    monkeypatch.setattr('acmhermes.service.secrets.randbelow', lambda total: total // 2)
+    request = Draw(score_range=(800, 1200))
+    context = s.review_context(request)
+    for number in range(12):
+        problem = f'atcoder:abc{number + 200}_d'
+        s.reviews.save(problem, 'other-statement', context, {
+            'problem_id': problem, 'reason': '隔离环境难度复核', 'suitable': True,
+            'difficulty_assessment': {**ASSESSMENT, 'rating': 700.0},
+        })
+    different_context = s.review_context(Draw(score_range=(900, 1200)))
+    assert s.reviews.recent_outcomes(different_context, 900, 1200) == {}
+    preview = c.get('/api/hermes/candidates?minimum=800&maximum=1200').json()
+    assert {item['id'] for item in preview['items']} == {PID, other}
+    assert 0 < preview['platform_weights']['atcoder'] < preview['platform_weights']['codeforces']
+    fake.side_effect = generic_complete
+    job = wait(c, start(c))
+    assert job['status'] == 'completed', job
+    assert job['result']['problem']['id'] == PID
+    assert s.reviews.progress(job['id'])['ai_review_calls'] == 1
+
+
+def test_roll_updates_platform_odds_with_first_rejected_review(client, monkeypatch):
+    c, s, fake = client
+    first = add_second_platform(s, monkeypatch)
+    second = 'atcoder:abc401_a'
+    with s.db.connect() as db:
+        metadata = json.loads(db.execute('SELECT data FROM problem_catalog WHERE id=?', (first,)).fetchone()[0])
+        metadata.update(id=second, problem_id='abc401_a')
+        db.execute('INSERT INTO problem_catalog VALUES(?,?,?)', ('atcoder', second, json.dumps(metadata)))
+        statement = {**STATEMENT, 'id': second, 'url': 'https://atcoder.jp/contests/abc401/tasks/abc401_a'}
+        db.execute('INSERT INTO wb_problems VALUES(?,?,?)', (second, json.dumps(statement), int(time.time())))
+    monkeypatch.setattr(s, 'recent_platforms', lambda: ['codeforces'] * 6 + ['atcoder'] * 2)
+    monkeypatch.setattr('acmhermes.service.secrets.randbelow', lambda total: total * 55 // 100)
+    async def complete(task, provider, model, data, schema):
+        result = await generic_complete(task, provider, model, data, schema)
+        if task == 'hermes_selection' and result.data['problem_id'].startswith('atcoder:'):
+            result.data['difficulty_assessment']['rating'] = 700.0
+        return result
+    fake.side_effect = complete
+    job = wait(c, start(c))
+    assert job['status'] == 'completed', job
+    assert job['result']['problem']['id'] == PID
+    reviews = s.reviews.progress(job['id'])['reviews']
+    assert [r['decision'] for r in reviews] == ['below_minimum', 'accepted']
+    assert reviews[0]['problem_id'] in {first, second}
+
+
 def test_target_neighbourhood_is_used_for_preview_report_and_result(client):
     c,s,fake=client
     original=fake.side_effect

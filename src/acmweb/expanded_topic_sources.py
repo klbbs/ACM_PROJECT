@@ -22,13 +22,14 @@ from bs4 import BeautifulSoup
 from ojcrawler.models import CrawlError
 
 from .codex_bridge import AIError
-from .problem_sources import normalize, source_url
+from .problem_sources import atcoder_contest, normalize, source_url
 from .catalog_briefs import brief_statistics, NOWCODER_STATISTICS
 
 ATCODER_ORIGIN = 'https://atcoder.jp'
 ATCODER_ARCHIVE = ATCODER_ORIGIN + '/contests/archive'
 KENKOO_PROBLEMS = 'https://kenkoooo.com/atcoder/resources/problems.json'
 KENKOO_CONTESTS = 'https://kenkoooo.com/atcoder/resources/contests.json'
+KENKOO_MEMBERSHIPS = 'https://kenkoooo.com/atcoder/resources/contest-problem.json'
 KENKOO_MODELS = 'https://kenkoooo.com/atcoder/resources/problem-models.json'
 NOWCODER_LIST = 'https://ac.nowcoder.com/acm/problem/list'
 
@@ -249,6 +250,30 @@ def _parse_archive(html):
     return dates
 
 
+def _resolve_adt_reprints(client, rows):
+    """The task index can select an ADT reprint as the listing for an old task."""
+    reprints = {row['problem_id']: row for row in rows if row['contest_id'].startswith('adt_')}
+    if not reprints:
+        return
+    memberships = _get_json(client, KENKOO_MEMBERSHIPS)
+    if not isinstance(memberships, list) or len(memberships) > 150_000:
+        raise _SourceError('incompatible AtCoder contest memberships')
+    for item in memberships:
+        if not isinstance(item, dict) or not isinstance(item.get('problem_id'), str):
+            continue
+        task = item['problem_id']
+        row = reprints.get(task)
+        if row is None:
+            continue
+        try:
+            origin = atcoder_contest(task)
+        except AIError:
+            continue
+        if item.get('contest_id') == origin:
+            row.update(contest_id=origin, url=f'{ATCODER_ORIGIN}/contests/{origin}/tasks/{task}')
+            del reprints[task]
+
+
 def _parse_models(data):
     if not isinstance(data, dict) or len(data) > 60_000:
         raise _SourceError('incompatible AtCoder difficulty index')
@@ -325,8 +350,14 @@ def discover_atcoder(client, topic=None):
         dates[contest_id] = stamp
         sources[contest_id] = 'atcoder.archive.time'
 
+    try:
+        _resolve_adt_reprints(client, rows)
+    except (CrawlError, AIError, _SourceError):
+        warnings.append('AtCoder 原赛题目映射暂不可用；重赛日期不能作为题目发布日期')
     for row in rows:
         contest_id = row['contest_id']
+        if contest_id.startswith('adt_'):
+            continue
         row['published_at'] = dates.get(contest_id)
         row['published_at_source'] = sources.get(contest_id) if row['published_at'] else None
 

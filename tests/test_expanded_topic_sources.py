@@ -124,6 +124,33 @@ def test_atcoder_full_public_index_keeps_honest_provenance():
     assert 'APG4b' not in json.dumps(result, ensure_ascii=False)
 
 
+def test_adt_reprint_never_rejuvenates_an_old_task_even_if_membership_is_unavailable():
+    from acmweb.catalog import _merge_catalog_metadata
+
+    rerun = 'adt_all_20260624_2'
+    routes = atcoder_routes([('abc242_e', rerun, 'Palindrome')],
+                            [{'id': 'abc242', 'start_epoch_second': 1646481600},
+                             {'id': rerun, 'start_epoch_second': 1782291600}])
+    membership = ((sources.KENKOO_MEMBERSHIPS, {}), json.dumps([
+        {'contest_id': rerun, 'problem_id': 'abc242_e'},
+        {'contest_id': 'abc242', 'problem_id': 'abc242_e'}]))
+    correct, = sources.discover_atcoder(FakeClient(routes + [membership]))['items']
+    assert (correct['contest_id'], correct['published_at']) == ('abc242', 1646481600)
+    assert correct['url'].endswith('/abc242/tasks/abc242_e')
+
+    unavailable = ((sources.KENKOO_MEMBERSHIPS, {}), CrawlError('unavailable'))
+    unresolved, = sources.discover_atcoder(FakeClient(routes + [unavailable]))['items']
+    assert unresolved['published_at'] is None
+    legacy = {**unresolved, 'published_at': 1782291600, 'published_at_source': 'atcoder.archive.time',
+              'submission_statistics': {'contest_id': rerun}}
+    assert _merge_catalog_metadata('atcoder', legacy, unresolved)['published_at'] is None
+    repaired = _merge_catalog_metadata('atcoder', legacy, correct)
+    assert repaired['published_at'] == correct['published_at']
+    assert 'submission_statistics' not in repaired
+    retained = _merge_catalog_metadata('atcoder', repaired, unresolved)
+    assert (retained['contest_id'], retained['published_at']) == ('abc242', 1646481600)
+
+
 def test_atcoder_archive_and_contest_failures_retain_candidates():
     """A broken date/difficulty source must not discard the public index."""
     client = FakeClient([

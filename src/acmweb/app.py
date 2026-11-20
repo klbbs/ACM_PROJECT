@@ -116,6 +116,8 @@ def create_app(settings=None):
             from .startup_diagnostics import report_single
             emit_event(event_log, 'service.started', mode='single')
             report_single(app)
+        if hasattr(app.state, 'hermes'):
+            app.state.hermes.refill.start()
         try:
             yield
         finally:
@@ -123,6 +125,8 @@ def create_app(settings=None):
             app.state.nowcoder_qr.close()
             await app.state.browser_login.aclose()
             await app.state.credential_checks.close()
+            if hasattr(app.state, 'hermes'):
+                await app.state.hermes.refill.close()
             await jobs.close()
             if hasattr(app.state, 'hermes'):
                 app.state.hermes.close()

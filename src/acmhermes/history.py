@@ -129,9 +129,16 @@ def synchronize(database,accounts,stop):
 
 async def sync_history(database,accounts):
     stop=threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(synchronize,database,accounts,stop))
     try:
-        return await asyncio.to_thread(synchronize,database,accounts,stop)
-    finally:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
         # asyncio cannot kill an in-flight requests call. The thread checks
         # before/after each request, before persisting, and between accounts.
+        # Wait for it to release the data lock before the foreground can run.
         stop.set()
+        try:
+            await worker
+        except (Stopped, Exception):
+            pass
+        raise

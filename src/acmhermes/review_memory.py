@@ -91,6 +91,29 @@ class ReviewMemory:
             except (AIError,ValueError,TypeError): continue
         return result
 
+    def recent_outcomes(self, context, low, high):
+        """Recent definite reviews inform platform sampling for the same request."""
+        with self.db.connect() as c:
+            rows = c.execute('''SELECT problem_id,data FROM hermes_candidate_reviews
+                WHERE context_hash=? AND updated_at>=?
+                ORDER BY updated_at DESC, rowid DESC LIMIT 96''',
+                (context, int(time.time()) - 30 * 86400)).fetchall()
+        outcomes = {}
+        seen = set()
+        for row in rows:
+            problem_id = row['problem_id']
+            if problem_id in seen:
+                continue
+            seen.add(problem_id)
+            try:
+                choice = AssessedChoice.model_validate_json(row['data'])
+            except ValueError:
+                continue
+            verdict = decision(choice.difficulty_assessment.model_dump(), low, high)
+            if verdict != 'undetermined':
+                outcomes[problem_id] = verdict == 'accepted' and choice.suitable
+        return outcomes
+
     def progress(self, jid, value=None):
         if jid is None: return {}
         with self.db.connect() as c:

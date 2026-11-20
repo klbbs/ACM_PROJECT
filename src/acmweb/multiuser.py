@@ -78,12 +78,13 @@ class Workspaces:
         self.process_slots = asyncio.Semaphore(4)
         self.verified_connection = None
 
-    def budget(self):
+    def budget(self, *, reserve=0):
         count = sum(not task.done() for app, _ in self.apps.values() for _,task in app.state.jobs.tasks.values())
         count += sum(bool(getattr(app.state.daily, 'active_ai', False)) for app, _ in self.apps.values())
         count += sum(bool(getattr(getattr(app.state, name, None), 'active_ai', False))
                      for app, _ in self.apps.values() for name in ('specialist_training', 'training_assessment'))
-        if count >= 4:
+        count += sum(app.state.hermes.refill.running for app, _ in self.apps.values() if hasattr(app.state, 'hermes'))
+        if count >= 4 - reserve:
             from .codex_bridge import AIError
             raise AIError('服务器任务已满，请稍后重试')
 
@@ -109,6 +110,8 @@ class Workspaces:
                 # from any upload payload sent by the browser.
                 app.state.translations.owner = uid
                 app.state.jobs.guard = self.budget
+                if hasattr(app.state, 'hermes'):
+                    app.state.hermes.preparation_guard = lambda: self.budget(reserve=1)
                 app.state.daily.guard = self.budget
                 app.state.specialist_training.guard = self.budget
                 app.state.training_assessment.guard = self.budget
@@ -260,7 +263,7 @@ def create_multi_app(settings, factory):
                                 raise
                             raise HTTPException(429, 'ACM Lab 的平台只读查询过于频繁，请按提示等待后重试',
                                                 headers=exc.headers) from None
-                    elif user and (path in {'/api/hermes/draw','/api/hermes/draw/image'} or (path.startswith('/api/training/plans') and request.method == 'POST') or (path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/problem-submissions/') or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings','/code-templates')) or path.startswith('/api/remote-submissions') and not path.endswith('/dismiss') or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/training/catalog/refresh','/api/training/method-check','/api/ai/login','/api/ai/test','/api/daily/roll'}):
+                    elif user and (path in {'/api/hermes/draw','/api/hermes/draw/image','/api/hermes/buff'} or (path.startswith('/api/training/plans') and request.method == 'POST') or (path.startswith('/api/platforms/') and path.endswith('/collect')) or path.startswith('/api/problem-submissions/') or path.startswith('/api/workbench/') and not path.endswith(('/draft','/snapshot','/editor-settings','/coach-settings','/layout-settings','/code-templates')) or path.startswith('/api/remote-submissions') and not path.endswith('/dismiss') or path.startswith('/api/social/duels/') and path.endswith(('/action','/check')) or path in {'/api/accounts/check','/api/crawl','/api/analysis','/api/recommend','/api/catalog/refresh','/api/training/catalog/refresh','/api/training/method-check','/api/ai/login','/api/ai/test','/api/daily/roll'}):
                         identities.limit('cost:'+user['id'],6,60)
                 response = await call_next(request)
             else:

@@ -30,6 +30,16 @@ class HermesClient:
     def draw_image(self,score_range,topic=None,*,request_key,exclude_ids=None,memory_path=None):
         return self._draw('/api/hermes/draw/image',score_range,topic,request_key,exclude_ids,memory_path)
 
+    def buffer_status(self):
+        """Read inventory for this workspace without starting preparation."""
+        return self._json('GET', '/api/hermes/buff')
+
+    def configure_buffer(self, score_range, *, topic=None, target=2):
+        """Maintain this many prepared reports for an exact range and topic."""
+        from .models import Draw
+        body = Draw(score_range=score_range, topic=topic).model_dump(exclude={'exclude_ids'}, exclude_none=True)
+        return self._json('POST', '/api/hermes/buff', json={**body, 'target': target})
+
     def shared_reports(self, problem_id):
         """Metadata only, no solution spoilers or paid generation."""
         return self._json('GET','/api/problem-reports',params={'problem_id':problem_id})

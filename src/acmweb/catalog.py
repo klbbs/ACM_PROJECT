@@ -339,6 +339,16 @@ def _official_tags_source(platform, row):
 
 
 def _merge_catalog_metadata(platform, previous, row):
+    if platform == 'atcoder':
+        # Previously the public index's ADT listing supplied the rerun date.
+        # Discard that date even if it came from the official archive.
+        if str(previous.get('contest_id', '')).startswith('adt_'):
+            previous = {**previous, 'published_at': None, 'published_at_source': None}
+            previous.pop('publication_note', None)
+        if str(row.get('contest_id', '')).startswith('adt_') and previous.get('contest_id') and not str(previous['contest_id']).startswith('adt_'):
+            # A failed membership refresh must preserve the known original.
+            row = {k: v for k, v in row.items() if k not in
+                   ('contest_id', 'url', 'publication_note', 'published_at', 'published_at_source')}
     merged = ({**previous, **{key: value for key, value in row.items() if value is not None}}
               if previous else dict(row))
     old_tags, new_tags = previous.get('tags', []), row.get('tags', [])
@@ -372,6 +382,10 @@ def _merge_catalog_metadata(platform, previous, row):
     if (old_official and not new_official) or not row.get('published_at') and previous.get('published_at'):
         for key in ('published_at', 'published_at_source', 'publication_note'):
             if key in previous: merged[key] = previous[key]
+    if platform == 'atcoder':
+        stat = merged.get('submission_statistics')
+        if isinstance(stat, dict) and stat.get('contest_id') and stat['contest_id'] != merged.get('contest_id'):
+            merged.pop('submission_statistics')
     return merged
 
 
@@ -710,14 +724,19 @@ def _attempt_exclusions(db, allow_attempted):
     return result
 
 
+def _selection_exclusions(db, allow_attempted=False):
+    submission_query = "SELECT DISTINCT platform,problem_id FROM submissions" + (" WHERE verdict='AC'" if allow_attempted else '')
+    excluded = {_canonical(row[0], row[1]) for row in db.execute(submission_query)}
+    excluded.update(_canonical(row[0], row[1]) for row in db.execute("SELECT platform,problem_id FROM practice_feedback WHERE status IN ('done','skip')"))
+    excluded.update(_attempt_exclusions(db, allow_attempted))
+    return excluded
+
+
 def _pool(database, platform, include_excluded=False, allow_attempted=False):
     with database.connect() as db:
         rows = db.execute('SELECT data FROM problem_catalog WHERE platform=?', (platform,)).fetchall()
         cached = db.execute('SELECT data FROM wb_problems WHERE id LIKE ?', (platform + ':%',)).fetchall()
-        submission_query = "SELECT DISTINCT platform,problem_id FROM submissions" + (" WHERE verdict='AC'" if allow_attempted else '')
-        excluded = {_canonical(row[0], row[1]) for row in db.execute(submission_query)}
-        excluded.update(_canonical(row[0], row[1]) for row in db.execute("SELECT platform,problem_id FROM practice_feedback WHERE status IN ('done','skip')"))
-        excluded.update(_attempt_exclusions(db, allow_attempted))
+        excluded = _selection_exclusions(db, allow_attempted)
     excluded.update(_canonical_ids(database.get('battle_problem_ids', [])))
     merged = {}
     for row in rows:
