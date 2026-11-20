@@ -13,9 +13,9 @@ def display_estimate(problem, assessment):
     evidence = problem['score_evidence']
     components = []
 
-    def include(key, label, rating, source):
+    def include(key, label, rating, source, **details):
         components.append({'key': key, 'label': label, 'rating': rating,
-                           'weight': WEIGHTS[key], 'source': source})
+                           'weight': WEIGHTS[key], 'source': source, **details})
 
     include('final_ai_report', 'AI 报告', assessment['rating'], 'report.difficulty_assessment')
     if problem.get('platform') == 'codeforces':
@@ -27,7 +27,11 @@ def display_estimate(problem, assessment):
                 and stats.get('complete') is True and raw.get('participant_unit') in {'person', 'team'}
                 and problem['id'] == f"codeforces:{stats.get('contest_id')}-{stats.get('problem_index')}"
                 and raw.get('source')):
-            include('contest_statistics', '比赛统计', evidence['empirical_rating'], raw['source'])
+            include('contest_statistics', '比赛通过率折算', evidence['empirical_rating'], raw['source'],
+                    accepted_participants=raw['accepted_participants'], participants=raw['participants'],
+                    participant_unit=raw['participant_unit'], denominator='all_contest_participants',
+                    contest_id=stats['contest_id'], problem_index=stats['problem_index'],
+                    observed_at=raw['observed_at'])
         if evidence.get('official_rating') is not None:
             include('cf_official', 'CF 官方', evidence['official_rating'], CF_RATING_SOURCE)
 

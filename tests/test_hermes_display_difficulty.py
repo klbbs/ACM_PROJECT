@@ -24,6 +24,10 @@ def test_published_components_reproduce_final_score_without_counting_prefilter_a
     assert result['components'][1]['source'] == problem['score_evidence']['evidence']['source']
     expected = (Decimal('1800.5') * 100 + Decimal(str(empirical)) * 55 + official * 45) / 200
     assert result['rating'] == int(expected.to_integral_value(rounding=ROUND_HALF_UP))
+    sample = result['components'][1]
+    assert '比赛通过率折算' in result['display_text']
+    assert (sample['accepted_participants'], sample['participants'], sample['participant_unit'],
+            sample['denominator']) == (80, 500, 'person', 'all_contest_participants')
     assert result['weight_sum'] == 200
     assert str(empirical) in result['display_text']
 
