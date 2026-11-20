@@ -46,6 +46,7 @@ def test_warming_creates_no_draw_and_committed_delivery_refills(client, monkeypa
     assert job['status'] == 'completed', job
     assert job['result']['problem']['id'] == PID
     assert job['result']['selection_strategy'] == 'hermes_prepared_pool'
+    assert job['result']['difficulty_estimate']['display_text'].startswith('预估难度 ')
     assert job['selection_progress']['ai_review_calls'] == 0
     assert job['selection_progress']['report_attempts'] == 0
     assert job['delivery']['state'] == 'pending'

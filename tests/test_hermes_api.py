@@ -105,6 +105,8 @@ def test_full_text_pipeline_and_idempotency(client):
     assert explanation['original_url']==STATEMENT['url']
     assert explanation['problem_id']==PID and explanation['language']=='zh-CN'
     assert job['result']['format']=='text'
+    from acmhermes.client import HermesClient
+    assert job['result']['difficulty_estimate']['display_text'] in HermesClient.explain(job)
     assert not {'screenshots','artifact_id','expires_at','translation_provenance'} & job['result'].keys()
     count=fake.await_count
     assert c.get('/api/hermes/draws/'+job['id']).status_code==200
@@ -477,6 +479,7 @@ def test_image_interface_uses_same_question_and_report_with_private_expiring_png
     assert job['status']=='completed',job
     result=job['result']
     assert result['format']=='image' and result['report']==REPORT
+    assert result['difficulty_estimate']['display_text'] in renderer.render.await_args.args[0]['body_html']
     assert result['problem_explanation']['description']==EXPLANATION['description']
     assert [call.args[0] for call in fake.await_args_list]==['hermes_selection','hermes_solution_report']
     renderer.preflight.assert_awaited_once()
@@ -940,7 +943,9 @@ def test_delivery_stream_repeats_saved_result_until_explicit_receipt(client,monk
     assert len(results)==3 and events[-1]['type']=='pending'
     assert len({e['result_json'] for e in results})==1
     assert len({e['delivery_id'] for e in results})==1
-    assert json.loads(results[0]['result_json'])['report']==job['result']['report']
+    received = json.loads(results[0]['result_json'])
+    assert received['report']==job['result']['report']
+    assert received['difficulty_estimate'] == job['result']['difficulty_estimate']
     payload={k:results[0][k] for k in ('delivery_id','result_sha256')};payload['received']=True
     receipt=c.post(f'/api/hermes/draws/{jid}/delivery/ack',json=payload).json()
     assert receipt['state']=='acknowledged'

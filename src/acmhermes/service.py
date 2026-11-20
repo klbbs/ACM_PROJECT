@@ -26,6 +26,7 @@ from .models import AssessedChoice, ControlRequest, Draw, SolutionReport, candid
 from .rating_review import metadata_matches, decision as rating_decision
 from .control import TaskControl
 from .difficulty import score_candidate, selection_range
+from .display_difficulty import POLICY as DISPLAY_POLICY, WEIGHTS as DISPLAY_WEIGHTS, display_estimate
 from .base_filter import score as base_score, VERSION as BASE_FILTER_VERSION
 from .review_memory import ReviewMemory, context_hash
 from .prepared_pool import MAX_TARGET as BUFF_MAX_TARGET, PreparedPool, PreparedRefill
@@ -209,10 +210,10 @@ class Hermes:
                                       score_range=request.score_range)
 
     @staticmethod
-    def image_statement(explanation):
+    def image_statement(explanation, difficulty_text=None):
         # Render the same AI question explanation as the text endpoint, not the
         # full solution report and not another paid full-page translation.
-        parts=[]
+        parts=['<p>'+html.escape(difficulty_text)+'</p>'] if difficulty_text else []
         for title,key in (('题目要你做什么','description'),('输入','input_format'),('输出','output_format')):
             parts.append('<h2>'+title+'</h2><p>'+html.escape(explanation[key]).replace('\n','<br>')+'</p>')
         for title,key in (('约束','constraints'),('注意事项','notes')):
@@ -688,7 +689,8 @@ class Hermes:
             explanation.update(problem_id=choice.problem_id, language='zh-CN',
                 original_url=statement['url'], constraints=list(report['constraints']),
                 samples=[dict(sample) for sample in statement['samples']])
-            result={'format':output_format,'problem':candidate,'selection_reason':choice.reason,
+            estimate = display_estimate(candidate, full_report['difficulty_assessment'])
+            result={'format':output_format,'difficulty_estimate':estimate,'problem':candidate,'selection_reason':choice.reason,
                     'problem_explanation':explanation,'report':report,'report_provenance':response.provenance,
                     'report_references':[{key:reference[key] for key in ('problem_id','kind','title','url','limitations') if key in reference} for reference in references],
                     'history_sync':history,'catalog_sync':catalog,'contest_evidence_sync':contest_evidence,
@@ -704,7 +706,7 @@ class Hermes:
                 artifacts.append(rid)
                 self.directory.mkdir(parents=True,mode=0o700,exist_ok=True)
                 try:
-                    files,_=await self.renderer().render(self.image_statement(explanation),self.directory/rid)
+                    files,_=await self.renderer().render(self.image_statement(explanation, estimate['display_text']),self.directory/rid)
                     guard()
                     self.timers[rid]=asyncio.get_running_loop().call_later(IMAGE_TTL,self.expire,rid)
                     result.update(artifact_id=rid,expires_at=int(time.time())+IMAGE_TTL,screenshots=files)
@@ -794,6 +796,8 @@ def register(app):
                     'max_report_attempts':MAX_REPORT_ATTEMPTS,'max_difficulty_reviews':MAX_DIFFICULTY_REVIEWS,
                     'minimum_ai_rating':'请求分数下限；单点1800要求AI评分不低于1800',
                     'notice':'先抽平台再抽题，近期重复平台降权；AI读完整题面独立评分，不达标仅换题；故障平台跳过，不放宽已做题和登录要求。'},
+                'display_difficulty_policy':{'policy':DISPLAY_POLICY,'weights':DISPLAY_WEIGHTS,'rounding':'half_up_integer',
+                    'field':'result.difficulty_estimate.display_text'},
                 'difficulty_policy':{'empirical_weight':0.55,'official_weight':0.45,'gym_priority_bonus':0.12,
                     'base_filter_version':BASE_FILTER_VERSION,
                     'single_target_tolerance':100,'rating_precision':'weighted_value_2_decimals',

@@ -336,7 +336,10 @@ class HermesClient:
                '', '输入：',problem['input_format'], '', '输出：',problem['output_format'],
                '', '约束：', *('- '+s for s in problem['constraints'])]
         assessment=result.get('ai_difficulty_assessment') or {}
-        if type(assessment.get('rating')) in (int,float):
+        display_text = (result.get('difficulty_estimate') or {}).get('display_text')
+        if display_text:
+            lines.insert(1, display_text)
+        elif type(assessment.get('rating')) in (int,float):
             lines.insert(1,'AI 推测评分：'+str(assessment['rating'])+'（非官方评级）')
         for i,sample in enumerate(problem.get('samples',[]),start=1):
             lines.extend(['',f'样例 {i} 输入：',sample['input'],f'样例 {i} 输出：',sample['output']])
