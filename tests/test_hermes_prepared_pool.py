@@ -265,3 +265,16 @@ def test_crashed_refill_lease_expires_with_candidate_claim(pool, monkeypatch):
     assert pool.reviews.claim(pid, 'replacement', 1200)
     assert not pool.stock(request, context(request), prepared(pid), 'hash', 'lost')
     pool.end_refill(request, 'replacement')
+
+
+def test_quota_limit_preserves_inventory_and_waits_before_refilling(pool, monkeypatch):
+    request = Draw(score_range=(1800, 1800))
+    monkeypatch.setattr(prepared_pool.time, 'time', lambda: 50_000)
+    pool.configure(request, 2)
+    assert stock(pool, request, problem(82))
+    assert pool.begin_refill(request, context(request), 'worker')
+    pool.end_refill(request, 'worker', failure_reason='ai_usage_limit')
+    state, = pool.status(context)
+    assert state['retry_at'] == 53_600
+    assert state['available'] == 1
+    assert not pool.begin_refill(request, context(request), 'immediate-retry')

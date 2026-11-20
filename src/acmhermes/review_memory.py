@@ -93,25 +93,34 @@ class ReviewMemory:
 
     def recent_outcomes(self, context, low, high):
         """Recent definite reviews inform platform sampling for the same request."""
+        from acmweb.codex_bridge import AIError
+        from acmweb.selection_reports import _statement_material
+
+        outcomes = {}
+        seen = set()
         with self.db.connect() as c:
-            rows = c.execute('''SELECT problem_id,data FROM hermes_candidate_reviews
+            rows = c.execute('''SELECT problem_id,statement_hash,data FROM hermes_candidate_reviews
                 WHERE context_hash=? AND updated_at>=?
                 ORDER BY updated_at DESC, rowid DESC LIMIT 96''',
                 (context, int(time.time()) - 30 * 86400)).fetchall()
-        outcomes = {}
-        seen = set()
-        for row in rows:
-            problem_id = row['problem_id']
-            if problem_id in seen:
-                continue
-            seen.add(problem_id)
-            try:
-                choice = AssessedChoice.model_validate_json(row['data'])
-            except ValueError:
-                continue
-            verdict = decision(choice.difficulty_assessment.model_dump(), low, high)
-            if verdict != 'undetermined':
-                outcomes[problem_id] = verdict == 'accepted' and choice.suitable
+            for row in rows:
+                problem_id = row['problem_id']
+                if problem_id in seen:
+                    continue
+                seen.add(problem_id)
+                try:
+                    choice = AssessedChoice.model_validate_json(row['data'])
+                    verdict = decision(choice.difficulty_assessment.model_dump(), low, high)
+                    if verdict == 'accepted' and choice.suitable:
+                        cached = c.execute('SELECT data FROM wb_problems WHERE id=?', (problem_id,)).fetchone()
+                        if cached is None or _statement_material(json.loads(cached['data']), problem_id)[1] != row['statement_hash']:
+                            continue
+                    elif verdict == 'accepted':
+                        verdict = 'topic_or_statement_mismatch'
+                except (AIError, TypeError, ValueError):
+                    continue
+                if verdict != 'undetermined':
+                    outcomes[problem_id] = verdict
         return outcomes
 
     def progress(self, jid, value=None):

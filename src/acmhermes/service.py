@@ -278,10 +278,10 @@ class Hermes:
     def platform_weights(pool, recent_platforms=(), outcomes=None):
         platforms = sorted({row['platform'] for row in pool})
         reviewed = {platform: [] for platform in platforms}
-        for problem_id, accepted in (outcomes or {}).items():
+        for problem_id, verdict in (outcomes or {}).items():
             platform = problem_id.partition(':')[0]
             if platform in reviewed:
-                reviewed[platform].append(accepted)
+                reviewed[platform].append(verdict == 'accepted')
         if not any(reviewed.values()):
             return {p:max(1, round(1000 / (1 + recent_platforms.count(p)) *
                                   (.5 if recent_platforms and recent_platforms[0] == p else 1)))
@@ -292,7 +292,44 @@ class Hermes:
                         * (1 - .04 * min(8, recent_platforms.count(p)))) for p in platforms}
 
     @staticmethod
-    def choose(pool, recent_platforms=(), outcomes=None):
+    def candidate_weights(pool, outcomes, score_range):
+        # The observed error direction changes odds inside the same window.
+        direction = 0
+        lower, upper = selection_range(*score_range) if score_range else (0, 0)
+        if outcomes and upper > lower:
+            prefix = pool[0]['platform'] + ':'
+            reviews = [verdict for pid, verdict in outcomes.items() if pid.startswith(prefix)]
+            easy = reviews.count('below_minimum')
+            hard = reviews.count('above_maximum')
+            direction = (easy - hard) / (1 + easy + hard + reviews.count('accepted'))
+        weights = []
+        reviewed = []
+        for row in pool:
+            evidence = row['score_evidence']
+            weight = 1000 * (1 + evidence.get('priority_score', 0))
+            if direction:
+                center = evidence.get('estimated_rating')
+                minimum, maximum = evidence.get('minimum'), evidence.get('maximum')
+                if center is None and minimum is not None and maximum is not None:
+                    center = (minimum + maximum) / 2
+                if center is not None:
+                    position = min(1, max(0, (center - lower) / (upper - lower)))
+                    weight *= 16 ** (direction * (position - .5))
+            weights.append(max(1, round(weight)))
+            if outcomes and outcomes.get(row['id']) == 'accepted':
+                reviewed.append(len(weights) - 1)
+        if reviewed:
+            # Keep reusable reviews competitive even in a large fresh pool.
+            # Fresh candidates retain their positive weights.
+            reviewed_weight = sum(weights[index] for index in reviewed)
+            fresh_weight = sum(weights) - reviewed_weight
+            factor = max(32, (4 * fresh_weight + reviewed_weight - 1) // reviewed_weight)
+            for index in reviewed:
+                weights[index] *= factor
+        return weights
+
+    @staticmethod
+    def choose(pool, recent_platforms=(), outcomes=None, score_range=None):
         # Integer OS randomness, positive weight for every eligible candidate.
         # Gym bonus affects probability only, never its estimated difficulty.
         platforms = sorted({row['platform'] for row in pool})
@@ -302,10 +339,11 @@ class Hermes:
             position = secrets.randbelow(sum(weights))
             for platform, weight in zip(platforms, weights):
                 if position < weight:
-                    candidate, _ = Hermes.choose([row for row in pool if row['platform'] == platform])
+                    candidate, _ = Hermes.choose([row for row in pool if row['platform'] == platform],
+                                                 outcomes=outcomes, score_range=score_range)
                     return candidate, 'system_platform_balanced_random_without_replacement'
                 position -= weight
-        weights = [max(1, round(1000 * (1 + row['score_evidence'].get('priority_score', 0)))) for row in pool]
+        weights = Hermes.candidate_weights(pool, outcomes, score_range)
         if len(set(weights)) == 1:
             return secrets.choice(pool), 'system_random_without_replacement'
         position = secrets.randbelow(sum(weights))
@@ -502,7 +540,7 @@ class Hermes:
                         'confidence':assessment['confidence'],'decision':'accepted','reused':True})
                     update_progress(selected_count=1,current_problem_id=choice.problem_id)
                     break
-                candidate, strategy = self.choose(pool, recent, outcomes)
+                candidate, strategy = self.choose(pool, recent, outcomes, request.score_range)
                 # Remove before every await, including cache/claim/network errors.
                 pool=[p for p in pool if p['id']!=candidate['id']]
                 if candidate['id'] in seen: continue
@@ -554,7 +592,7 @@ class Hermes:
                     decision = rating_decision(assessment, *request.score_range)
                     if decision=='accepted' and not choice.suitable: decision='topic_or_statement_mismatch'
                     if decision != 'undetermined':
-                        outcomes[candidate['id']] = decision == 'accepted'
+                        outcomes[candidate['id']] = decision
                     difficulty_reviews.append({'problem_id':candidate['id'],'assessment':assessment,'decision':decision,'reused':bool(cached_choice)})
                     progress['reviews'].append({'problem_id':candidate['id'],'rating':assessment['rating'],
                         'confidence':assessment['confidence'],'decision':decision,'reused':bool(cached_choice)})
@@ -609,7 +647,8 @@ class Hermes:
                 if final_decision == 'undetermined':
                     outcomes.pop(candidate['id'], None)
                 else:
-                    outcomes[candidate['id']] = final_decision == 'accepted' and report['suitable']
+                    outcomes[candidate['id']] = (final_decision if final_decision != 'accepted' or report['suitable']
+                                                 else 'topic_or_statement_mismatch')
                 progress['reviews'][-1].update(report_rating=report['difficulty_assessment']['rating'],
                     report_decision=final_decision if report['suitable'] or final_decision!='accepted' else 'unsuitable')
                 update_progress()

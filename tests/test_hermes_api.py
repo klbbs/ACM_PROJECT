@@ -1129,6 +1129,43 @@ def test_roll_updates_platform_odds_with_first_rejected_review(client, monkeypat
     assert reviews[0]['problem_id'] in {first, second}
 
 
+def test_candidate_weights_follow_direction_within_the_same_platform():
+    from acmhermes.service import Hermes
+    pool = [
+        {'platform': 'codeforces', 'id': f'codeforces:{number}-A',
+         'score_evidence': {'estimated_rating': rating}}
+        for number, rating in enumerate((1700, 1800, 1900), 1)
+    ]
+    request_range = (1800, 1800)
+    low, middle, high = Hermes.candidate_weights(pool, {'codeforces:4-A': 'below_minimum'}, request_range)
+    assert 0 < low < middle < high and high >= 4 * low
+    low, middle, high = Hermes.candidate_weights(pool, {'codeforces:4-A': 'above_maximum'}, request_range)
+    assert 0 < high < middle < low and low >= 4 * high
+    assert Hermes.candidate_weights(pool, {'atcoder:abc400_a': 'below_minimum'}, request_range) == [1000] * 3
+    cached, middle, high = Hermes.candidate_weights(
+        pool, {'codeforces:1-A': 'accepted', 'codeforces:4-A': 'below_minimum'}, request_range)
+    assert cached > high > middle > 0
+    many_fresh = [dict(pool[2], id=f'codeforces:{number}-A') for number in range(10, 310)]
+    cached, *fresh = Hermes.candidate_weights([pool[0], *many_fresh], {'codeforces:1-A': 'accepted'}, request_range)
+    assert cached >= 4 * sum(fresh) and min(fresh) > 0
+
+
+def test_roll_resumes_matching_short_review_without_another_ai_review(client):
+    c, s, fake = client
+    request = Draw(score_range=(800, 1200))
+    context = s.review_context(request)
+    _, statement_hash = s.app.state.selection_reports._cached(PID)
+    choice = {'problem_id': PID, 'reason': '合成难度复核', 'suitable': True,
+              'difficulty_assessment': ASSESSMENT}
+    s.reviews.save(PID, 'stale-statement', context, choice)
+    assert s.reviews.recent_outcomes(context, *request.score_range) == {}
+    s.reviews.save(PID, statement_hash, context, choice)
+    assert s.reviews.recent_outcomes(context, *request.score_range) == {PID: 'accepted'}
+    job = wait(c, start(c))
+    assert job['status'] == 'completed', job
+    assert [call.args[0] for call in fake.await_args_list] == ['hermes_solution_report']
+
+
 def test_target_neighbourhood_is_used_for_preview_report_and_result(client):
     c,s,fake=client
     original=fake.side_effect

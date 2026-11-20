@@ -19,6 +19,7 @@ MAX_SEGMENTS = 64
 REFILL_LEASE_SECONDS = 90
 REFILL_HEARTBEAT_SECONDS = 20
 RETRY_DELAYS = (20, 60)
+QUOTA_RETRY_DELAYS = (3600, 6 * 3600)
 MAX_FAILURES = len(RETRY_DELAYS) + 1
 POLL_SECONDS = 20
 
@@ -247,7 +248,8 @@ class PreparedPool:
                 row = c.execute('SELECT failures FROM hermes_prepared_segments WHERE id=?', (key,)).fetchone()
                 if row:
                     failures = min(row['failures'] + 1, MAX_FAILURES)
-                    retry_at = time.time() + RETRY_DELAYS[failures - 1] if failures < MAX_FAILURES else 0
+                    delays = QUOTA_RETRY_DELAYS if failure_reason == 'ai_usage_limit' else RETRY_DELAYS
+                    retry_at = time.time() + delays[failures - 1] if failures < MAX_FAILURES else 0
                     c.execute('''UPDATE hermes_prepared_segments SET retry_at=?,failures=?,failure_reason=?
                         WHERE id=?''', (retry_at, failures, failure_reason, key))
 
